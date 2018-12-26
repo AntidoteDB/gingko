@@ -57,9 +57,8 @@
 %%====================================================================
 
 %% @doc Start the logging server.
-%TODO -spec start([]) -> {ok, pid()} | ignore | {error, term()}.
-start(_Type, _Args) ->
-    gingkoo_sup:start_link().
+-spec start(term(), term()) -> {ok, pid()} | ignore | {error, term()}.
+start(_Type, _Args) -> gingko_sup:start_link().
 
 %TODO -spec
 stop(_State) ->
@@ -68,34 +67,40 @@ stop(_State) ->
 %-spec get_version(key(), type(), snapshot_time(), txid())
 %    -> {ok, snapshot()} | {error, reason()}.
 get_version(Key, Type, SnapshotTime) ->
-    LogId = log_utilities:get_logid_from_key(Key),
-    Partition = log_utilities:get_key_partition(Key),
-    PayloadList = logging_vnode:get_up_to_time(Partition, LogId, SnapshotTime, Type, Key),
-    materializer:materialize(Type, PayloadList).
+  ok.
+%%    LogId = log_utilities:get_logid_from_key(Key),
+%%    Partition = log_utilities:get_key_partition(Key),
+%%    PayloadList = logging_vnode:get_up_to_time(Partition, LogId, SnapshotTime, Type, Key),
+%%    materializer:materialize(Type, PayloadList).
 
 % @doc Make the DownstreamOp persistent.
 %-spec write_update(key(), clocksi_payload()) -> ok | {error, reason()}.
 update(Key, Type, TxId, DownstreamOp) ->
-    Entry = #log_operation{
-        tx_id = TxId, 
-        op_type = commit, 
-        log_payload = #update_log_payload{key = Key, type = Type , op = DownstreamOp}},
-    {ok, _OpId} = logging_vnode:append(Key, Entry).
+  ok.
+%%    Entry = #log_operation{
+%%        tx_id = TxId,
+%%        op_type = commit,
+%%        log_payload = #update_log_payload{key = Key, type = Type , op = DownstreamOp}},
+%%    {ok, _OpId} = logging_vnode:append(Key, Entry).
 
 commit(Keys, TxId, CommitTime, SnapshotTime) ->
-    Entry = #log_operation{
-        tx_id = TxId, 
-        op_type = commit, 
-        log_payload = #commit_log_payload{commit_time = CommitTime, snapshot_time = SnapshotTime}},
-    lists:map(fun(Key) -> logging_vnode:append_commit(Key, Entry) end, Keys).
+  ok.
+%%    Entry = #log_operation{
+%%        tx_id = TxId,
+%%        op_type = commit,
+%%        log_payload = #commit_log_payload{commit_time = CommitTime, snapshot_time = SnapshotTime}},
+%%    lists:map(fun(Key) -> logging_vnode:append_commit(Key, Entry) end, Keys).
     
 abort(Keys, TxId) ->
-    Entry = #log_operation{
-        tx_id = TxId, 
-        op_type = abort, 
-        log_payload = #abort_log_payload{}},
-    lists:map(fun(Key) -> logging_vnode:append(Key, Entry) end, Keys).
+  ok.
+%%    Entry = #log_operation{
+%%        tx_id = TxId,
+%%        op_type = abort,
+%%        log_payload = #abort_log_payload{}},
+%%    lists:map(fun(Key) -> logging_vnode:append(Key, Entry) end, Keys).
 
     
 set_stable(_Vectorclock) ->
     ok.
+
+
