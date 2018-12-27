@@ -6,7 +6,8 @@
 
 start() ->
     logger:set_primary_config(#{level => info}),
-    {ok, ID} = application:ensure_all_started(gingko),
+
+    application:ensure_all_started(gingko),
     [].
 
 stop(_Config) ->
@@ -23,14 +24,7 @@ fixture_test_() ->
 
 
 writeupdate_test(_Config) ->
-    logger:info(#{
-        id => "1", in => "writeupdate", what => "start",
-        result => "start", reason => "unauthorized",
-        "user" => #{"id" => 42, "name" => "best_test_user", "role" => "test"}
-    }),
+    gingko:update(a, antidote_crdt_register_mv, 1, {1, 1, []}),
+    gingko:commit([a], 1, {1,1}, undefined),
 
-%%    gingko:update(a, antidote_crdt_register_mv, 1, {1, 1, []}),
-%%    gingko:commit([a], 1, {1,1}, undefined),
-%%
-%%    application:stop(gingko),
     ?_assert(true).

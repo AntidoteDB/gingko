@@ -22,6 +22,21 @@
 -behaviour(application).
 
 
+%% =====================
+%% ENVIRONMENT VARIABLES
+%% -------------
+%%
+%% ******************************
+%% log_persistence = true | false
+%%   Enables logging to disk and recovering log on startup if set to true
+%%
+%% ******************************
+%% log_root = "path/to/logdir"
+%%   Specifies the base logging directory.
+%%   Defaults to "gingko/logs/"
+%%
+%% =====================
+
 %% @doc
 %% Internal State (in-memory)
 % List of operations per object, [list per DC?]
@@ -60,13 +75,15 @@
 -spec start(term(), term()) -> {ok, pid()} | ignore | {error, term()}.
 start(_Type, _Args) -> gingko_sup:start_link().
 
-%TODO -spec
+-spec stop(term()) -> ok.
 stop(_State) ->
-    ok.
+  logger:info(#{function => "SHUTDOWN", state => "unknown"}),
+  ok.
 
 %-spec get_version(key(), type(), snapshot_time(), txid())
 %    -> {ok, snapshot()} | {error, reason()}.
 get_version(Key, Type, SnapshotTime) ->
+  logger:info(#{function => "GET_VERSION", key => Key, type => Type, snapshot_timestamp => SnapshotTime}),
   ok.
 %%    LogId = log_utilities:get_logid_from_key(Key),
 %%    Partition = log_utilities:get_key_partition(Key),
@@ -74,16 +91,22 @@ get_version(Key, Type, SnapshotTime) ->
 %%    materializer:materialize(Type, PayloadList).
 
 % @doc Make the DownstreamOp persistent.
-%-spec write_update(key(), clocksi_payload()) -> ok | {error, reason()}.
+% key: The key to apply the update to
+% type: CRDT Type of the object at given key
+% txid: Transaction id the update belongs to
+% downstreamop: Operation to be applied to the key
+-spec update(key(), type(), txid(), op()) -> ok | {error, reason()}.
 update(Key, Type, TxId, DownstreamOp) ->
+  logger:info(#{function => "UPDATE", key => Key, type => Type, transaction => TxId, op => DownstreamOp}),
+  _Entry = #log_operation{
+      tx_id = TxId,
+      op_type = commit,
+      log_payload = #update_log_payload{key = Key, type = Type , op = DownstreamOp}},
   ok.
-%%    Entry = #log_operation{
-%%        tx_id = TxId,
-%%        op_type = commit,
-%%        log_payload = #update_log_payload{key = Key, type = Type , op = DownstreamOp}},
 %%    {ok, _OpId} = logging_vnode:append(Key, Entry).
 
 commit(Keys, TxId, CommitTime, SnapshotTime) ->
+  logger:info(#{function => "COMMIT", keys => Keys, transaction => TxId, commit_timestamp => CommitTime, snapshot_timestamp => SnapshotTime}),
   ok.
 %%    Entry = #log_operation{
 %%        tx_id = TxId,
@@ -92,6 +115,7 @@ commit(Keys, TxId, CommitTime, SnapshotTime) ->
 %%    lists:map(fun(Key) -> logging_vnode:append_commit(Key, Entry) end, Keys).
     
 abort(Keys, TxId) ->
+  logger:info(#{function => "ABORT", keys => Keys, transaction => TxId}),
   ok.
 %%    Entry = #log_operation{
 %%        tx_id = TxId,
@@ -100,7 +124,8 @@ abort(Keys, TxId) ->
 %%    lists:map(fun(Key) -> logging_vnode:append(Key, Entry) end, Keys).
 
     
-set_stable(_Vectorclock) ->
+set_stable(Vectorclock) ->
+  logger:info(#{function => "SET_STABLE", timestamp => Vectorclock}),
     ok.
 
 
