@@ -12,7 +12,7 @@
 
 
 
--define(LOGGING_MASTER, logging_vnode_master).
+-define(LOGGING_MASTER, gingko_op_log_server).
 %% Version of log records being used
 -define(LOG_RECORD_VERSION, 0).
 

@@ -24,7 +24,7 @@ fixture_test_() ->
 
 
 writeupdate_test(_Config) ->
-    gingko:update(a, antidote_crdt_register_mv, 1, {1, 1, []}),
-    gingko:commit([a], 1, {1,1}, undefined),
+%%    gingko:update(a, antidote_crdt_register_mv, 1, {1, 1, []}),
+%%    gingko:commit([a], 1, {1,1}, undefined),
 
     ?_assert(true).

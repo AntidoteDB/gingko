@@ -73,7 +73,9 @@
 
 %% @doc Start the logging server.
 -spec start(term(), term()) -> {ok, pid()} | ignore | {error, term()}.
-start(_Type, _Args) -> gingko_sup:start_link().
+start(_Type, _Args) ->
+  logger:info(#{function => "START", state => "unknown"}),
+  gingko_sup:start_link().
 
 -spec stop(term()) -> ok.
 stop(_State) ->
@@ -82,6 +84,7 @@ stop(_State) ->
 
 %-spec get_version(key(), type(), snapshot_time(), txid())
 %    -> {ok, snapshot()} | {error, reason()}.
+%% TODO function call return value idempotent given same arguments?
 get_version(Key, Type, SnapshotTime) ->
   logger:info(#{function => "GET_VERSION", key => Key, type => Type, snapshot_timestamp => SnapshotTime}),
   ok.
@@ -98,12 +101,13 @@ get_version(Key, Type, SnapshotTime) ->
 -spec update(key(), type(), txid(), op()) -> ok | {error, reason()}.
 update(Key, Type, TxId, DownstreamOp) ->
   logger:info(#{function => "UPDATE", key => Key, type => Type, transaction => TxId, op => DownstreamOp}),
-  _Entry = #log_operation{
+
+  Entry = #log_operation{
       tx_id = TxId,
       op_type = commit,
       log_payload = #update_log_payload{key = Key, type = Type , op = DownstreamOp}},
-  ok.
-%%    {ok, _OpId} = logging_vnode:append(Key, Entry).
+
+  gingko_op_log:append(?LOGGING_MASTER, Entry).
 
 commit(Keys, TxId, CommitTime, SnapshotTime) ->
   logger:info(#{function => "COMMIT", keys => Keys, transaction => TxId, commit_timestamp => CommitTime, snapshot_timestamp => SnapshotTime}),
@@ -126,6 +130,6 @@ abort(Keys, TxId) ->
     
 set_stable(Vectorclock) ->
   logger:info(#{function => "SET_STABLE", timestamp => Vectorclock}),
-    ok.
+  ok.
 
 
