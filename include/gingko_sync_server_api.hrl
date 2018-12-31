@@ -16,8 +16,8 @@
   % open references to logs to be closed after termination
   logs_to_close,
 
-  % local server name
-  server_name :: atom()
+  % local log name
+  log_name :: atom()
 }).
 
 

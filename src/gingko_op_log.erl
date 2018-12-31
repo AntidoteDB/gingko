@@ -74,11 +74,18 @@ start_link(LogName, RecoveryReceiver) ->
 
 
 append(Log, Entry) ->
-  gen_server:call(Log, {add_log_entry, Entry}).
+  case gen_server:call(Log, {add_log_entry, Entry}) of
+    %% request got stuck in queue (server busy) and got retry signal
+    retry -> logger:debug("Retrying request"), append(Log, Entry);
+    Reply -> Reply
+  end.
 
 
 read_log_entries(Log, FirstIndex, LastIndex, F, Acc) ->
-  gen_server:call(Log, {read_log_entries, FirstIndex, LastIndex, F, Acc}).
+  case gen_server:call(Log, {read_log_entries, FirstIndex, LastIndex, F, Acc}) of
+    retry -> logger:debug("Retrying request"), read_log_entries(Log, FirstIndex, LastIndex, F, Acc);
+    Reply -> Reply
+  end.
 
 
 read_log_entries(Log, FirstIndex, LastIndex) ->

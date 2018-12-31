@@ -74,24 +74,33 @@
 %% @doc Start the logging server.
 -spec start(term(), term()) -> {ok, pid()} | ignore | {error, term()}.
 start(_Type, _Args) ->
-  logger:info(#{function => "START", state => "unknown"}),
+  logger:notice(#{process => "START", what => "gingko application"}),
   gingko_sup:start_link().
+
 
 -spec stop(term()) -> ok.
 stop(_State) ->
-  logger:info(#{function => "SHUTDOWN", state => "unknown"}),
+  logger:notice(#{process => "SHUTDOWN", what => "gingko application"}),
   ok.
+
 
 %-spec get_version(key(), type(), snapshot_time(), txid())
 %    -> {ok, snapshot()} | {error, reason()}.
-%% TODO function call return value idempotent given same arguments?
 get_version(Key, Type, SnapshotTime) ->
   logger:info(#{function => "GET_VERSION", key => Key, type => Type, snapshot_timestamp => SnapshotTime}),
-  ok.
-%%    LogId = log_utilities:get_logid_from_key(Key),
-%%    Partition = log_utilities:get_key_partition(Key),
-%%    PayloadList = logging_vnode:get_up_to_time(Partition, LogId, SnapshotTime, Type, Key),
+
+  %% TODO Get up to time SnapshotTime instead of all
+  {ok, Data} = gingko_op_log:read_log_entries(?LOGGING_MASTER, 0, all),
+  logger:info(#{step => "unfiltered log", payload => Data, snapshot_timestamp => SnapshotTime}),
+
+  {Ops, CommittedOps} = log_utilities:filter_terms_for_key(Data, {key, Key}, undefined, SnapshotTime, dict:new(), dict:new()),
+  logger:info(#{step => "filtered terms", ops => Ops, committed => CommittedOps}),
+
+  %% TODO filtered materialize payload
 %%    materializer:materialize(Type, PayloadList).
+
+  {ok, CommittedOps}.
+
 
 % @doc Make the DownstreamOp persistent.
 % key: The key to apply the update to
@@ -104,10 +113,16 @@ update(Key, Type, TxId, DownstreamOp) ->
 
   Entry = #log_operation{
       tx_id = TxId,
-      op_type = commit,
+      op_type = update,
       log_payload = #update_log_payload{key = Key, type = Type , op = DownstreamOp}},
+  LogRecord = #log_record {
+    version = 0,                     % for now hard-coded version 0
+    op_number = #op_number{},        % ?????
+    bucket_op_number = #op_number{}, % ?????
+    log_operation = Entry
+  },
 
-  gingko_op_log:append(?LOGGING_MASTER, Entry).
+  gingko_op_log:append(?LOGGING_MASTER, LogRecord).
 
 commit(Keys, TxId, CommitTime, SnapshotTime) ->
   logger:info(#{function => "COMMIT", keys => Keys, transaction => TxId, commit_timestamp => CommitTime, snapshot_timestamp => SnapshotTime}),

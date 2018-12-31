@@ -1,11 +1,3 @@
-%%%-------------------------------------------------------------------
-%%% @author antidote
-%%% @copyright (C) 2018, <COMPANY>
-%%% @doc
-%%%
-%%% @end
-%%% Created : 27. Dec 2018 17:25
-%%%-------------------------------------------------------------------
 -module(gingko_op_log_server).
 -include("gingko.hrl").
 
@@ -28,17 +20,29 @@ start_link(LogName, RecoveryReceiver) ->
 
 
 init({LogName, RecoveryReceiver}) ->
-  logger:info(#{
+  logger:notice(#{
     action => "Starting op log server",
+    registered_as => ?MODULE,
     name => LogName,
     receiver => RecoveryReceiver
   }),
 
+  case RecoveryReceiver of
+    none -> ActualReceiver =
+      spawn(fun Loop() ->
+        receive Message -> logger:notice("Received dummy message: ~p",[Message]) end,
+        Loop()
+      end);
+    _ -> ActualReceiver = RecoveryReceiver
+  end,
+
+
   {ok, LogServer} = gingko_sync_server:start_link(LogName),
+
   gen_server:cast(self(), start_recovery),
   {ok, #state{
     log_name = LogName,
-    recovery_receiver = RecoveryReceiver,
+    recovery_receiver = ActualReceiver,
     recovering = true,
     sync_server = LogServer
   }}.
@@ -50,13 +54,13 @@ init({LogName, RecoveryReceiver}) ->
 
 handle_cast(start_recovery, State) when State#state.recovering == true ->
   LogName = State#state.log_name,
-  _Receiver = State#state.recovery_receiver,
-  _LogServer = State#state.sync_server,
+  Receiver = State#state.recovery_receiver,
+  LogServer = State#state.sync_server,
   logger:info("[~p] Async recovery started", [LogName]),
 
   GenServer = self(),
   AsyncRecovery = fun() ->
-    %NextIndex = recover_all_logs(LogName, Receiver, LogServer),
+    NextIndex = recover_all_logs(LogName, Receiver, LogServer),
     %% TODO recovery
     NextIndex = 0,
     gen_server:cast(GenServer, {finish_recovery, NextIndex})
@@ -67,7 +71,7 @@ handle_cast(start_recovery, State) when State#state.recovering == true ->
 handle_cast({finish_recovery, NextIndexMap}, State) ->
   % TODO
   % reply to waiting processes to try their requests again
-  %reply_retry_to_waiting(State#state.waiting_for_reply),
+  reply_retry_to_waiting(State#state.waiting_for_reply),
 
   % save write-able index map and finish recovery
   logger:info("[~p] Recovery process finished", [State#state.log_name]),
@@ -83,65 +87,66 @@ terminate(_Reason, State) ->
   ok.
 
 
-handle_call({add_log_entry, {Index, _Data}}, From, State) when State#state.recovering == true ->
-  logger:info("[~p] Add ~p, waiting for recovery", [State#state.log_name, Index]),
+handle_call({add_log_entry, _Data}, From, State) when State#state.recovering == true ->
+  logger:notice("[~p] Waiting for recovery: ~p", [State#state.log_name, From]),
   Waiting = State#state.waiting_for_reply,
   {noreply, State#state{ waiting_for_reply = Waiting ++ [From] }};
 
-handle_call({add_log_entry, {Index, Data}}, From, State) ->
-  lager:info("[~p] Adding log entry", [State#state.log_name]),
+handle_call({add_log_entry, Data}, From, State) ->
+  logger:notice(#{
+    action => "Append to log",
+    name => State#state.log_name,
+    data => Data,
+    from => From
+  }),
+
 
   NextIndex = State#state.next_index,
   LogName = State#state.log_name,
   LogServer = State#state.sync_server,
   Waiting = State#state.waiting_for_reply,
 
-  if
-    Index < NextIndex ->
-      logger:error("[~p] Index ~p already written, currently at index ~p",
-        [LogName, Index, NextIndex - 1]),
-      {reply, {error, index_already_written}, State};
-    Index > NextIndex ->
-      logger:info("[~p] Trying to write index ~p, but writable index is behind: ~p. Waiting.",
-        [LogName, Index, NextIndex]),
-      {noreply, State#state{ waiting_for_reply = Waiting ++ [From] }};
-    true ->
-      {ok, Log} = gen_server:call(LogServer, {get_log, LogName}),
+  {ok, Log} = gen_server:call(LogServer, {get_log, LogName}),
+  logger:notice(#{
+    action => "Logging",
+    log => Log,
+    index => NextIndex,
+    data => Data
+  }),
 
-      ok = disk_log:log(Log, {Index, Data}),
+  ok = disk_log:log(Log, {NextIndex, Data}),
 
-      % wait for sync reply
-      gen_server:cast(LogServer, {sync_log, LogName, self()}),
-      receive log_persisted -> ok end,
+  % wait for sync reply
+  gen_server:cast(LogServer, {sync_log, LogName, self()}),
+  receive log_persisted -> ok end,
 
-      logger:info("[~p] Log entry at ~p persisted",
-        [State#state.log_name, Index]),
+  logger:info("[~p] Log entry at ~p persisted",
+    [State#state.log_name, NextIndex]),
 
-      % index of another request may be up to date, send retry messages
-      reply_retry_to_waiting(Waiting),
-      {reply, ok, State#state{
-        % increase index counter for node by one
-        next_index = Index + 1,
-        % empty waiting queue
-        waiting_for_reply = []
-      }}
-  end;
+  % index of another request may be up to date, send retry messages
+  reply_retry_to_waiting(Waiting),
+  {reply, ok, State#state{
+    % increase index counter for node by one
+    next_index = NextIndex + 1,
+    % empty waiting queue
+    waiting_for_reply = []
+  }};
 
 
-handle_call({read_log_entries, _Node, _FirstIndex, _LastIndex, _F, _Acc}, From, State)
+handle_call(_Request, From, State)
   when State#state.recovering == true ->
   logger:info("[~p] Read, waiting for recovery", [State#state.log_name]),
   Waiting = State#state.waiting_for_reply,
   {noreply, State#state{ waiting_for_reply = Waiting ++ [From] }};
 
-handle_call({read_log_entries, Node, FirstIndex, LastIndex, F, Acc}, _From, State) ->
+handle_call({read_log_entries, FirstIndex, LastIndex, F, Acc}, _From, State) ->
   LogName = State#state.log_name,
   LogServer = State#state.sync_server,
   Waiting = State#state.waiting_for_reply,
   %% simple implementation, read ALL terms, then filter
   %% can be improved performance wise, stop at last index
 
-  {ok, Log} = gen_server:call(LogServer, {get_log, LogName, Node}),
+  {ok, Log} = gen_server:call(LogServer, {get_log, LogName}),
   %% TODO this will most likely cause a timeout to the gen_server caller, what to do?
   Terms = read_all(Log),
 
@@ -172,6 +177,7 @@ reply_retry_to_waiting(WaitingProcesses) ->
   lists:foldl(Reply, void, WaitingProcesses),
   ok.
 
+%%noinspection ErlangUnboundVariable
 recover_all_logs(LogName, Receiver, LogServer) when is_atom(LogName) ->
   recover_all_logs(atom_to_list(LogName), Receiver, LogServer);
 recover_all_logs(LogName, Receiver, LogServer) ->
@@ -179,35 +185,50 @@ recover_all_logs(LogName, Receiver, LogServer) ->
   LogPath = gingko_sync_server:log_dir_base(LogName),
   filelib:ensure_dir(LogPath),
 
-  ProcessLogFile = fun(LogFile, IndexMapAcc) ->
-    logger:info("[~s] Recovering logfile ~p", [LogName, LogFile]),
+  ProcessLogFile = fun(LogFile, Index) ->
+    logger:notice(#{
+      action => "Recovering logfile",
+      log => LogName,
+      file => LogFile
+    }),
 
-    [NodeName, _] = string:split(LogFile, "."),
-    Node = list_to_atom(NodeName),
-
-    {ok, Log} = gen_server:call(LogServer, {get_log, LogName, Node}),
+    {ok, Log} = gen_server:call(LogServer, {get_log, LogName}),
 
     % read all terms
     Terms = read_all(Log),
 
-    % For each entry {log_recovery, Node, {Index, Data}} is sent
-    SendTerm = fun({Index, Data}, _) -> Receiver ! {log_recovery, Node, {Index, Data}} end,
+    logger:notice(#{
+      terms => Terms
+    }),
+
+    % For each entry {log_recovery, {Index, Data}} is sent
+    SendTerm = fun({LogIndex, Data}, _) -> Receiver ! {log_recovery, {LogIndex, Data}} end,
     lists:foldl(SendTerm, void, Terms),
 
-    {LastIndex, _} = hd(lists:reverse(Terms)),
+    case Terms of
+      [] -> LastIndex = 0;
+      _ -> {LastIndex, _} = hd(lists:reverse(Terms))
+    end,
 
-    maps:put(Node, LastIndex + 1, IndexMapAcc)
+    case Index =< LastIndex of
+      true -> logger:info("Jumping from ~p to ~p index", [Index, LastIndex]);
+      _ -> logger:emergency("Index corrupt! ~p to ~p jump found", [Index, LastIndex])
+    end,
+
+    LastIndex
                    end,
 
   {ok, LogFiles} = file:list_dir(LogPath),
+
   % accumulate node -> next free index
-  IndexMapAcc = #{},
+  IndexAcc = 0,
 
-  IndexMap = lists:foldl(ProcessLogFile, IndexMapAcc, LogFiles),
+  LastIndex = lists:foldl(ProcessLogFile, IndexAcc, LogFiles),
 
+  logger:notice("Receiver: ~p", [Receiver]),
   Receiver ! log_recovery_done,
 
-  IndexMap.
+  LastIndex.
 
 
 read_all(Log) ->
@@ -233,119 +254,65 @@ read_all(Log, Terms, Cont) ->
 %%    fun setup/0,
 %%    fun cleanup/1,
 %%    [
-%%      fun simple_write/1,
-%%      fun index_already_written/1,
-%%      fun index_lagging/1,
-%%      fun read_test/1,
-%%      fun multi_read_test/1,
-%%      fun empty_read_test/1
+%%      fun read_test/1
 %%    ]}.
 %%
 %%% Setup and Cleanup
 %%setup() ->
-%%  % logger
-%%  logger:start(),
-%%  logger:set_loglevel(lager_console_backend, info),
-%%
-%%  % dummy receiver
-%%  DummyReceive = fun() -> receive A -> logger:info("Receive: ~p", [A]) end end,
-%%  DummyLoop = fun Loop() -> DummyReceive(), Loop() end,
-%%  DummyReceiver = spawn_link(DummyLoop),
-%%
-%%  % start server
-%%  {ok, Pid} = minidote_op_log_server:start_link(eunit, DummyReceiver),
-%%  Pid.
+%%  os:putenv("RESET_LOG_FILE", "true"),
+%%  ok.
 %%
 %%cleanup(Pid) ->
 %%  gen_server:stop(Pid).
 %%
-%%start(Name) -> logger:info("=== " ++ atom_to_list(Name) ++ " ===").
-%%fin(Name) -> logger:info("=== " ++ atom_to_list(Name) ++ " fin ===").
 %%
-%%
-%%simple_write(Log) ->
+%%read_test(_) ->
 %%  fun() ->
-%%    Node = e_simple,
-%%    start(Node),
-%%    % add log entry {0, {data, eunit, 0}} for <eunit>
-%%    ok = minidote_op_log:add_log_entry(Log, Node, {?STARTING_INDEX, {data}}),
-%%    fin(Node)
-%%  end.
+%%    {ok, Pid} = gingko_op_log_server:start_link(?LOGGING_MASTER, none),
 %%
-%%index_already_written(Log) ->
-%%  fun() ->
-%%    Node = e_iaw,
-%%    start(Node),
-%%
-%%    ok = minidote_op_log:add_log_entry(Log, Node, {?STARTING_INDEX, {data}}),
-%%    ok = minidote_op_log:add_log_entry(Log, Node, {?STARTING_INDEX+1, {data}}),
-%%    ok = minidote_op_log:add_log_entry(Log, Node, {?STARTING_INDEX+2, {data}}),
-%%    ok = minidote_op_log:add_log_entry(Log, Node, {?STARTING_INDEX+3, {data}}),
-%%
-%%    % expect error for same index
-%%    {error, _} = minidote_op_log:add_log_entry(Log, Node, {?STARTING_INDEX, {data}}),
-%%    {error, _} = minidote_op_log:add_log_entry(Log, Node, {?STARTING_INDEX+3, {data}}),
-%%
-%%    % but valid for another node
-%%    ok = minidote_op_log:add_log_entry(Log, i_iaw2, {?STARTING_INDEX, {data}}),
-%%    fin(Node)
-%%  end.
-%%
-%%index_lagging(Log) ->
-%%  fun() ->
-%%    Node = e_lagging,
-%%    start(Node),
-%%
-%%    % write entries in bad order
-%%    spawn_link(fun() -> minidote_op_log:add_log_entry(Log, Node, {?STARTING_INDEX+1, {data}}) end),
-%%    spawn_link(fun() -> minidote_op_log:add_log_entry(Log, Node, {?STARTING_INDEX, {data}}) end),
-%%    ok = minidote_op_log:add_log_entry(Log, Node, {?STARTING_INDEX+2, {data}}),
-%%    fin(Node)
-%%  end.
-%%
-%%read_test(Log) ->
-%%  fun() ->
-%%    Node = e_read,
-%%    start(Node),
+%%    Entry = #log_operation{
+%%      tx_id = 0,
+%%      op_type = commit,
+%%      log_payload = #update_log_payload{key = a, type = mv_reg , op = {1,1}}},
 %%
 %%    % write one entry
-%%    ok = minidote_op_log:add_log_entry(Log, Node, {?STARTING_INDEX, {data}}),
+%%    ok = gingko_op_log:append(Pid, {data}),
+%%    ok = gingko_op_log:append(Pid, {Entry}),
 %%
 %%    % read entry
-%%    {ok, [{?STARTING_INDEX, {data}}]} = minidote_op_log:read_log_entries(Log, Node, ?STARTING_INDEX, all),
-%%    fin(Node)
+%%    {ok, [{0, {data}}, {1, {Entry}}]} = gingko_op_log:read_log_entries(Pid, 0, all)
 %%  end.
 %%
-%%multi_read_test(Log) ->
-%%  fun() ->
-%%    Node = e_multi,
-%%    start(Node),
-%%
-%%    ok = minidote_op_log:add_log_entry(Log, Node, {?STARTING_INDEX, {data_1}}),
-%%    ok = minidote_op_log:add_log_entry(Log, Node, {?STARTING_INDEX + 1, {data_2}}),
-%%    ok = minidote_op_log:add_log_entry(Log, Node, {?STARTING_INDEX + 2, {data_3}}),
-%%
-%%    % read entry
-%%    {ok, [{?STARTING_INDEX, {data_1}}]} = minidote_op_log:read_log_entries(Log, Node, ?STARTING_INDEX, ?STARTING_INDEX),
-%%    {ok, [{?STARTING_INDEX + 1, {data_2}}]} = minidote_op_log:read_log_entries(Log, Node, ?STARTING_INDEX + 1, ?STARTING_INDEX + 1),
-%%    {ok, [{?STARTING_INDEX + 2, {data_3}}]} = minidote_op_log:read_log_entries(Log, Node, ?STARTING_INDEX + 2, ?STARTING_INDEX + 2),
-%%
-%%    {ok, [{?STARTING_INDEX + 1, {data_2}}, {?STARTING_INDEX + 2, {data_3}}]} = minidote_op_log:read_log_entries(Log, Node, ?STARTING_INDEX + 1, ?STARTING_INDEX + 2),
-%%    %% OOB
-%%    {ok, [{?STARTING_INDEX + 1, {data_2}}, {?STARTING_INDEX + 2, {data_3}}]} = minidote_op_log:read_log_entries(Log, Node, ?STARTING_INDEX + 1, ?STARTING_INDEX + 3),
-%%    %% all
-%%    {ok, [{?STARTING_INDEX + 1, {data_2}}, {?STARTING_INDEX + 2, {data_3}}]} = minidote_op_log:read_log_entries(Log, Node, ?STARTING_INDEX + 1, all),
-%%    fin(Node)
-%%  end.
-%%
-%%empty_read_test(Log) ->
-%%  fun() ->
-%%    Node = e_empty,
-%%    start(Node),
-%%
-%%    {ok, []} = minidote_op_log:read_log_entries(Log, Node, ?STARTING_INDEX, all),
-%%
-%%    fin(Node)
-%%  end.
+%%%%multi_read_test(Log) ->
+%%%%  fun() ->
+%%%%    Node = e_multi,
+%%%%    start(Node),
+%%%%
+%%%%    ok = minidote_op_log:add_log_entry(Log, Node, {?STARTING_INDEX, {data_1}}),
+%%%%    ok = minidote_op_log:add_log_entry(Log, Node, {?STARTING_INDEX + 1, {data_2}}),
+%%%%    ok = minidote_op_log:add_log_entry(Log, Node, {?STARTING_INDEX + 2, {data_3}}),
+%%%%
+%%%%    % read entry
+%%%%    {ok, [{?STARTING_INDEX, {data_1}}]} = minidote_op_log:read_log_entries(Log, Node, ?STARTING_INDEX, ?STARTING_INDEX),
+%%%%    {ok, [{?STARTING_INDEX + 1, {data_2}}]} = minidote_op_log:read_log_entries(Log, Node, ?STARTING_INDEX + 1, ?STARTING_INDEX + 1),
+%%%%    {ok, [{?STARTING_INDEX + 2, {data_3}}]} = minidote_op_log:read_log_entries(Log, Node, ?STARTING_INDEX + 2, ?STARTING_INDEX + 2),
+%%%%
+%%%%    {ok, [{?STARTING_INDEX + 1, {data_2}}, {?STARTING_INDEX + 2, {data_3}}]} = minidote_op_log:read_log_entries(Log, Node, ?STARTING_INDEX + 1, ?STARTING_INDEX + 2),
+%%%%    %% OOB
+%%%%    {ok, [{?STARTING_INDEX + 1, {data_2}}, {?STARTING_INDEX + 2, {data_3}}]} = minidote_op_log:read_log_entries(Log, Node, ?STARTING_INDEX + 1, ?STARTING_INDEX + 3),
+%%%%    %% all
+%%%%    {ok, [{?STARTING_INDEX + 1, {data_2}}, {?STARTING_INDEX + 2, {data_3}}]} = minidote_op_log:read_log_entries(Log, Node, ?STARTING_INDEX + 1, all),
+%%%%    fin(Node)
+%%%%  end.
+%%%%
+%%%%empty_read_test(Log) ->
+%%%%  fun() ->
+%%%%    Node = e_empty,
+%%%%    start(Node),
+%%%%
+%%%%    {ok, []} = minidote_op_log:read_log_entries(Log, Node, ?STARTING_INDEX, all),
+%%%%
+%%%%    fin(Node)
+%%%%  end.
 %%
 %%-endif.

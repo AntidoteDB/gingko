@@ -1,13 +1,4 @@
-%%%-------------------------------------------------------------------
-%%% @author antidote
-%%% @copyright (C) 2018, <COMPANY>
-%%% @doc
-%%%
-%%% @end
-%%% Created : 27. Dec 2018 17:33
-%%%-------------------------------------------------------------------
 -module(gingko_sync_server).
--author("antidote").
 
 %% API
 -export([]).
@@ -16,39 +7,57 @@
 
 
 -export([start_link/1]).
--export([log_dir_base/1, log_file_path/2]).
+-export([log_dir_base/1]).
 
 -export([init/1, handle_call/3, handle_cast/2, terminate/2,  handle_info/2, code_change/3]).
 
 -include("gingko_sync_server_api.hrl").
 
 
-start_link(ServerName) ->
-  gen_server:start_link({local, ?MODULE}, ?MODULE, {ServerName}, []).
+start_link(LogName) ->
+  gen_server:start_link({local, ?MODULE}, ?MODULE, {LogName}, []).
 
 
-init({ServerName}) ->
-  logger:info("[~p] log sync server ~p", [ServerName, self()]),
-  {ok, #state{ logs_to_close = sets:new(), server_name = ServerName }}.
+init({LogName}) ->
+  logger:notice(#{
+    action => "Starting log sync server",
+    registered_as => ?MODULE,
+    name => LogName
+  }),
+
+  reset_if_flag_set(LogName),
+  {ok, #state{ logs_to_close = sets:new(), log_name = LogName }}.
 
 
 terminate(_Reason, State) ->
-  logger:info("[~p] Closing all open logs", [State#state.server_name]),
+  logger:notice(#{
+    action => "Shutdown log sync server",
+    name => State#state.log_name
+  }),
+
+  % close all references to open logs
   CloseLog = fun(LogRef, _) -> disk_log:close(LogRef) end,
   sets:fold(CloseLog, void, State#state.logs_to_close),
   ok.
 
 
-handle_call({get_log, ServerName, Node}, _From, State) ->
-  {ok, Log} = open_log(ServerName, Node),
+handle_call({get_log, LogName}, _From, State) ->
+  logger:notice(#{
+    action => "Open log",
+    log => LogName
+  }),
+
+  {ok, Log} = open_log(LogName),
   {reply, {ok, Log}, State}.
 
 
-handle_cast({sync_log, ServerName, Node, ReplyTo}, State) ->
-  Log = open_log(ServerName, Node),
+handle_cast({sync_log, LogName, ReplyTo}, State) ->
+  Log = open_log(LogName),
 
-  %% TODO better syncing strategy
-  lager:info("[~p] Syncing log", [State#state.server_name]),
+  logger:notice(#{
+    action => "Sync log to disk",
+    log => State#state.log_name
+  }),
   disk_log:sync(Log),
 
   ReplyTo ! log_persisted,
@@ -56,7 +65,12 @@ handle_cast({sync_log, ServerName, Node, ReplyTo}, State) ->
 
 
 handle_info(Msg, State) ->
-  lager:warning("[~p] Swallowing unexpected message: ~p", [State#state.server_name, Msg]),
+  logger:warning(#{
+    warning => "Unexpected Message",
+    log => State#state.log_name,
+    message => Msg
+  }),
+
   {noreply, State}.
 
 
@@ -68,31 +82,44 @@ code_change(_OldVsn, _State, _Extra) ->
 %%% Private Functions Implementation
 %%%===================================================================
 
-open_log(ServerName, Node) ->
-  filelib:ensure_dir(log_dir_base(ServerName)),
+open_log(LogName) ->
+  filelib:ensure_dir(log_dir_base(LogName)),
 
-  LogFile = log_dir_base(ServerName) ++ atom_to_list(Node) ++ ".log",
+  LogFile = log_dir_base(LogName) ++ "OP_LOG",
 
   LogOptions = [{name, LogFile}, {file, LogFile}],
   case disk_log:open(LogOptions) of
     {ok, Name} -> {ok, Name};
     {repaired, Name, {recovered, Rec}, {badbytes, Bad}} ->
-      lager:warning("Recovered bad log file, found ~p terms, ~p bad bytes", [Rec, Bad]),
+      logger:warning("Recovered bad log file, found ~p terms, ~p bad bytes", [Rec, Bad]),
       {ok, Name}
   end.
 
 
-log_dir_base(ServerName) when is_atom(ServerName)->
-  log_dir_base(atom_to_list(ServerName));
-log_dir_base(ServerName) ->
+log_dir_base(LogName) when is_atom(LogName)->
+  log_dir_base(atom_to_list(LogName));
+log_dir_base(LogName) ->
   % read path
   EnvLogDir = os:getenv("OP_LOG_DIR"),
   case EnvLogDir of
     false -> LogDir = "data/op_log/"; % default value if not set
     LogDir -> LogDir
   end,
-  LogDir ++ ServerName ++ "/".
+  LogDir ++ LogName ++ "/".
 
 
-log_file_path(ServerName, Node) ->
-  log_dir_base(ServerName) ++ atom_to_list(Node) ++ ".log".
+
+reset_if_flag_set(LogName) ->
+  ResetLogFile = os:getenv("RESET_LOG_FILE", "false"),
+  case ResetLogFile of
+    "true" ->
+      LogFile = log_dir_base(LogName) ++ "OP_LOG",
+      logger:notice(#{
+        action => "Reset log file",
+        log => LogName,
+        path => LogFile
+      }),
+      file:delete(LogFile)
+    ;
+    _ -> ok
+  end.
