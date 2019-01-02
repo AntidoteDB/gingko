@@ -96,10 +96,15 @@ get_version(Key, Type, SnapshotTime) ->
   {Ops, CommittedOps} = log_utilities:filter_terms_for_key(Data, {key, Key}, undefined, SnapshotTime, dict:new(), dict:new()),
   logger:info(#{step => "filtered terms", ops => Ops, committed => CommittedOps}),
 
-  %% TODO filtered materialize payload
-%%    materializer:materialize(Type, PayloadList).
+  case dict:find(Key, CommittedOps) of
+    {ok, PayloadForKey} -> PayloadForKey = PayloadForKey;
+    error -> PayloadForKey = []
+  end,
 
-  {ok, CommittedOps}.
+  MaterializedObject = materializer:materialize_clocksi_payload(Type, materializer:create_snapshot(Type), PayloadForKey),
+  logger:info(#{step => "materialize", materialized => MaterializedObject}),
+
+  {ok, MaterializedObject}.
 
 
 % @doc Make the DownstreamOp persistent.
@@ -117,34 +122,56 @@ update(Key, Type, TxId, DownstreamOp) ->
       log_payload = #update_log_payload{key = Key, type = Type , op = DownstreamOp}},
   LogRecord = #log_record {
     version = 0,                     % for now hard-coded version 0
-    op_number = #op_number{},        % ?????
-    bucket_op_number = #op_number{}, % ?????
+    op_number = #op_number{},        % TODO ?????
+    bucket_op_number = #op_number{}, % TODO ?????
     log_operation = Entry
   },
 
   gingko_op_log:append(?LOGGING_MASTER, LogRecord).
 
+
 commit(Keys, TxId, CommitTime, SnapshotTime) ->
   logger:info(#{function => "COMMIT", keys => Keys, transaction => TxId, commit_timestamp => CommitTime, snapshot_timestamp => SnapshotTime}),
+
+  Entry = #log_operation{
+      tx_id = TxId,
+      op_type = commit,
+      log_payload = #commit_log_payload{commit_time = CommitTime, snapshot_time = SnapshotTime}},
+
+  LogRecord = #log_record {
+    version = 0,                     % for now hard-coded version 0
+    op_number = #op_number{},        % TODO ?????
+    bucket_op_number = #op_number{}, % TODO ?????
+    log_operation = Entry
+  },
+
+  lists:map(fun(_Key) -> gingko_op_log:append(?LOGGING_MASTER, LogRecord) end, Keys),
   ok.
-%%    Entry = #log_operation{
-%%        tx_id = TxId,
-%%        op_type = commit,
-%%        log_payload = #commit_log_payload{commit_time = CommitTime, snapshot_time = SnapshotTime}},
-%%    lists:map(fun(Key) -> logging_vnode:append_commit(Key, Entry) end, Keys).
-    
+
+
 abort(Keys, TxId) ->
   logger:info(#{function => "ABORT", keys => Keys, transaction => TxId}),
+
+  Entry = #log_operation{
+      tx_id = TxId,
+      op_type = abort,
+      log_payload = #abort_log_payload{}},
+
+  LogRecord = #log_record {
+    version = 0,                     % for now hard-coded version 0
+    op_number = #op_number{},        % TODO ?????
+    bucket_op_number = #op_number{}, % TODO ?????
+    log_operation = Entry
+  },
+
+
+  lists:map(fun(_Key) -> gingko_op_log:append(?LOGGING_MASTER, LogRecord) end, Keys),
   ok.
-%%    Entry = #log_operation{
-%%        tx_id = TxId,
-%%        op_type = abort,
-%%        log_payload = #abort_log_payload{}},
-%%    lists:map(fun(Key) -> logging_vnode:append(Key, Entry) end, Keys).
 
     
 set_stable(Vectorclock) ->
   logger:info(#{function => "SET_STABLE", timestamp => Vectorclock}),
+  %% TODO
   ok.
 
 

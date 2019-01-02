@@ -19,20 +19,33 @@ fixture_test_() ->
     {foreach,
         fun start/0,
         [
-            fun writeupdate_test/1
+            fun writeupdate_test/1,
+            fun write_and_commit_test/1
         ]
     }.
 
 
+write_and_commit_test(_Config) ->
+    TransactionId = 1,
+    Type = antidote_crdt_register_mv,
+    DownstreamOp = {<<"a">>, <<"b">>, []},
+
+    gingko:update(a, Type, TransactionId, DownstreamOp),
+    gingko:commit([a], TransactionId, {1, 1234}, vectorclock:new()),
+
+    {ok, Data} = gingko:get_version(a, Type, vectorclock:new()),
+
+    ?_assertEqual(Data, [{<<"a">>,<<"b">>}]).
+
+
+%% updated but not committed operations result in empty version
 writeupdate_test(_Config) ->
-    gingko:update(a, antidote_crdt_register_mv, 1, {1, 1, []}),
+    Type = antidote_crdt_register_mv,
+    DownstreamOp = {1, 1, []},
+    DownstreamOp2 = {1, 1, []},
 
-    Data = gingko:get_version(a, antidote_crdt_register_mv, vectorclock:new()),
-    logger:warning(#{
-        action => "Get version",
-        data => Data
-    }),
+    gingko:update(b, Type, 1, DownstreamOp),
+    gingko:update(b, Type, 2, DownstreamOp2),
 
-%%    gingko:commit([a], 1, {1,1}, undefined),
-
-    ?_assert(true).
+    {ok, Data} = gingko:get_version(b, Type, vectorclock:new()),
+    ?_assertEqual(Data, []).

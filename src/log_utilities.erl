@@ -76,7 +76,7 @@ handle_update(TxId, OpPayload, OtherRecords, Key, MinSnapshotTime, MaxSnapshotTi
 %%      If filter matches, appends payload to operations accumulator
 -spec handle_commit(
     txid(),                                   % searches for operations belonging to this tx id
-    #update_log_payload{},                    % update payload read from the log
+    #commit_log_payload{},                    % update payload read from the log
     [{non_neg_integer(), #log_record{}}],     % rest of the log
     key(),                                    % filter for key
     snapshot_time() | undefined,              % minimal snapshot time
@@ -88,7 +88,9 @@ handle_update(TxId, OpPayload, OtherRecords, Key, MinSnapshotTime, MaxSnapshotTi
   dict:dict(key(), [#clocksi_payload{}])      % accumulated committed operations for key and snapshot filter
 }.
 handle_commit(TxId, OpPayload, OtherRecords, Key, MinSnapshotTime, MaxSnapshotTime, Ops, CommittedOpsDict) ->
+
   #commit_log_payload{commit_time = {DcId, TxCommitTime}, snapshot_time = SnapshotTime} = OpPayload,
+
   case dict:find(TxId, Ops) of
     {ok, OpsList} ->
       NewCommittedOpsDict =
