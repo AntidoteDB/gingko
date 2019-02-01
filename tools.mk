@@ -7,3 +7,6 @@ test:
 
 dialyzer:
 	${REBAR} dialyzer
+
+edoc:
+	${REBAR} edoc

@@ -1,5 +1,5 @@
 {application, gingko,
- [{description, "An OTP library"},
+ [{description, "Persistent backend for CRDT objects"},
   {vsn, "0.1.0"},
   {registered, [gingko]},
   {applications,

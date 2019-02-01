@@ -14,7 +14,7 @@
 
 
 %% ==============
-%% API
+%% Implementation
 %% ==============
 
 % Starts the operation log process
@@ -29,6 +29,8 @@
 %     'log_recovery_done'
 % is sent.
 -spec start_link(term(), pid()) -> {ok, pid()} | ignore | {error, Error :: any()}.
+start_link(LogName, RecoveryReceiver) ->
+  gingko_op_log_server:start_link(LogName, RecoveryReceiver).
 
 
 % Appends a log entry to the end of the log.
@@ -39,6 +41,12 @@
 %
 % When the function returns 'ok' the entry is guaranteed to be persistently stored.
 -spec append(pid(), #log_record{}) -> ok  | {error, Reason :: term()}.
+append(Log, Entry) ->
+  case gen_server:call(Log, {add_log_entry, Entry}) of
+    %% request got stuck in queue (server busy) and got retry signal
+    retry -> logger:debug("Retrying request"), append(Log, Entry);
+    Reply -> Reply
+  end.
 
 
 % Read all log entries belonging to a given node and in a certain range.
@@ -59,28 +67,6 @@
 % Returns the accumulator value after reading all matching log entries.
 -spec read_log_entries(pid(), integer(), integer() | all,
     fun((#log_record{}, Acc) -> Acc), Acc) -> {ok, Acc}.
-% simplified read api without accumulator
--spec read_log_entries(pid(), integer(), integer() | all) -> {ok, [#log_record{}]}.
-
-% Stops the op_log process.
--spec stop(pid()) -> any().
-
-
-% ===========================================
-% IMPLEMENTATION
-% ===========================================
-start_link(LogName, RecoveryReceiver) ->
-  gingko_op_log_server:start_link(LogName, RecoveryReceiver).
-
-
-append(Log, Entry) ->
-  case gen_server:call(Log, {add_log_entry, Entry}) of
-    %% request got stuck in queue (server busy) and got retry signal
-    retry -> logger:debug("Retrying request"), append(Log, Entry);
-    Reply -> Reply
-  end.
-
-
 read_log_entries(Log, FirstIndex, LastIndex, F, Acc) ->
   case gen_server:call(Log, {read_log_entries, FirstIndex, LastIndex, F, Acc}) of
     retry -> logger:debug("Retrying request"), read_log_entries(Log, FirstIndex, LastIndex, F, Acc);
@@ -88,11 +74,15 @@ read_log_entries(Log, FirstIndex, LastIndex, F, Acc) ->
   end.
 
 
+% simplified read api without accumulator
+-spec read_log_entries(pid(), integer(), integer() | all) -> {ok, [#log_record{}]}.
 read_log_entries(Log, FirstIndex, LastIndex) ->
   F = fun(D, Acc) -> Acc ++ [D] end,
   read_log_entries(Log, FirstIndex, LastIndex, F, []).
 
 
+% Stops the op_log process.
+-spec stop(pid()) -> any().
 stop(Log) ->
   gen_server:stop(Log).
 
