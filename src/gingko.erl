@@ -103,13 +103,12 @@ get_version(Key, Type) ->
 
 %% @doc Retrieves a materialized version of the object at given key with expected given type.
 %% If MaximumSnapshotTime is given, then the version is guaranteed to not be older than the given snapshot.
-%% <p>
+%%
 %% Example usage:
-%% </p>
+%%
 %% Operations of a counter @my_counter in the log: +1, +1, -1, +1(not committed), -1(not committed).
-%% <p>
+%%
 %% 3 = get_version(my_counter, antidote_crdt_counter_pn, undefined)
-%% </p>
 -spec get_version(key(), type(), snapshot_time()) -> {ok, snapshot()}.
 get_version(Key, Type, MaximumSnapshotTime) ->
   logger:info(#{function => "GET_VERSION", key => Key, type => Type, snapshot_timestamp => MaximumSnapshotTime}),
@@ -143,11 +142,10 @@ get_version(Key, Type, MaximumSnapshotTime) ->
 %% @doc Applies an update for the given key for given transaction id with a calculated valid downstream operation.
 %% It is currently not checked if the downstream operation is valid for given type.
 %% Invalid downstream operations will corrupt a key, which will cause get_version to throw an error upon invocation.
-%% <p>
+%%
 %% A update log record consists of the transaction id, the op_type 'update' and the actual payload.
 %% It is wrapped again in a record for future use in the possible distributed gingko backend
 %% and for compatibility with the current Antidote backend.
-%% </p>
 -spec update(key(), type(), txid(), op()) -> ok | {error, reason()}.
 update(Key, Type, TransactionId, DownstreamOp) ->
   logger:info(#{function => "UPDATE", key => Key, type => Type, transaction => TransactionId, op => DownstreamOp}),
@@ -167,12 +165,11 @@ update(Key, Type, TransactionId, DownstreamOp) ->
 
 
 %% @doc Commits all operations belonging to given transaction id for given list of keys.
-%% <p>
+%%
 %% A commit log record consists of the transaction id, the op_type 'commit'
 %% and the actual payload which consists of the commit time and the snapshot time.
 %% It is wrapped again in a record for future use in the possible distributed gingko backend
 %% and for compatibility with the current Antidote backend.
-%% </p>
 -spec commit([key()], txid(), dc_and_commit_time(), snapshot_time()) -> ok.
 %% TODO doc CommitTime
 %% TODO doc SnapshotTime
@@ -196,12 +193,11 @@ commit(Keys, TransactionId, CommitTime, SnapshotTime) ->
 
 
 %% @doc Aborts all operations belonging to given transaction id for given list of keys.
-%% <p>
+%%
 %% An abort log record consists of the transaction id, the op_type 'abort'
 %% and the actual payload which is empty.
 %% It is wrapped again in a record for future use in the possible distributed gingko backend
 %% and for compatibility with the current Antidote backend.
-%% </p>
 -spec abort([key()], txid()) -> ok.
 abort(Keys, TransactionId) ->
   logger:info(#{function => "ABORT", keys => Keys, transaction => TransactionId}),
@@ -223,9 +219,8 @@ abort(Keys, TransactionId) ->
 
 
 %% @doc Sets a timestamp for when all operations below that timestamp are considered stable.
-%% <p>
+%%
 %% Currently not implemented.
-%% </p>
 -spec set_stable(snapshot_time()) -> ok.
 set_stable(SnapshotTime) ->
   logger:warning(#{function => "SET_STABLE", timestamp => SnapshotTime, message => "not implemented"}),
