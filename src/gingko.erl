@@ -108,7 +108,7 @@ get_version(Key, Type) ->
 %%
 %% Operations of a counter @my_counter in the log: +1, +1, -1, +1(not committed), -1(not committed).
 %%
-%% 3 = get_version(my_counter, antidote_crdt_counter_pn, undefined)
+%% 2 = get_version(my_counter, antidote_crdt_counter_pn, undefined)
 -spec get_version(key(), type(), snapshot_time()) -> {ok, snapshot()}.
 get_version(Key, Type, MaximumSnapshotTime) ->
   logger:info(#{function => "GET_VERSION", key => Key, type => Type, snapshot_timestamp => MaximumSnapshotTime}),
