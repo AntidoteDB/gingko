@@ -21,37 +21,8 @@
 %% @doc The main interface for the persistent backend for CRDT objects called gingko.
 %% The API provides functions to update, commit, abort, and read (get_version) keys.
 %% Stable snapshots are currently not implemented, thus set_stable is a NO-OP.
-%%
-%%
-%% <hr/>
-%% The following environment flags are supported and can be provided on startup:
-%%
-%% <table border="1" width="100%">
-%%  <tr>
-%%    <th>Flag</th>
-%%    <th>Value (Default)</th>
-%%    <th>Example</th>
-%%    <th>Description</th>
-%%    <th>Location</th>
-%%  </tr>
-%%  <tr>
-%%    <td>log_persistence</td>
-%%    <td>true/false (true)</td>
-%%    <td>true</td>
-%%    <td>Enables logging to disk and recovering log on startup/crash if set to true</td>
-%%    <td>not used</td>
-%%  </tr>
-%%  <tr>
-%%    <td>log_root</td>
-%%    <td>string ("data")</td>
-%%    <td>"path/to/logdir"</td>
-%%    <td>Specifies the base logging directory. Creates the directory tree if it does not exist</td>
-%%    <td>not used</td>
-%%  </tr>
-%%</table>
 -module(gingko).
 -include("gingko.hrl").
--behaviour(application).
 
 
 %%---------------- API -------------------%%
@@ -63,31 +34,6 @@
   get_version/3,
   set_stable/1
 ]).
-
-
-%%---------------- application Callbacks -------------%%
--export([
-  start/2,
-  stop/1
-]).
-
-
-%%====================================================================
-%% application callbacks
-%%====================================================================
-
-%% @doc Start the logging server. Wrapper function to start the gingko supervisor.
--spec start(term(), term()) -> {ok, pid()} | ignore | {error, term()}.
-start(_Type, _Args) ->
-  logger:notice(#{what => "START", process => "gingko application"}),
-  gingko_sup:start_link().
-
-
-%% @doc Stops the logging server.
--spec stop(term()) -> ok.
-stop(_State) ->
-  logger:notice(#{what => "SHUTDOWN", process => "gingko application"}),
-  ok.
 
 
 %%====================================================================

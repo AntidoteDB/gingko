@@ -10,3 +10,5 @@ dialyzer:
 
 edoc:
 	${REBAR} edoc
+	rm doc/erlang.png
+	cp doc/ext/gingko.png doc/erlang.png

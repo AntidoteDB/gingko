@@ -16,5 +16,10 @@ _build
 .idea
 *.iml
 rebar3.crashdump
-doc/
 data/
+
+# static documentation files
+doc/**/*
+!doc/**/
+!doc/ext/*
+!doc/overview.edoc
