@@ -94,11 +94,9 @@ stop(_State) ->
 %% API functions
 %%====================================================================
 
-%% @doc Retrieves the current latest version of the object at given key with expected given type.
-%% @see get_version/3
+%% @equiv get_version(Key, Type, undefined)
 -spec get_version(key(), type()) -> {ok, snapshot()}.
-get_version(Key, Type) ->
-  get_version(Key, Type, undefined).
+get_version(Key, Type) -> get_version(Key, Type, undefined).
 
 
 %% @doc Retrieves a materialized version of the object at given key with expected given type.
@@ -109,6 +107,10 @@ get_version(Key, Type) ->
 %% Operations of a counter @my_counter in the log: +1, +1, -1, +1(not committed), -1(not committed).
 %%
 %% 2 = get_version(my_counter, antidote_crdt_counter_pn, undefined)
+%%
+%% @param Key the Key under which the object is stored
+%% @param Type the expected CRDT type of the object
+%% @param MaximumSnapshotTime if not 'undefined', then retrieves the latest object version which is not older than this timestamp
 -spec get_version(key(), type(), snapshot_time()) -> {ok, snapshot()}.
 get_version(Key, Type, MaximumSnapshotTime) ->
   logger:info(#{function => "GET_VERSION", key => Key, type => Type, snapshot_timestamp => MaximumSnapshotTime}),
@@ -146,6 +148,11 @@ get_version(Key, Type, MaximumSnapshotTime) ->
 %% A update log record consists of the transaction id, the op_type 'update' and the actual payload.
 %% It is wrapped again in a record for future use in the possible distributed gingko backend
 %% and for compatibility with the current Antidote backend.
+%%
+%% @param Key the Key under which the object is stored
+%% @param Type the expected CRDT type of the object
+%% @param TransactionId the id of the transaction this update belongs to
+%% @param DownstreamOp the calculated downstream operation of a CRDT update
 -spec update(key(), type(), txid(), op()) -> ok | {error, reason()}.
 update(Key, Type, TransactionId, DownstreamOp) ->
   logger:info(#{function => "UPDATE", key => Key, type => Type, transaction => TransactionId, op => DownstreamOp}),
@@ -170,9 +177,12 @@ update(Key, Type, TransactionId, DownstreamOp) ->
 %% and the actual payload which consists of the commit time and the snapshot time.
 %% It is wrapped again in a record for future use in the possible distributed gingko backend
 %% and for compatibility with the current Antidote backend.
+%%
+%% @param Keys list of keys to commit
+%% @param TransactionId the id of the transaction this commit belongs to
+%% @param CommitTime TODO
+%% @param SnapshotTime TODO
 -spec commit([key()], txid(), dc_and_commit_time(), snapshot_time()) -> ok.
-%% TODO doc CommitTime
-%% TODO doc SnapshotTime
 commit(Keys, TransactionId, CommitTime, SnapshotTime) ->
   logger:info(#{function => "COMMIT", keys => Keys, transaction => TransactionId, commit_timestamp => CommitTime, snapshot_timestamp => SnapshotTime}),
 
@@ -198,6 +208,9 @@ commit(Keys, TransactionId, CommitTime, SnapshotTime) ->
 %% and the actual payload which is empty.
 %% It is wrapped again in a record for future use in the possible distributed gingko backend
 %% and for compatibility with the current Antidote backend.
+%%
+%% @param Keys list of keys to abort a transaction
+%% @param TransactionId the id of the transaction to abort
 -spec abort([key()], txid()) -> ok.
 abort(Keys, TransactionId) ->
   logger:info(#{function => "ABORT", keys => Keys, transaction => TransactionId}),
@@ -221,6 +234,7 @@ abort(Keys, TransactionId) ->
 %% @doc Sets a timestamp for when all operations below that timestamp are considered stable.
 %%
 %% Currently not implemented.
+%% @param SnapshotTime TODO
 -spec set_stable(snapshot_time()) -> ok.
 set_stable(SnapshotTime) ->
   logger:warning(#{function => "SET_STABLE", timestamp => SnapshotTime, message => "not implemented"}),
