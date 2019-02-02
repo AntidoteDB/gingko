@@ -8,18 +8,29 @@
 -behaviour(gen_server).
 
 
+-record(state, {
+  % open references to logs to be closed after termination
+  logs_to_close,
+
+  % local log name
+  log_name :: atom()
+}).
+
+
 -export([start_link/1]).
 -export([log_dir_base/1]).
 
 -export([init/1, handle_call/3, handle_cast/2, terminate/2,  handle_info/2, code_change/3]).
 
--include("gingko_sync_server_api.hrl").
 
 
+%% @doc Starts the log sync timing server for given node
+-spec start_link(node()) -> {ok, pid()}.
 start_link(LogName) ->
   gen_server:start_link({local, ?MODULE}, ?MODULE, {LogName}, []).
 
 
+%% @doc Initializes the internal server state
 init({LogName}) ->
   logger:notice(#{
     action => "Starting log sync server",
@@ -43,6 +54,7 @@ terminate(_Reason, State) ->
   ok.
 
 
+%% @doc opens the log given by the server name (second argument) and the target node (third argument)
 handle_call({get_log, LogName}, _From, State) ->
   logger:notice(#{
     action => "Open log",
@@ -53,6 +65,7 @@ handle_call({get_log, LogName}, _From, State) ->
   {reply, {ok, Log}, State}.
 
 
+%% @doc Receives a syncing request. Depending on the strategy may or may not sync immediately
 handle_cast({sync_log, LogName, ReplyTo}, State) ->
   Log = open_log(LogName),
 
@@ -84,6 +97,8 @@ code_change(_OldVsn, _State, _Extra) ->
 %%% Private Functions Implementation
 %%%===================================================================
 
+%% @doc ensures directory where the log is expected and opens the log file.
+%%      Recovers if required, logging found terms and bad bytes
 open_log(LogName) ->
   filelib:ensure_dir(log_dir_base(LogName)),
 
@@ -98,6 +113,8 @@ open_log(LogName) ->
   end.
 
 
+%% @doc Returns the base log dir path
+-spec log_dir_base(node()) -> string().
 log_dir_base(LogName) when is_atom(LogName)->
   log_dir_base(atom_to_list(LogName));
 log_dir_base(LogName) ->
@@ -108,7 +125,6 @@ log_dir_base(LogName) ->
     LogDir -> LogDir
   end,
   LogDir ++ LogName ++ "/".
-
 
 
 reset_if_flag_set(LogName) ->
