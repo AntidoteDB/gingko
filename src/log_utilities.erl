@@ -1,3 +1,4 @@
+%% @doc Utility functions for filtering log entries.
 -module(log_utilities).
 
 -include("gingko.hrl").
@@ -12,22 +13,30 @@
 %% If key is undefined then is returns all records for all keys
 %% It returns a dict corresponding to all the ops matching Key and
 %% a list of the committed operations for that key which have a smaller commit time than MinSnapshotTime.
+%%
+%% @param OtherRecords list of log record tuples, {index, payload}
+%% @param Key key to filter
+%% @param MinSnapshotTime minimal snapshot time
+%% @param MaxSnapshotTime maximal snapshot time
+%% @param Ops dict accumulator for any type of operation records (possibly uncommitted)
+%% @param CommittedOpsDict dict accumulator for committed operations
+%% @returns a {dict, dict} tuple with accumulated operations and committed operations for key and snapshot filter
 -spec filter_terms_for_key(
-    [{non_neg_integer(), #log_record{}}],   % list of log record tuples, {index, payload}
-    key(),                                  % key to filter
-    snapshot_time(),                        % minimal snapshot time
-    snapshot_time(),                        % maximal snapshot time
-    dict:dict(txid(), [any_log_payload()]), % accumulator for any type of operation records (possibly uncommitted)
-    dict:dict(key(), [#clocksi_payload{}])  % accumulator for committed operations
+    [{non_neg_integer(), #log_record{}}],
+    key(),
+    snapshot_time(),
+    snapshot_time(),
+    dict:dict(txid(), [any_log_payload()]),
+    dict:dict(key(), [#clocksi_payload{}])
 ) -> {
-  dict:dict(txid(), [any_log_payload()]),   % all accumulated operations for key and snapshot filter
-  dict:dict(key(), [#clocksi_payload{}])    % accumulated committed operations for key and snapshot filter
+  dict:dict(txid(), [any_log_payload()]),
+  dict:dict(key(), [#clocksi_payload{}])
 }.
 filter_terms_for_key([], _Key, _MinSnapshotTime, _MaxSnapshotTime, Ops, CommittedOpsDict) ->
   {Ops, CommittedOpsDict};
 
 filter_terms_for_key([{_Index, LogRecord} | OtherRecords], Key, MinSnapshotTime, MaxSnapshotTime, Ops, CommittedOpsDict) ->
-  logger:warning("Log record ~p", [LogRecord]),
+  logger:debug("Log record ~p", [LogRecord]),
 
   #log_record{log_operation = LogOperation} = check_log_record_version(LogRecord),
 

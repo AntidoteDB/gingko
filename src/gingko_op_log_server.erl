@@ -1,24 +1,59 @@
+%% @doc The operation log which receives requests and manages recovery of log files.
+%% @hidden
 -module(gingko_op_log_server).
 -include("gingko.hrl").
 
-%% API
--export([]).
-
 -behaviour(gen_server).
+
+%% TODO
+-type server() :: any().
+-type log() :: any().
+-type log_entry() :: any().
+-type gen_from() :: any().
 
 -export([start_link/2]).
 -export([init/1, handle_call/3, handle_cast/2, terminate/2,  handle_info/2]).
 
-% internal state and type specifications
--include("gingko_op_log_server_api.hrl").
+%% ==============
+%% API
+%% Internal api documentation and types for the gingko op log gen_server
+%% ==============
+
+%%%===================================================================
+%%% State
+%%%===================================================================
+
+-record(state, {
+  % recovery related state
+  % receiver of the recovered log messages
+  recovery_receiver :: pid(),
+  % if recovering reply with busy status to requests
+  recovering :: true | false,
+
+  % log name, used for storing logs in a directory related to the name
+  log_name :: atom(),
+  % requests waiting until log is not recovering anymore or missing indices have been updated
+  waiting_for_reply = [] :: [any()],
+  % handles syncing and opening the log
+  sync_server :: pid(),
+
+  % stores current writable index
+  next_index :: integer()
+}).
+
 
 % log starts with this default index
 -define(STARTING_INDEX, 0).
 
+
+%% @doc Starts the op log server for given server name and recovery receiver process
+-spec start_link(term(), pid()) -> {ok, pid()}.
 start_link(LogName, RecoveryReceiver) ->
   gen_server:start_link({local, ?MODULE}, ?MODULE, {LogName, RecoveryReceiver}, []).
 
 
+%% @doc Initializes the internal server state
+-spec init({node(), pid()}) -> {ok, #state{}}.
 init({LogName, RecoveryReceiver}) ->
   logger:notice(#{
     action => "Starting op log server",
@@ -44,7 +79,8 @@ init({LogName, RecoveryReceiver}) ->
     log_name = LogName,
     recovery_receiver = ActualReceiver,
     recovering = true,
-    sync_server = LogServer
+    sync_server = LogServer,
+    next_index = ?STARTING_INDEX
   }}.
 
 
@@ -52,6 +88,13 @@ init({LogName, RecoveryReceiver}) ->
 %% ASYNC LOG RECOVERY
 %% ------------------
 
+%% @doc Either
+%% 1) starts async recovery and does not reply until recovery is finished
+%% or
+%% 2) finishes async recovery and replies to waiting processes
+-spec handle_cast
+    (start_recovery, #state{}) -> {noreply, #state{}};          %1)
+    ({finish_recovery, #{}}, #state{}) -> {noreply, #state{}}.  %2)
 handle_cast(start_recovery, State) when State#state.recovering == true ->
   LogName = State#state.log_name,
   Receiver = State#state.recovery_receiver,
@@ -86,6 +129,19 @@ terminate(_Reason, State) ->
   gen_server:stop(State#state.sync_server),
   ok.
 
+
+%% @doc Either
+%% 1) adds a log entry for given node and a {Index, Data} pair
+%% or
+%% 2) reads the log
+-spec handle_call
+    ({add_log_entry, log_entry()}, gen_from(), #state{}) ->
+  {noreply, #state{}} | %% if still recovering
+  {reply, {error, index_already_written}, #state{}} | %% if index is already written
+  {reply, ok, #state{}}; %% entry is persisted
+    ({read_log_entries, any(), integer(), integer(), fun((log_entry(), Acc) -> Acc), Acc}, gen_from(), #state{}) ->
+  {noreply, #state{}} | %% if still recovering or index for given node behind
+  {reply, {ok, Acc}, #state{}}. %% accumulated entries
 
 handle_call({add_log_entry, _Data}, From, State) when State#state.recovering == true ->
   logger:notice("[~p] Waiting for recovery: ~p", [State#state.log_name, From]),
@@ -172,11 +228,24 @@ handle_info(Msg, State) ->
 %%% Private Functions Implementation
 %%%===================================================================
 
+%% @doc Replies a 'retry' message to all waiting process to retry their action again
+-spec reply_retry_to_waiting([gen_from()]) -> ok.
 reply_retry_to_waiting(WaitingProcesses) ->
   Reply = fun(Process, _) -> gen_server:reply(Process, retry) end,
   lists:foldl(Reply, void, WaitingProcesses),
   ok.
 
+
+%% @doc recovers all logs for given server name
+%%      the server name should be the local one
+%%      also ensures that the directory actually exists
+%%
+%% sends pid() ! {log_recovery, Node, {Index, Data}}
+%%      for each entry in one log
+%%
+%% sends pid() ! {log_recovery_done}
+%%      once after processing finished
+-spec recover_all_logs(server(), pid(), pid()) -> any().
 %%noinspection ErlangUnboundVariable
 recover_all_logs(LogName, Receiver, LogServer) when is_atom(LogName) ->
   recover_all_logs(atom_to_list(LogName), Receiver, LogServer);
@@ -231,6 +300,8 @@ recover_all_logs(LogName, Receiver, LogServer) ->
   LastIndex.
 
 
+%% @doc reads all terms from given log
+-spec read_all(log()) -> [term()].
 read_all(Log) ->
   read_all(Log, [], start).
 

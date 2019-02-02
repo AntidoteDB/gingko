@@ -57,7 +57,7 @@
 %%
 %% @param LogName the name for the operation log.
 %% @param RecoveryReceiver the process which receives recovery messages.
--spec start_link(term(), pid()) -> {ok, pid()} | ignore | {error, Error :: any()}.
+-spec start_link(node(), pid()) -> {ok, pid()} | ignore | {error, Error :: any()}.
 start_link(LogName, RecoveryReceiver) ->
   gingko_op_log_server:start_link(LogName, RecoveryReceiver).
 
@@ -68,7 +68,7 @@ start_link(LogName, RecoveryReceiver) ->
 %%
 %% @param Log the process returned by start_link.
 %% @param Entry the log record to append.
--spec append(pid(), #log_record{}) -> ok  | {error, Reason :: term()}.
+-spec append(node(), #log_record{}) -> ok  | {error, Reason :: term()}.
 append(Log, Entry) ->
   case gen_server:call(Log, {add_log_entry, Entry}) of
     %% request got stuck in queue (server busy) and got retry signal
@@ -79,7 +79,7 @@ append(Log, Entry) ->
 
 %% @doc Read all log entries with a simple list accumulator.
 %% @equiv read_log_entries(Log, FirstIndex, LastIndex, fun(D,Acc)->Acc++[D]end,[])
--spec read_log_entries(pid(), integer(), integer() | all) -> {ok, [#log_record{}]}.
+-spec read_log_entries(node(), integer(), integer() | all) -> {ok, [#log_record{}]}.
 read_log_entries(Log, FirstIndex, LastIndex) ->
   F = fun(D, Acc) -> Acc ++ [D] end,
   read_log_entries(Log, FirstIndex, LastIndex, F, []).
@@ -95,7 +95,7 @@ read_log_entries(Log, FirstIndex, LastIndex) ->
 %% @param LastIndex stop at this index, inclusive
 %% @param FoldFunction function that takes a single log entry and the current accumulator and returns the new accumulator
 %% @param Starting accumulator
--spec read_log_entries(pid(), integer(), integer() | all,
+-spec read_log_entries(node(), integer(), integer() | all,
     fun((#log_record{}, Acc) -> Acc), Acc) -> {ok, Acc}.
 read_log_entries(Log, FirstIndex, LastIndex, FoldFunction, Accumulator) ->
   case gen_server:call(Log, {read_log_entries, FirstIndex, LastIndex, FoldFunction, Accumulator}) of
@@ -106,6 +106,6 @@ read_log_entries(Log, FirstIndex, LastIndex, FoldFunction, Accumulator) ->
 
 %% @doc Stops the op_log process.
 %% @param Log log process to stop
--spec stop(pid()) -> any().
+-spec stop(node()) -> any().
 stop(Log) ->
   gen_server:stop(Log).

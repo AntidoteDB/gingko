@@ -1,3 +1,5 @@
+%% @doc gingko sync server
+%% @hidden
 -module(gingko_sync_server).
 
 %% API
