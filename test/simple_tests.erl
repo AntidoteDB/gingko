@@ -5,19 +5,27 @@
 -include_lib("eunit/include/eunit.hrl").
 
 start() ->
-    os:putenv("RESET_LOG_FILE", "true"),
+    os:putenv("reset_log", "true"),
     logger:set_primary_config(#{level => info}),
+    {ok, GingkoSup} = gingko_sup:start_link(),
+    GingkoSup.
 
-    application:ensure_all_started(gingko),
-    [].
-
-stop(_Config) ->
-    application:stop(gingko).
+stop(Sup) ->
+    exit(Sup, normal),
+    Ref = monitor(process, Sup),
+    receive
+        {'DOWN', Ref, process, Sup, _Reason} ->
+            logger:info("Gingko shutdown successful"),
+            ok
+    after 1000 ->
+        error(exit_timeout)
+    end.
 
 
 fixture_test_() ->
     {foreach,
         fun start/0,
+        fun stop/1,
         [
             fun writeupdate_test/1,
             fun write_and_commit_test/1

@@ -80,12 +80,7 @@ handle_cast({sync_log, LogName, ReplyTo}, State) ->
 
 
 handle_info(Msg, State) ->
-  logger:warning(#{
-    warning => "Unexpected Message",
-    log => State#state.log_name,
-    message => Msg
-  }),
-
+  logger:warning(#{ warning => "Unexpected Message", log => State#state.log_name, message => Msg }),
   {noreply, State}.
 
 
@@ -119,7 +114,7 @@ log_dir_base(LogName) when is_atom(LogName)->
   log_dir_base(atom_to_list(LogName));
 log_dir_base(LogName) ->
   % read path
-  EnvLogDir = os:getenv("OP_LOG_DIR"),
+  EnvLogDir = os:getenv("log_root"),
   case EnvLogDir of
     false -> LogDir = "data/op_log/"; % default value if not set
     LogDir -> LogDir
@@ -128,7 +123,7 @@ log_dir_base(LogName) ->
 
 
 reset_if_flag_set(LogName) ->
-  ResetLogFile = os:getenv("RESET_LOG_FILE", "false"),
+  ResetLogFile = os:getenv("reset_log", "false"),
   case ResetLogFile of
     "true" ->
       LogFile = log_dir_base(LogName) ++ "OP_LOG",

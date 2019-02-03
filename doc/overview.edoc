@@ -30,6 +30,13 @@ The following environment flags are supported and can be provided on startup:
    <th>Location</th>
  </tr>
  <tr>
+   <td>reset_log</td>
+   <td>true/false (false)</td>
+   <td>true</td>
+   <td>On startup starts with a fresh log. If a previous log is found, it is deleted.</td>
+   <td>gingko_sync_server:reset_if_flag_set</td>
+ </tr>
+ <tr>
    <td>log_persistence</td>
    <td>true/false (true)</td>
    <td>true</td>
@@ -38,9 +45,9 @@ The following environment flags are supported and can be provided on startup:
  </tr>
  <tr>
    <td>log_root</td>
-   <td>string ("data")</td>
+   <td>string ("data/op_log/")</td>
    <td>"path/to/logdir"</td>
    <td>Specifies the base logging directory. Creates the directory tree if it does not exist</td>
-   <td>not used</td>
+   <td>gingko_sync_server:log_dir_base</td>
  </tr>
 </table>
