@@ -109,7 +109,7 @@ open_log(LogName) ->
 
 
 %% @doc Returns the base log dir path
--spec log_dir_base(node()) -> string().
+-spec log_dir_base(node() | string()) -> string().
 log_dir_base(LogName) when is_atom(LogName)->
   log_dir_base(atom_to_list(LogName));
 log_dir_base(LogName) ->
