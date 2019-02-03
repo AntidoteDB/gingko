@@ -43,7 +43,7 @@ write_and_commit_test(_Config) ->
 
     {ok, Data} = gingko:get_version(a, Type, vectorclock:new()),
 
-    ?_assertEqual(Data, [{<<"a">>,<<"b">>}]).
+    ?_assertEqual(Data, [{<<"a">>, <<"b">>}]).
 
 
 %% updated but not committed operations result in empty version
