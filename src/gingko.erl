@@ -127,8 +127,8 @@ update(Key, Type, TransactionId, DownstreamOp) ->
 %%
 %% @param Keys list of keys to commit
 %% @param TransactionId the id of the transaction this commit belongs to
-%% @param CommitTime TODO
-%% @param SnapshotTime TODO
+%% @param CommitTime Data center specific timestamp, if vnodes are involved maximum of all values
+%% @param SnapshotTime transaction specific vectorclock time
 -spec commit([key()], txid(), dc_and_commit_time(), snapshot_time()) -> ok.
 commit(Keys, TransactionId, CommitTime, SnapshotTime) ->
   logger:info(#{function => "COMMIT", keys => Keys, transaction => TransactionId, commit_timestamp => CommitTime, snapshot_timestamp => SnapshotTime}),
@@ -179,9 +179,10 @@ abort(Keys, TransactionId) ->
 
 
 %% @doc Sets a timestamp for when all operations below that timestamp are considered stable.
+%% This means that before that timestamp no version will be requested in the future.
 %%
 %% Currently not implemented.
-%% @param SnapshotTime TODO
+%% @param SnapshotTime vectorclock time
 -spec set_stable(snapshot_time()) -> ok.
 set_stable(SnapshotTime) ->
   logger:warning(#{function => "SET_STABLE", timestamp => SnapshotTime, message => "not implemented"}),

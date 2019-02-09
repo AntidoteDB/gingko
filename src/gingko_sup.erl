@@ -13,4 +13,14 @@ init(_Args) ->
     permanent, 5000, worker, [gingko_op_log_server]},
 
   SupFlags = #{strategy => one_for_one, intensity => 1, period => 5},
-  {ok, {SupFlags, [Worker]}}.
+
+
+  MiddlewareConfig = [{mods,
+    [{elli_prometheus, []}, {es_callback, []}]}],
+  ElliOpts = [{callback, elli_middleware},
+    {callback_args, MiddlewareConfig}, {port, 3001}],
+  ElliSpec = {es_http, {elli, start_link, [ElliOpts]},
+    permanent, 5000, worker, [elli]},
+
+
+  {ok, {SupFlags, [Worker, ElliSpec]}}.
