@@ -53,7 +53,7 @@ get_version(Key, Type) -> get_version(Key, Type, undefined).
 %%
 %% Operations of a counter @my_counter in the log: +1, +1, -1, +1(not committed), -1(not committed).
 %%
-%% 2 = get_version(my_counter, antidote_crdt_counter_pn, undefined)
+%% 1 = get_version(my_counter, antidote_crdt_counter_pn, undefined)
 %%
 %% @param Key the Key under which the object is stored
 %% @param Type the expected CRDT type of the object
