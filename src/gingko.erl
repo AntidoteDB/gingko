@@ -41,6 +41,7 @@
 %%====================================================================
 
 %% @equiv get_version(Key, Type, undefined)
+%% Retrieves the latest known materialized version of the object at given key with expected type.
 -spec get_version(key(), type()) -> {ok, snapshot()}.
 get_version(Key, Type) -> get_version(Key, Type, undefined).
 
