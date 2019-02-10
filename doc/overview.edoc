@@ -30,6 +30,20 @@ The following environment flags are supported and can be provided on startup:
    <th>Location</th>
  </tr>
  <tr>
+   <td>prometheus_metrics</td>
+   <td>true/false (false)</td>
+   <td>false</td>
+   <td>Enables or disables collecting gingko metrics to a file.</td>
+   <td>not used</td>
+ </tr>
+ <tr>
+   <td>prometheus_metrics_output</td>
+   <td>string ("data/metrics/prometheus.txt")</td>
+   <td>"path/to/file.txt"</td>
+   <td>If metrics are enabled, writes metrics to this file.</td>
+   <td>not used</td>
+ </tr>
+ <tr>
    <td>reset_log</td>
    <td>true/false (false)</td>
    <td>true</td>

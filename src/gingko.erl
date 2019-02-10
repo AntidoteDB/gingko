@@ -103,6 +103,7 @@ get_version(Key, Type, MaximumSnapshotTime) ->
 -spec update(key(), type(), txid(), op()) -> ok | {error, reason()}.
 update(Key, Type, TransactionId, DownstreamOp) ->
   logger:info(#{function => "UPDATE", key => Key, type => Type, transaction => TransactionId, op => DownstreamOp}),
+  gingko_metrics_server:update(),
 
   Entry = #log_operation{
       tx_id = TransactionId,

@@ -1,6 +1,6 @@
 REBAR ?= $(shell pwd)/rebar3
 
-test:
+test: compile
 	mkdir -p logs
 	${REBAR} eunit skip_deps=true
 	${REBAR} cover

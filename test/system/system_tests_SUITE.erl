@@ -56,12 +56,6 @@ start_node(Name, _Config) ->
 
   case ct_slave:start(Name, NodeConfig) of
     {ok, Node} ->
-      ct:log("Starting metrics collection"),
-%%      ok = rpc:call(Node, application, set_env, [gingko, metrics_port, web_ports(Name)]),
-      _PrometheusStarted = rpc:call(Node, application, ensure_all_started, [prometheus]),
-      _ElliStarted = rpc:call(Node, application, ensure_all_started, [elli_prometheus]),
-      _ElliCollectorStarted = rpc:call(Node, application, ensure_all_started, [prometheus_process_collector]),
-%%      ok = rpc:call(Node, prometheus, start, []),
 
       ct:log("Starting gingko"),
       {ok, _GingkoProc} = rpc:call(Node, gingko_sup, start_link, []),
