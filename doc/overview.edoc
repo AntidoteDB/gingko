@@ -1,0 +1,53 @@
+@version 1.0.0
+@title Gingko - a persistent CRDT backend
+@doc
+
+Gingko is a persistent backend to store operation-based CRDTs.
+
+The architecture is as follows:
+
+<div style="width:100%; vertical-align:middle; text-align:center">
+<img src="ext/gingko_architecture.png" align="center"/>
+</div>
+
+
+<ul>
+ <li> gingko_sup: Library entry-point for other application using gingko. Starting the supervisor will start gingko </li>
+ <li> gingko: Public API for applications using gingko </li>
+</ul>
+
+Other modules are private and should not be used by other applications.
+
+<hr/>
+The following environment flags are supported and can be provided on startup:
+
+<table border="1" width="100%">
+ <tr>
+   <th>Flag</th>
+   <th>Value (Default)</th>
+   <th>Example</th>
+   <th>Description</th>
+   <th>Location</th>
+ </tr>
+ <tr>
+   <td>reset_log</td>
+   <td>true/false (false)</td>
+   <td>true</td>
+   <td>On startup starts with a fresh log. If a previous log is found, it is deleted.</td>
+   <td>gingko_sync_server:reset_if_flag_set</td>
+ </tr>
+ <tr>
+   <td>log_persistence</td>
+   <td>true/false (true)</td>
+   <td>true</td>
+   <td>Enables logging to disk and recovering log on startup/crash if set to true</td>
+   <td>not used</td>
+ </tr>
+ <tr>
+   <td>log_root</td>
+   <td>string ("data/op_log/")</td>
+   <td>"path/to/logdir"</td>
+   <td>Specifies the base logging directory. Creates the directory tree if it does not exist</td>
+   <td>gingko_sync_server:log_dir_base</td>
+ </tr>
+</table>

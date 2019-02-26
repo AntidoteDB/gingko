@@ -7,11 +7,12 @@
 -type snapshot() :: term().
 -type bucket() :: term().
 -type txid() :: term().
--define(BUCKET, <<"antidote">>).
+-define(BUCKET, "antidote").
 
 
 
--define(LOGGING_MASTER, logging_vnode_master).
+
+-define(LOGGING_MASTER, gingko_op_log_server).
 %% Version of log records being used
 -define(LOG_RECORD_VERSION, 0).
 
@@ -99,7 +100,7 @@
 
 %% The way records are stored in the log.
 -record(log_record, {
-    %% The version of the log record, for backwards compatability
+    %% The version of the log record, for backwards compatibility
     version :: non_neg_integer(),
     op_number :: #op_number{},
     bucket_op_number :: #op_number{},

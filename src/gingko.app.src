@@ -1,16 +1,11 @@
 {application, gingko,
- [{description, "An OTP library"},
+ [{description, "Persistent backend for CRDT objects"},
   {vsn, "0.1.0"},
-  {registered, []},
+  {registered, [gingko]},
   {applications,
    [kernel,
-    stdlib,
-    riak_core
+    stdlib
    ]},
-  {env,[]},
-  {modules, []},
-
-  {maintainers, []},
   {licenses, ["Apache 2.0"]},
-  {links, []}
+  {mod,{gingko,[]}}
  ]}.

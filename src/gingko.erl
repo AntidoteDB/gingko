@@ -17,85 +17,171 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
+
+%% @doc The main interface for the persistent backend for CRDT objects called gingko.
+%% The API provides functions to update, commit, abort, and read (get_version) keys.
+%% Stable snapshots are currently not implemented, thus set_stable is a NO-OP.
 -module(gingko).
 -include("gingko.hrl").
--behaviour(application).
 
-
-%% @doc
-%% Internal State (in-memory)
-% List of operations per object, [list per DC?]
-% VC of oldest op in the list [VC_low = VC_snap]
-% iterate from most recent
-
-%% Snapshot cache
-% -> Use dedicated cache module?? Problem: stores only one version?
-% -> do one version first: Store snapshot at VC_Low
-% [Optimization: store also the most recent snapshot?]
-%
-%% Log (persistence) -> cf module log.erl
-%
-%% Notes
-% Is this still needed?? dc_meta_data_utilities:get_env_meta_data(sync_log, Value).
-% Inter-DC communication needs to run in different process somewhere else -> not related to log logic
 
 %%---------------- API -------------------%%
--export([commit/4,
-         abort/2,
-         get_version/3,
-         update/4,
-         set_stable/1]).
-
-%%---------------- Callbacks -------------%%
--export([start/2,
-         stop/1
-        ]).
+-export([
+  update/4,
+  commit/4,
+  abort/2,
+  get_version/2,
+  get_version/3,
+  set_stable/1
+]).
 
 
 %%====================================================================
 %% API functions
 %%====================================================================
 
-%% @doc Start the logging server.
-%TODO -spec start([]) -> {ok, pid()} | ignore | {error, term()}.
-start(_Type, _Args) ->
-    gingkoo_sup:start_link().
+%% @equiv get_version(Key, Type, undefined)
+-spec get_version(key(), type()) -> {ok, snapshot()}.
+get_version(Key, Type) -> get_version(Key, Type, undefined).
 
-%TODO -spec
-stop(_State) ->
-    ok.
 
-%-spec get_version(key(), type(), snapshot_time(), txid())
-%    -> {ok, snapshot()} | {error, reason()}.
-get_version(Key, Type, SnapshotTime) ->
-    LogId = log_utilities:get_logid_from_key(Key),
-    Partition = log_utilities:get_key_partition(Key),
-    PayloadList = logging_vnode:get_up_to_time(Partition, LogId, SnapshotTime, Type, Key),
-    materializer:materialize(Type, PayloadList).
+%% @doc Retrieves a materialized version of the object at given key with expected given type.
+%% If MaximumSnapshotTime is given, then the version is guaranteed to not be older than the given snapshot.
+%%
+%% Example usage:
+%%
+%% Operations of a counter @my_counter in the log: +1, +1, -1, +1(not committed), -1(not committed).
+%%
+%% 2 = get_version(my_counter, antidote_crdt_counter_pn, undefined)
+%%
+%% @param Key the Key under which the object is stored
+%% @param Type the expected CRDT type of the object
+%% @param MaximumSnapshotTime if not 'undefined', then retrieves the latest object version which is not older than this timestamp
+-spec get_version(key(), type(), snapshot_time()) -> {ok, snapshot()}.
+get_version(Key, Type, MaximumSnapshotTime) ->
+  logger:info(#{function => "GET_VERSION", key => Key, type => Type, snapshot_timestamp => MaximumSnapshotTime}),
 
-% @doc Make the DownstreamOp persistent.
-%-spec write_update(key(), clocksi_payload()) -> ok | {error, reason()}.
-update(Key, Type, TxId, DownstreamOp) ->
-    Entry = #log_operation{
-        tx_id = TxId, 
-        op_type = commit, 
-        log_payload = #update_log_payload{key = Key, type = Type , op = DownstreamOp}},
-    {ok, _OpId} = logging_vnode:append(Key, Entry).
+  %% This part needs caching/optimization
+  %% Currently the steps to materialize are as follows:
+  %% * read ALL log entries from the persistent log file
+  %% * filter log entries by key
+  %% * filter furthermore only by committed operations
+  %% * materialize operations into materialized version
+  %% * return that materialized version
 
-commit(Keys, TxId, CommitTime, SnapshotTime) ->
-    Entry = #log_operation{
-        tx_id = TxId, 
-        op_type = commit, 
-        log_payload = #commit_log_payload{commit_time = CommitTime, snapshot_time = SnapshotTime}},
-    lists:map(fun(Key) -> logging_vnode:append_commit(Key, Entry) end, Keys).
-    
-abort(Keys, TxId) ->
-    Entry = #log_operation{
-        tx_id = TxId, 
-        op_type = abort, 
-        log_payload = #abort_log_payload{}},
-    lists:map(fun(Key) -> logging_vnode:append(Key, Entry) end, Keys).
+  %% TODO Get up to time SnapshotTime instead of all
+  {ok, Data} = gingko_op_log:read_log_entries(?LOGGING_MASTER, 0, all),
+  logger:debug(#{step => "unfiltered log", payload => Data, snapshot_timestamp => MaximumSnapshotTime}),
 
-    
-set_stable(_Vectorclock) ->
-    ok.
+  {Ops, CommittedOps} = log_utilities:filter_terms_for_key(Data, {key, Key}, undefined, MaximumSnapshotTime, dict:new(), dict:new()),
+  logger:debug(#{step => "filtered terms", ops => Ops, committed => CommittedOps}),
+
+  case dict:find(Key, CommittedOps) of
+    {ok, PayloadForKey} -> PayloadForKey = PayloadForKey;
+    error -> PayloadForKey = []
+  end,
+
+  MaterializedObject = materializer:materialize_clocksi_payload(Type, materializer:create_snapshot(Type), PayloadForKey),
+  logger:info(#{step => "materialize", materialized => MaterializedObject}),
+
+  {ok, MaterializedObject}.
+
+
+%% @doc Applies an update for the given key for given transaction id with a calculated valid downstream operation.
+%% It is currently not checked if the downstream operation is valid for given type.
+%% Invalid downstream operations will corrupt a key, which will cause get_version to throw an error upon invocation.
+%%
+%% A update log record consists of the transaction id, the op_type 'update' and the actual payload.
+%% It is wrapped again in a record for future use in the possible distributed gingko backend
+%% and for compatibility with the current Antidote backend.
+%%
+%% @param Key the Key under which the object is stored
+%% @param Type the expected CRDT type of the object
+%% @param TransactionId the id of the transaction this update belongs to
+%% @param DownstreamOp the calculated downstream operation of a CRDT update
+-spec update(key(), type(), txid(), op()) -> ok | {error, reason()}.
+update(Key, Type, TransactionId, DownstreamOp) ->
+  logger:info(#{function => "UPDATE", key => Key, type => Type, transaction => TransactionId, op => DownstreamOp}),
+
+  Entry = #log_operation{
+      tx_id = TransactionId,
+      op_type = update,
+      log_payload = #update_log_payload{key = Key, type = Type , op = DownstreamOp}},
+  LogRecord = #log_record {
+    version = ?LOG_RECORD_VERSION,
+    op_number = #op_number{},        % not used
+    bucket_op_number = #op_number{}, % not used
+    log_operation = Entry
+  },
+
+  gingko_op_log:append(?LOGGING_MASTER, LogRecord).
+
+
+%% @doc Commits all operations belonging to given transaction id for given list of keys.
+%%
+%% A commit log record consists of the transaction id, the op_type 'commit'
+%% and the actual payload which consists of the commit time and the snapshot time.
+%% It is wrapped again in a record for future use in the possible distributed gingko backend
+%% and for compatibility with the current Antidote backend.
+%%
+%% @param Keys list of keys to commit
+%% @param TransactionId the id of the transaction this commit belongs to
+%% @param CommitTime TODO
+%% @param SnapshotTime TODO
+-spec commit([key()], txid(), dc_and_commit_time(), snapshot_time()) -> ok.
+commit(Keys, TransactionId, CommitTime, SnapshotTime) ->
+  logger:info(#{function => "COMMIT", keys => Keys, transaction => TransactionId, commit_timestamp => CommitTime, snapshot_timestamp => SnapshotTime}),
+
+  Entry = #log_operation{
+      tx_id = TransactionId,
+      op_type = commit,
+      log_payload = #commit_log_payload{commit_time = CommitTime, snapshot_time = SnapshotTime}},
+
+  LogRecord = #log_record {
+    version = ?LOG_RECORD_VERSION,
+    op_number = #op_number{},        % not used
+    bucket_op_number = #op_number{}, % not used
+    log_operation = Entry
+  },
+
+  lists:map(fun(_Key) -> gingko_op_log:append(?LOGGING_MASTER, LogRecord) end, Keys),
+  ok.
+
+
+%% @doc Aborts all operations belonging to given transaction id for given list of keys.
+%%
+%% An abort log record consists of the transaction id, the op_type 'abort'
+%% and the actual payload which is empty.
+%% It is wrapped again in a record for future use in the possible distributed gingko backend
+%% and for compatibility with the current Antidote backend.
+%%
+%% @param Keys list of keys to abort a transaction
+%% @param TransactionId the id of the transaction to abort
+-spec abort([key()], txid()) -> ok.
+abort(Keys, TransactionId) ->
+  logger:info(#{function => "ABORT", keys => Keys, transaction => TransactionId}),
+
+  Entry = #log_operation{
+      tx_id = TransactionId,
+      op_type = abort,
+      log_payload = #abort_log_payload{}},
+
+  LogRecord = #log_record {
+    version = ?LOG_RECORD_VERSION,
+    op_number = #op_number{},        % not used
+    bucket_op_number = #op_number{}, % not used
+    log_operation = Entry
+  },
+
+  lists:map(fun(_Key) -> gingko_op_log:append(?LOGGING_MASTER, LogRecord) end, Keys),
+  ok.
+
+
+%% @doc Sets a timestamp for when all operations below that timestamp are considered stable.
+%%
+%% Currently not implemented.
+%% @param SnapshotTime TODO
+-spec set_stable(snapshot_time()) -> ok.
+set_stable(SnapshotTime) ->
+  logger:warning(#{function => "SET_STABLE", timestamp => SnapshotTime, message => "not implemented"}),
+  ok.
