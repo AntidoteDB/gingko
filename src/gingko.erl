@@ -30,20 +30,14 @@
   update/4,
   commit/4,
   abort/2,
-  get_version/2,
-  get_version/3,
-  set_stable/1
+  get/3,
+  create_journal_entry/2
 ]).
 
 
 %%====================================================================
 %% API functions
 %%====================================================================
-
-%% @equiv get_version(Key, Type, undefined)
--spec get_version(key(), type()) -> {ok, snapshot()}.
-get_version(Key, Type) -> get_version(Key, Type, undefined).
-
 
 %% @doc Retrieves a materialized version of the object at given key with expected given type.
 %% If MaximumSnapshotTime is given, then the version is guaranteed to not be older than the given snapshot.
@@ -57,8 +51,8 @@ get_version(Key, Type) -> get_version(Key, Type, undefined).
 %% @param Key the Key under which the object is stored
 %% @param Type the expected CRDT type of the object
 %% @param MaximumSnapshotTime if not 'undefined', then retrieves the latest object version which is not older than this timestamp
--spec get_version(key(), type(), snapshot_time()) -> {ok, snapshot()}.
-get_version(Key, Type, MaximumSnapshotTime) ->
+-spec get(key(), type(), snapshot_time()) -> {ok, snapshot()}.
+get(Key, Type, MaximumSnapshotTime) ->
   logger:info(#{function => "GET_VERSION", key => Key, type => Type, snapshot_timestamp => MaximumSnapshotTime}),
 
   %% This part needs caching/optimization
@@ -99,7 +93,7 @@ get_version(Key, Type, MaximumSnapshotTime) ->
 %% @param Type the expected CRDT type of the object
 %% @param TransactionId the id of the transaction this update belongs to
 %% @param DownstreamOp the calculated downstream operation of a CRDT update
--spec update(key(), type(), txid(), op()) -> ok | {error, reason()}.
+-spec update(key(), type(), tx_id(), op()) -> ok | {error, reason()}.
 update(Key, Type, TransactionId, DownstreamOp) ->
   logger:info(#{function => "UPDATE", key => Key, type => Type, transaction => TransactionId, op => DownstreamOp}),
 
@@ -128,23 +122,13 @@ update(Key, Type, TransactionId, DownstreamOp) ->
 %% @param TransactionId the id of the transaction this commit belongs to
 %% @param CommitTime TODO
 %% @param SnapshotTime TODO
--spec commit([key()], txid(), dc_and_commit_time(), snapshot_time()) -> ok.
-commit(Keys, TransactionId, CommitTime, SnapshotTime) ->
-  logger:info(#{function => "COMMIT", keys => Keys, transaction => TransactionId, commit_timestamp => CommitTime, snapshot_timestamp => SnapshotTime}),
+-spec commit([key()], tx_id(), dc_and_commit_time(), snapshot_time()) -> ok.
+commit(Keys, TxId, CommitTime, SnapshotTime) ->
+  logger:info("Commit"),
+  Operation = create_commit_operation(CommitTime, SnapshotTime),
+  Entry = create_journal_entry(TxId, Operation),
 
-  Entry = #log_operation{
-      tx_id = TransactionId,
-      op_type = commit,
-      log_payload = #commit_log_payload{commit_time = CommitTime, snapshot_time = SnapshotTime}},
-
-  LogRecord = #log_record {
-    version = ?LOG_RECORD_VERSION,
-    op_number = #op_number{},        % not used
-    bucket_op_number = #op_number{}, % not used
-    log_operation = Entry
-  },
-
-  lists:map(fun(_Key) -> gingko_op_log:append(?LOGGING_MASTER, LogRecord) end, Keys),
+  gingko_op_log:append(?LOGGING_MASTER, Entry),
   ok.
 
 
@@ -157,31 +141,54 @@ commit(Keys, TransactionId, CommitTime, SnapshotTime) ->
 %%
 %% @param Keys list of keys to abort a transaction
 %% @param TransactionId the id of the transaction to abort
--spec abort([key()], txid()) -> ok.
-abort(Keys, TransactionId) ->
-  logger:info(#{function => "ABORT", keys => Keys, transaction => TransactionId}),
-
-  Entry = #log_operation{
-      tx_id = TransactionId,
-      op_type = abort,
-      log_payload = #abort_log_payload{}},
-
-  LogRecord = #log_record {
-    version = ?LOG_RECORD_VERSION,
-    op_number = #op_number{},        % not used
-    bucket_op_number = #op_number{}, % not used
-    log_operation = Entry
-  },
-
-  lists:map(fun(_Key) -> gingko_op_log:append(?LOGGING_MASTER, LogRecord) end, Keys),
+-spec abort([key()], tx_id()) -> ok.
+abort(Keys, TxId) ->
+  logger:info("Abort"),
+  Operation = create_abort_operation(),
+  Entry = create_journal_entry(TxId, Operation),
+  gingko_op_log:append(?LOGGING_MASTER, Entry),
   ok.
 
-
-%% @doc Sets a timestamp for when all operations below that timestamp are considered stable.
-%%
-%% Currently not implemented.
-%% @param SnapshotTime TODO
--spec set_stable(snapshot_time()) -> ok.
-set_stable(SnapshotTime) ->
-  logger:warning(#{function => "SET_STABLE", timestamp => SnapshotTime, message => "not implemented"}),
+-spec checkpoint() -> ok.
+checkpoint() ->
+  %% TODO
   ok.
+
+%% TODO add JSN (must be unique but they may be created concurrently)
+-spec create_journal_entry(tx_id(), operation()) -> journal_entry().
+create_journal_entry(TxId, Operation) ->
+  #journal_entry{
+    rt_timestamp = erlang:timestamp(),
+    tx_id = TxId,
+    operation = Operation
+  }.
+
+create_begin_operation() ->
+  #system_operation{
+    op_type = begin_txn,
+    op_args = #begin_txn_args{}
+  }.
+
+create_prepare_operation(PrepareTime) ->
+  #system_operation{
+    op_type = prepare_txn,
+    op_args = #prepare_txn_args{prepare_time = PrepareTime}
+  }.
+
+create_abort_operation() ->
+  #system_operation{
+    op_type = abort_txn,
+    op_args = #abort_txn_args{}
+  }.
+
+create_commit_operation(CommitTime, SnapshotTime) ->
+  #system_operation{
+    op_type = commit_txn,
+    op_args = #commit_txn_args{commit_time = CommitTime, snapshot_time = SnapshotTime}
+  }.
+
+create_checkpoint_operation() ->
+  #system_operation{
+    op_type = checkpoint,
+    op_args = #checkpoint_args{}
+  }.

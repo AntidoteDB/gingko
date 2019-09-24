@@ -6,7 +6,7 @@
 -type downstream_record() :: term(). 
 -type snapshot() :: term().
 -type bucket() :: term().
--type txid() :: term().
+-type tx_id() :: term().
 -define(BUCKET, "antidote").
 
 
@@ -41,6 +41,61 @@
 -type index_node() :: {chash:index_as_int(), node()}.
 
 
+
+
+
+
+
+-type begin_txn_args() :: #begin_txn_args{}.
+-record(begin_txn_args, {}).
+-type prepare_txn_args() :: #prepare_txn_args{}.
+-record(prepare_txn_args, {prepare_time :: non_neg_integer()}).
+-type commit_txn_args() :: #commit_txn_args{}.
+-record(commit_txn_args, {
+  commit_time :: dc_and_commit_time(),
+  snapshot_time :: snapshot_time()
+}).
+-type abort_txn_args() :: #abort_txn_args{}.
+-record(abort_txn_args, {}).
+-type checkpoint_args() :: #checkpoint_args{}.
+-record(checkpoint_args, {}).
+
+
+-type system_operation_type() :: begin_txn | prepare_txn | commit_txn | abort_txn | checkpoint.
+-type system_operation_args() :: begin_txn_args() | prepare_txn_args() | commit_txn_args() | abort_txn_args() | checkpoint_args().
+
+-type system_operation() :: #system_operation{}.
+-record(system_operation, {
+  op_type :: system_operation_type(),
+  op_args :: system_operation_args()
+}).
+
+
+-type object_operation() :: #object_operation{}.
+-record(object_operation, {
+  object_id :: op_num(),
+  op_type :: update | read, %%TODO add others
+  op_args :: term() %%TODO specify further if possible
+}).
+
+-type operation() :: system_operation() | object_operation().
+
+-record(journal_entry, {
+  version :: non_neg_integer(),
+  rt_timestamp :: clock_time(),
+  tx_id :: tx_id(),
+  operation :: operation()
+}).
+
+
+
+
+
+
+
+
+
+
 -record(materialized_snapshot, {
     %% This is the opid of the latest op in the list
     %% of ops for this key included in this snapshot
@@ -57,14 +112,10 @@
     op_param :: effect(),
     snapshot_time :: snapshot_time(),
     commit_time :: dc_and_commit_time(),
-    txid :: txid()
+    tx_id :: tx_id()
 }).
 
 -type clocksi_payload() :: #clocksi_payload{}.
--record(commit_log_payload, {
-    commit_time :: dc_and_commit_time(),
-    snapshot_time :: snapshot_time()
-}).
 
 -record(update_log_payload, {
     key :: key(),
@@ -77,32 +128,11 @@
 -type preflist() :: riak_core_apl:preflist().
 -type cache_id() :: ets:tab().
 
-
--record(abort_log_payload, {}).
-
--record(prepare_log_payload, {prepare_time :: non_neg_integer()}).
-
--type any_log_payload() :: #update_log_payload{}
-                         | #commit_log_payload{}
-                         | #abort_log_payload{}
-                         | #prepare_log_payload{}.
-
--record(log_operation, {
-    tx_id :: txid(),
-    op_type :: update
-             | prepare
-             | commit
-             | abort
-             | noop,
-    log_payload :: any_log_payload()
-}).
-
-
 %% The way records are stored in the log.
 -record(log_record, {
     %% The version of the log record, for backwards compatibility
     version :: non_neg_integer(),
     op_number :: #op_number{},
     bucket_op_number :: #op_number{},
-    log_operation :: #log_operation{}
+    log_operation :: #journal_entry{}
 }).
