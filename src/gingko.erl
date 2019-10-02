@@ -27,11 +27,12 @@
 
 %%---------------- API -------------------%%
 -export([
+  read/4,
   update/4,
-  commit/4,
-  abort/2,
-  get/3,
-  create_journal_entry/2
+  begin_txn/1,
+  prepare_txn/2,
+  commit_txn/3,
+  abort_txn/1
 ]).
 
 
@@ -51,9 +52,10 @@
 %% @param Key the Key under which the object is stored
 %% @param Type the expected CRDT type of the object
 %% @param MaximumSnapshotTime if not 'undefined', then retrieves the latest object version which is not older than this timestamp
--spec get(key(), type(), snapshot_time()) -> {ok, snapshot()}.
-get(Key, Type, MaximumSnapshotTime) ->
-  logger:info(#{function => "GET_VERSION", key => Key, type => Type, snapshot_timestamp => MaximumSnapshotTime}),
+-spec read(key(), type(), tx_id(), snapshot_time()) -> {ok, snapshot()}.
+read(Key, Type, TxId, MaximumSnapshotTime) ->
+
+  logger:info("Read"),
 
   %% This part needs caching/optimization
   %% Currently the steps to materialize are as follows:
@@ -94,22 +96,22 @@ get(Key, Type, MaximumSnapshotTime) ->
 %% @param TransactionId the id of the transaction this update belongs to
 %% @param DownstreamOp the calculated downstream operation of a CRDT update
 -spec update(key(), type(), tx_id(), op()) -> ok | {error, reason()}.
-update(Key, Type, TransactionId, DownstreamOp) ->
-  logger:info(#{function => "UPDATE", key => Key, type => Type, transaction => TransactionId, op => DownstreamOp}),
+update(Key, Type, TxId, DownstreamOp) ->
+  logger:info("Update"),
+  Operation = create_update_operation(Key, [Type, DownstreamOp]),
+  append_journal_entry(TxId, Operation).
 
-  Entry = #log_operation{
-      tx_id = TransactionId,
-      op_type = update,
-      log_payload = #update_log_payload{key = Key, type = Type , op = DownstreamOp}},
-  LogRecord = #log_record {
-    version = ?LOG_RECORD_VERSION,
-    op_number = #op_number{},        % not used
-    bucket_op_number = #op_number{}, % not used
-    log_operation = Entry
-  },
+-spec begin_txn(tx_id()) -> ok.
+begin_txn(TxId) ->
+  logger:info("Begin"),
+  Operation = create_begin_operation(),
+  append_journal_entry(TxId, Operation).
 
-  gingko_op_log:append(?LOGGING_MASTER, LogRecord).
-
+-spec prepare_txn(tx_id(), non_neg_integer()) -> ok.
+prepare_txn(TxId, PrepareTime) ->
+  logger:info("Prepare"),
+  Operation = create_prepare_operation(PrepareTime),
+  append_journal_entry(TxId, Operation).
 
 %% @doc Commits all operations belonging to given transaction id for given list of keys.
 %%
@@ -122,14 +124,11 @@ update(Key, Type, TransactionId, DownstreamOp) ->
 %% @param TransactionId the id of the transaction this commit belongs to
 %% @param CommitTime TODO
 %% @param SnapshotTime TODO
--spec commit([key()], tx_id(), dc_and_commit_time(), snapshot_time()) -> ok.
-commit(Keys, TxId, CommitTime, SnapshotTime) ->
+-spec commit_txn(tx_id(), dc_and_commit_time(), snapshot_time()) -> ok.
+commit_txn(TxId, CommitTime, SnapshotTime) ->
   logger:info("Commit"),
   Operation = create_commit_operation(CommitTime, SnapshotTime),
-  Entry = create_journal_entry(TxId, Operation),
-
-  gingko_op_log:append(?LOGGING_MASTER, Entry),
-  ok.
+  append_journal_entry(TxId, Operation).
 
 
 %% @doc Aborts all operations belonging to given transaction id for given list of keys.
@@ -141,17 +140,21 @@ commit(Keys, TxId, CommitTime, SnapshotTime) ->
 %%
 %% @param Keys list of keys to abort a transaction
 %% @param TransactionId the id of the transaction to abort
--spec abort([key()], tx_id()) -> ok.
-abort(Keys, TxId) ->
+-spec abort_txn(tx_id()) -> ok.
+abort_txn(TxId) ->
   logger:info("Abort"),
   Operation = create_abort_operation(),
-  Entry = create_journal_entry(TxId, Operation),
-  gingko_op_log:append(?LOGGING_MASTER, Entry),
-  ok.
+  append_journal_entry(TxId, Operation).
 
+%%TODO
 -spec checkpoint() -> ok.
 checkpoint() ->
-  %% TODO
+  logger:info("Checkpoint").
+
+-spec append_journal_entry(tx_id(), operation()) -> ok.
+append_journal_entry(TxId, Operation) ->
+  Entry = create_journal_entry(TxId, Operation),
+  gingko_op_log:append(?LOGGING_MASTER, Entry),
   ok.
 
 %% TODO add JSN (must be unique but they may be created concurrently)
@@ -163,32 +166,46 @@ create_journal_entry(TxId, Operation) ->
     operation = Operation
   }.
 
+-spec create_read_operation(key(), term()) -> object_operation().
+create_read_operation(Key, Args) ->
+  #object_operation{
+    object_id = Key,
+    op_type = read,
+    op_args = Args
+  }.
+
+-spec create_update_operation(key(), term()) -> object_operation().
+create_update_operation(Key, Args) ->
+  #object_operation{
+    object_id = Key,
+    op_type = update,
+    op_args = Args
+  }.
+
+-spec create_begin_operation() -> system_operation().
 create_begin_operation() ->
   #system_operation{
     op_type = begin_txn,
     op_args = #begin_txn_args{}
   }.
 
+-spec create_prepare_operation(non_neg_integer()) -> system_operation().
 create_prepare_operation(PrepareTime) ->
   #system_operation{
     op_type = prepare_txn,
     op_args = #prepare_txn_args{prepare_time = PrepareTime}
   }.
 
-create_abort_operation() ->
-  #system_operation{
-    op_type = abort_txn,
-    op_args = #abort_txn_args{}
-  }.
-
+-spec create_commit_operation(dc_and_commit_time(), snapshot_time()) -> system_operation().
 create_commit_operation(CommitTime, SnapshotTime) ->
   #system_operation{
     op_type = commit_txn,
     op_args = #commit_txn_args{commit_time = CommitTime, snapshot_time = SnapshotTime}
   }.
 
-create_checkpoint_operation() ->
+-spec create_abort_operation() -> system_operation().
+create_abort_operation() ->
   #system_operation{
-    op_type = checkpoint,
-    op_args = #checkpoint_args{}
+    op_type = abort_txn,
+    op_args = #abort_txn_args{}
   }.

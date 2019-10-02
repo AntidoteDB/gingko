@@ -62,6 +62,19 @@ update_snapshot(Type, Snapshot, Op) ->
             {error, {unexpected_operation, Op, Type}}
     end.
 
+-spec get_key_snapshot(key_struct(), log_data_structure()) -> snapshot().
+get_key_snapshot(KeyStruct, LogDataStructure) ->
+    Value = get_checkpointed_snapshot(KeyStruct, LogDataStructure),
+
+    ok.
+
+-spec get_checkpointed_snapshot(key_struct(), log_data_structure()) -> snapshot().
+get_checkpointed_snapshot(KeyStruct, LogDataStructure) ->
+    FindValue = dict:find(KeyStruct, LogDataStructure#log_data_structure.checkpoint_key_value_map),
+    case FindValue of
+        {ok, Value} -> Value;
+        error -> create_snapshot(KeyStruct#key_struct.type)
+    end.
 
 %% @doc
 -spec materialize_clocksi_payload(type(), snapshot(), [clocksi_payload()]) -> snapshot() | {error, {unexpected_operation, effect(), type()}}.

@@ -23,24 +23,6 @@
 %%% State
 %%%===================================================================
 
--record(state, {
-  % recovery related state
-  % receiver of the recovered log messages
-  recovery_receiver :: pid(),
-  % if recovering reply with busy status to requests
-  recovering :: true | false,
-
-  % log name, used for storing logs in a directory related to the name
-  log_name :: atom(),
-  % requests waiting until log is not recovering anymore or missing indices have been updated
-  waiting_for_reply = [] :: [any()],
-  % handles syncing and opening the log
-  sync_server :: pid(),
-
-  % stores current writable index
-  next_index :: integer()
-}).
-
 
 % log starts with this default index
 -define(STARTING_INDEX, 0).
@@ -48,17 +30,17 @@
 
 %% @doc Starts the op log server for given server name and recovery receiver process
 -spec start_link(term(), pid()) -> {ok, pid()}.
-start_link(LogName, RecoveryReceiver) ->
-  gen_server:start_link({local, ?MODULE}, ?MODULE, {LogName, RecoveryReceiver}, []).
+start_link({JournalLogName, CheckpointLogName}, RecoveryReceiver) ->
+  gen_server:start_link({local, ?MODULE}, ?MODULE, {{JournalLogName, CheckpointLogName}, RecoveryReceiver}, []).
 
 
 %% @doc Initializes the internal server state
--spec init({node(), pid()}) -> {ok, #state{}}.
-init({LogName, RecoveryReceiver}) ->
+-spec init({{string(), string()}, pid()}) -> {ok, #log_server_state{}}.
+init({{JournalLogName, CheckpointLogName}, RecoveryReceiver}) ->
   logger:notice(#{
     action => "Starting op log server",
     registered_as => ?MODULE,
-    name => LogName,
+    name => JournalLogName,
     receiver => RecoveryReceiver
   }),
 
@@ -72,16 +54,10 @@ init({LogName, RecoveryReceiver}) ->
   end,
 
 
-  {ok, LogServer} = gingko_sync_server:start_link(LogName),
+  {ok, LogServer} = gingko_sync_server:start_link({JournalLogName, CheckpointLogName}),
 
   gen_server:cast(self(), start_recovery),
-  {ok, #state{
-    log_name = LogName,
-    recovery_receiver = ActualReceiver,
-    recovering = true,
-    sync_server = LogServer,
-    next_index = ?STARTING_INDEX
-  }}.
+  {ok, create_initial_state(ActualReceiver, JournalLogName, CheckpointLogName, LogServer)}.
 
 
 %% ------------------
@@ -93,17 +69,18 @@ init({LogName, RecoveryReceiver}) ->
 %% or
 %% 2) finishes async recovery and replies to waiting processes
 -spec handle_cast
-    (start_recovery, #state{}) -> {noreply, #state{}};          %1)
-    ({finish_recovery, #{}}, #state{}) -> {noreply, #state{}}.  %2)
-handle_cast(start_recovery, State) when State#state.recovering == true ->
-  LogName = State#state.log_name,
-  Receiver = State#state.recovery_receiver,
-  LogServer = State#state.sync_server,
-  logger:info("[~p] Async recovery started", [LogName]),
+    (start_recovery, #log_server_state{}) -> {noreply, #log_server_state{}};          %1)
+    ({finish_recovery, #{}}, #log_server_state{}) -> {noreply, #log_server_state{}}.  %2)
+handle_cast(start_recovery, State) when State#log_server_state.recovering == true ->
+  JournalLogName = State#log_server_state.journal_log_name,
+  CheckpointLogName = State#log_server_state.checkpoint_log_name,
+  Receiver = State#log_server_state.recovery_receiver,
+  LogServer = State#log_server_state.sync_server,
+  logger:info("[~p] Async recovery started", [JournalLogName]),
 
   GenServer = self(),
   AsyncRecovery = fun() ->
-    NextIndex = recover_all_logs(LogName, Receiver, LogServer),
+    NextIndex = recover_all_logs(JournalLogName, Receiver, LogServer),
     %% TODO recovery
     NextIndex = 0,
     gen_server:cast(GenServer, {finish_recovery, NextIndex})
@@ -114,19 +91,19 @@ handle_cast(start_recovery, State) when State#state.recovering == true ->
 handle_cast({finish_recovery, NextIndexMap}, State) ->
   % TODO
   % reply to waiting processes to try their requests again
-  reply_retry_to_waiting(State#state.waiting_for_reply),
+  reply_retry_to_waiting(State#log_server_state.waiting_for_reply),
 
   % save write-able index map and finish recovery
-  logger:info("[~p] Recovery process finished", [State#state.log_name]),
-  {noreply, State#state{recovering = false, next_index = NextIndexMap, waiting_for_reply = []}};
+  logger:info("[~p] Recovery process finished", [State#log_server_state.journal_log_name]),
+  {noreply, State#log_server_state{recovering = false, next_index = NextIndexMap, waiting_for_reply = []}};
 
 handle_cast(Msg, State) ->
-  logger:warning("[~p] Swallowing unexpected message: ~p", [State#state.log_name, Msg]),
+  logger:warning("[~p] Swallowing unexpected message: ~p", [State#log_server_state.journal_log_name, Msg]),
   {noreply, State}.
 
 
 terminate(_Reason, State) ->
-  gen_server:stop(State#state.sync_server),
+  gen_server:stop(State#log_server_state.sync_server),
   ok.
 
 
@@ -135,32 +112,32 @@ terminate(_Reason, State) ->
 %% or
 %% 2) reads the log
 -spec handle_call
-    ({add_log_entry, log_entry()}, gen_from(), #state{}) ->
-  {noreply, #state{}} | %% if still recovering
-  {reply, {error, index_already_written}, #state{}} | %% if index is already written
-  {reply, ok, #state{}}; %% entry is persisted
-    ({read_log_entries, any(), integer(), integer(), fun((log_entry(), Acc) -> Acc), Acc}, gen_from(), #state{}) ->
-  {noreply, #state{}} | %% if still recovering or index for given node behind
-  {reply, {ok, Acc}, #state{}}. %% accumulated entries
+    ({add_log_entry, log_entry()}, gen_from(), #log_server_state{}) ->
+  {noreply, #log_server_state{}} | %% if still recovering
+  {reply, {error, index_already_written}, #log_server_state{}} | %% if index is already written
+  {reply, ok, #log_server_state{}}; %% entry is persisted
+    ({read_log_entries, any(), integer(), integer(), fun((log_entry(), Acc) -> Acc), Acc}, gen_from(), #log_server_state{}) ->
+  {noreply, #log_server_state{}} | %% if still recovering or index for given node behind
+  {reply, {ok, Acc}, #log_server_state{}}. %% accumulated entries
 
-handle_call({add_log_entry, _Data}, From, State) when State#state.recovering == true ->
-  logger:notice("[~p] Waiting for recovery: ~p", [State#state.log_name, From]),
-  Waiting = State#state.waiting_for_reply,
-  {noreply, State#state{ waiting_for_reply = Waiting ++ [From] }};
+handle_call({add_log_entry, _Data}, From, State) when State#log_server_state.recovering == true ->
+  logger:notice("[~p] Waiting for recovery: ~p", [State#log_server_state.journal_log_name, From]),
+  Waiting = State#log_server_state.waiting_for_reply,
+  {noreply, State#log_server_state{ waiting_for_reply = Waiting ++ [From] }};
 
 handle_call({add_log_entry, Data}, From, State) ->
   logger:notice(#{
     action => "Append to log",
-    name => State#state.log_name,
+    name => State#log_server_state.journal_log_name,
     data => Data,
     from => From
   }),
 
 
-  NextIndex = State#state.next_index,
-  LogName = State#state.log_name,
-  LogServer = State#state.sync_server,
-  Waiting = State#state.waiting_for_reply,
+  NextIndex = State#log_server_state.next_index,
+  LogName = State#log_server_state.journal_log_name,
+  LogServer = State#log_server_state.sync_server,
+  Waiting = State#log_server_state.waiting_for_reply,
 
   {ok, Log} = gen_server:call(LogServer, {get_log, LogName}),
   logger:notice(#{
@@ -177,11 +154,11 @@ handle_call({add_log_entry, Data}, From, State) ->
   receive log_persisted -> ok end,
 
   logger:info("[~p] Log entry at ~p persisted",
-    [State#state.log_name, NextIndex]),
+    [State#log_server_state.journal_log_name, NextIndex]),
 
   % index of another request may be up to date, send retry messages
   reply_retry_to_waiting(Waiting),
-  {reply, ok, State#state{
+  {reply, ok, State#log_server_state{
     % increase index counter for node by one
     next_index = NextIndex + 1,
     % empty waiting queue
@@ -190,21 +167,21 @@ handle_call({add_log_entry, Data}, From, State) ->
 
 
 handle_call(_Request, From, State)
-  when State#state.recovering == true ->
-  logger:info("[~p] Read, waiting for recovery", [State#state.log_name]),
-  Waiting = State#state.waiting_for_reply,
-  {noreply, State#state{ waiting_for_reply = Waiting ++ [From] }};
+  when State#log_server_state.recovering == true ->
+  logger:info("[~p] Read, waiting for recovery", [State#log_server_state.journal_log_name]),
+  Waiting = State#log_server_state.waiting_for_reply,
+  {noreply, State#log_server_state{ waiting_for_reply = Waiting ++ [From] }};
 
 handle_call({read_log_entries, FirstIndex, LastIndex, F, Acc}, _From, State) ->
-  LogName = State#state.log_name,
-  LogServer = State#state.sync_server,
-  Waiting = State#state.waiting_for_reply,
+  LogName = State#log_server_state.journal_log_name,
+  LogServer = State#log_server_state.sync_server,
+  Waiting = State#log_server_state.waiting_for_reply,
   %% simple implementation, read ALL terms, then filter
   %% can be improved performance wise, stop at last index
 
   {ok, Log} = gen_server:call(LogServer, {get_log, LogName}),
   %% TODO this will most likely cause a timeout to the gen_server caller, what to do?
-  Terms = read_all(Log),
+  Terms = read_journal_log(Log),
 
   % filter index
   FilterByIndex = fun({Index, _}) -> Index >= FirstIndex andalso ((LastIndex == all) or (Index =< LastIndex)) end,
@@ -214,7 +191,7 @@ handle_call({read_log_entries, FirstIndex, LastIndex, F, Acc}, _From, State) ->
   ReplyAcc = lists:foldl(F, Acc, FilteredTerms),
 
   reply_retry_to_waiting(Waiting),
-  {reply, {ok, ReplyAcc}, State#state{waiting_for_reply = []}}.
+  {reply, {ok, ReplyAcc}, State#log_server_state{waiting_for_reply = []}}.
 
 
 handle_info(Msg, State) ->
@@ -248,7 +225,7 @@ reply_retry_to_waiting(WaitingProcesses) ->
 -spec recover_all_logs(server(), pid(), pid()) -> any().
 %%noinspection ErlangUnboundVariable
 recover_all_logs(LogName, Receiver, LogServer) when is_atom(LogName) ->
-  recover_all_logs(atom_to_list(LogName), Receiver, LogServer);
+  recover_all_logs(LogName, Receiver, LogServer);
 recover_all_logs(LogName, Receiver, LogServer) ->
   % make sure the folder exists
   LogPath = gingko_sync_server:log_dir_base(LogName),
@@ -264,7 +241,7 @@ recover_all_logs(LogName, Receiver, LogServer) ->
     {ok, Log} = gen_server:call(LogServer, {get_log, LogName}),
 
     % read all terms
-    Terms = read_all(Log),
+    Terms = read_journal_log(Log),
 
     logger:notice(#{
       terms => Terms
@@ -301,16 +278,63 @@ recover_all_logs(LogName, Receiver, LogServer) ->
 
 
 %% @doc reads all terms from given log
--spec read_all(log()) -> [term()].
-read_all(Log) ->
-  read_all(Log, [], start).
+-spec read_journal_log(log()) -> [term()].
+read_journal_log(Log) ->
+  read_journal_log(Log, [], start).
 
 
-read_all(Log, Terms, Cont) ->
+read_journal_log(Log, Terms, Cont) ->
   case disk_log:chunk(Log, Cont) of
     eof -> Terms;
-    {Cont2, ReadTerms} -> read_all(Log, Terms ++ ReadTerms, Cont2)
+    {Cont2, ReadTerms} -> read_journal_log(Log, Terms ++ ReadTerms, Cont2)
   end.
+
+%% @doc reads all terms from given log
+-spec read_checkpoint_log(log()) -> dict().
+read_checkpoint_log(Log) ->
+  case disk_log:chunk(Log, start) of
+    eof -> dict:new();
+    {_Cont, ReadTerms} -> ReadTerms
+  end.
+
+create_initial_state(ActualReceiver, JournalLogName, CheckpointLogName, LogServer) ->
+  #log_server_state{
+    recovery_receiver = ActualReceiver,
+    recovering = true,
+    journal_log_name = JournalLogName,
+    checkpoint_log_name = CheckpointLogName,
+    log_data_structure = not_open,
+
+    sync_server = LogServer,
+    next_index = ?STARTING_INDEX
+  }.
+
+create_updated_state(State, JournalLog, CheckpointLog) ->
+  NewLogDataStructure = #log_data_structure{
+                            persistent_journal_log = JournalLog,
+                            journal_entry_list = read_journal_log(JournalLog),
+                            persistent_checkpoint_log = CheckpointLog,
+                            checkpoint_key_value_map = read_checkpoint_log(CheckpointLog) },
+  State#log_server_state{
+    log_data_structure = NewLogDataStructure
+  }.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 %%%===================================================================

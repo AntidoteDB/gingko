@@ -34,7 +34,7 @@
 -include("gingko.hrl").
 
 %% Start-up and shutdown
--export([start_link/2, stop/1]).
+-export([stop/1]).
 
 %% API functions
 -export([append/2, read_log_entries/3, read_log_entries/5]).
@@ -44,23 +44,6 @@
 %% Implementation
 %% ==============
 
-%% @doc Starts and links the operation log process.
-%%
-%% After starting, log recovery starts automatically.
-%% For each entry in the log found in the directory denoted by the log name, a message
-%%     {log_recovery, {Index, LogEntry}}
-%% is sent to the RecoveryReceiver and when recovery is finished a message
-%%     'log_recovery_done'
-%% is sent.
-%%
-%% Log recovery can be disabled via the 'log_persistence' flag.
-%%
-%% @param LogName the name for the operation log.
-%% @param RecoveryReceiver the process which receives recovery messages.
--spec start_link(node(), pid()) -> {ok, pid()} | ignore | {error, Error :: any()}.
-start_link(LogName, RecoveryReceiver) ->
-  gingko_op_log_server:start_link(LogName, RecoveryReceiver).
-
 
 %% @doc Appends a log entry to the end of the log.
 %%
@@ -68,21 +51,21 @@ start_link(LogName, RecoveryReceiver) ->
 %%
 %% @param Log the process returned by start_link.
 %% @param Entry the log record to append.
--spec append(node(), #log_record{}) -> ok  | {error, Reason :: term()}.
-append(Log, Entry) ->
-  case gen_server:call(Log, {add_log_entry, Entry}) of
+-spec append(node(), journal_entry()) -> ok  | {error, Reason :: term()}.
+append(LogNode, Entry) ->
+  case gen_server:call(LogNode, {add_log_entry, Entry}) of
     %% request got stuck in queue (server busy) and got retry signal
-    retry -> logger:debug("Retrying request"), append(Log, Entry);
+    retry -> logger:debug("Retrying request"), append(LogNode, Entry);
     Reply -> Reply
   end.
 
 
 %% @doc Read all log entries with a simple list accumulator.
 %% @equiv read_log_entries(Log, FirstIndex, LastIndex, fun(D,Acc)->Acc++[D]end,[])
--spec read_log_entries(node(), integer(), integer() | all) -> {ok, [#log_record{}]}.
-read_log_entries(Log, FirstIndex, LastIndex) ->
+-spec read_log_entries(node(), integer(), integer() | all) -> {ok, [journal_entry()]}.
+read_log_entries(LogNode, FirstIndex, LastIndex) ->
   F = fun(D, Acc) -> Acc ++ [D] end,
-  read_log_entries(Log, FirstIndex, LastIndex, F, []).
+  read_log_entries(LogNode, FirstIndex, LastIndex, F, []).
 
 
 %% @doc Read all log entries belonging to the given log and in a certain range with a custom accumulator.
@@ -96,10 +79,10 @@ read_log_entries(Log, FirstIndex, LastIndex) ->
 %% @param FoldFunction function that takes a single log entry and the current accumulator and returns the new accumulator
 %% @param Starting accumulator
 -spec read_log_entries(node(), integer(), integer() | all,
-    fun((#log_record{}, Acc) -> Acc), Acc) -> {ok, Acc}.
-read_log_entries(Log, FirstIndex, LastIndex, FoldFunction, Accumulator) ->
-  case gen_server:call(Log, {read_log_entries, FirstIndex, LastIndex, FoldFunction, Accumulator}) of
-    retry -> logger:debug("Retrying request"), read_log_entries(Log, FirstIndex, LastIndex, FoldFunction, Accumulator);
+    fun((journal_entry(), Acc) -> Acc), Acc) -> {ok, Acc}.
+read_log_entries(LogNode, FirstIndex, LastIndex, FoldFunction, Accumulator) ->
+  case gen_server:call(LogNode, {read_log_entries, FirstIndex, LastIndex, FoldFunction, Accumulator}) of
+    retry -> logger:debug("Retrying request"), read_log_entries(LogNode, FirstIndex, LastIndex, FoldFunction, Accumulator);
     Reply -> Reply
   end.
 
@@ -107,5 +90,5 @@ read_log_entries(Log, FirstIndex, LastIndex, FoldFunction, Accumulator) ->
 %% @doc Stops the op_log process.
 %% @param Log log process to stop
 -spec stop(node()) -> any().
-stop(Log) ->
-  gen_server:stop(Log).
+stop(LogNode) ->
+  gen_server:stop(LogNode).
