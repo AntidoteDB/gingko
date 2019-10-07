@@ -27,8 +27,8 @@
 
 %%---------------- API -------------------%%
 -export([
-  read/4,
-  update/4,
+  read/3,
+  update/3,
   begin_txn/1,
   prepare_txn/2,
   commit_txn/3,
@@ -52,8 +52,8 @@
 %% @param Key the Key under which the object is stored
 %% @param Type the expected CRDT type of the object
 %% @param MaximumSnapshotTime if not 'undefined', then retrieves the latest object version which is not older than this timestamp
--spec read(key(), type(), tx_id(), snapshot_time()) -> {ok, snapshot()}.
-read(Key, Type, TxId, MaximumSnapshotTime) ->
+-spec read(key_struct(), tx_id(), snapshot_time()) -> {ok, snapshot()}.
+read(KeyStruct, TxId, MaximumSnapshotTime) ->
 
   logger:info("Read"),
 
@@ -66,10 +66,11 @@ read(Key, Type, TxId, MaximumSnapshotTime) ->
   %% * return that materialized version
 
   %% TODO Get up to time SnapshotTime instead of all
-  {ok, Data} = gingko_op_log:read_log_entries(?LOGGING_MASTER, 0, all),
-  logger:debug(#{step => "unfiltered log", payload => Data, snapshot_timestamp => MaximumSnapshotTime}),
-
-  {Ops, CommittedOps} = log_utilities:filter_terms_for_key(Data, {key, Key}, undefined, MaximumSnapshotTime, dict:new(), dict:new()),
+  {ok, JournalEntries} = gingko_op_log:read_log_entries(?LOGGING_MASTER, 0, all),
+  logger:debug(#{step => "unfiltered log", payload => JournalEntries, snapshot_timestamp => MaximumSnapshotTime}),
+  Key = KeyStruct#key_struct.key,
+  Type = KeyStruct#key_struct.type,
+  {Ops, CommittedOps} = log_utilities:filter_terms_for_key(JournalEntries, {key, Key}, undefined, MaximumSnapshotTime, dict:new(), dict:new()),
   logger:debug(#{step => "filtered terms", ops => Ops, committed => CommittedOps}),
 
   case dict:find(Key, CommittedOps) of
@@ -95,10 +96,10 @@ read(Key, Type, TxId, MaximumSnapshotTime) ->
 %% @param Type the expected CRDT type of the object
 %% @param TransactionId the id of the transaction this update belongs to
 %% @param DownstreamOp the calculated downstream operation of a CRDT update
--spec update(key(), type(), tx_id(), op()) -> ok | {error, reason()}.
-update(Key, Type, TxId, DownstreamOp) ->
+-spec update(key_struct(), tx_id(), op()) -> ok | {error, reason()}.
+update(KeyStruct, TxId, DownstreamOp) ->
   logger:info("Update"),
-  Operation = create_update_operation(Key, [Type, DownstreamOp]),
+  Operation = create_update_operation(KeyStruct, DownstreamOp),
   append_journal_entry(TxId, Operation).
 
 -spec begin_txn(tx_id()) -> ok.
@@ -161,23 +162,24 @@ append_journal_entry(TxId, Operation) ->
 -spec create_journal_entry(tx_id(), operation()) -> journal_entry().
 create_journal_entry(TxId, Operation) ->
   #journal_entry{
+    uuid = uuidgenerator:generate(),
     rt_timestamp = erlang:timestamp(),
     tx_id = TxId,
     operation = Operation
   }.
 
--spec create_read_operation(key(), term()) -> object_operation().
-create_read_operation(Key, Args) ->
+-spec create_read_operation(key_struct(), term()) -> object_operation().
+create_read_operation(KeyStruct, Args) ->
   #object_operation{
-    object_id = Key,
+    key_struct = KeyStruct,
     op_type = read,
     op_args = Args
   }.
 
--spec create_update_operation(key(), term()) -> object_operation().
-create_update_operation(Key, Args) ->
+-spec create_update_operation(key_struct(), term()) -> object_operation().
+create_update_operation(KeyStruct, Args) ->
   #object_operation{
-    object_id = Key,
+    key_struct = KeyStruct,
     op_type = update,
     op_args = Args
   }.

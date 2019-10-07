@@ -37,58 +37,35 @@
 -export([stop/1]).
 
 %% API functions
--export([append/2, read_log_entries/3, read_log_entries/5]).
+-export([append/2, read_journal_entries/1]).
 
 
 %% ==============
 %% Implementation
 %% ==============
 
-
-%% @doc Appends a log entry to the end of the log.
-%%
-%% When the function returns 'ok' the entry is guaranteed to be persistently stored.
-%%
-%% @param Log the process returned by start_link.
-%% @param Entry the log record to append.
--spec append(node(), journal_entry()) -> ok  | {error, Reason :: term()}.
-append(LogNode, Entry) ->
-  case gen_server:call(LogNode, {add_log_entry, Entry}) of
+-spec append(node(), [journal_entry()]) -> ok  | {error, Reason :: term()}.
+append(LogNode, JournalEntries) ->
+  case gen_server:call(LogNode, {add_log_entry, JournalEntries}) of
     %% request got stuck in queue (server busy) and got retry signal
-    retry -> logger:debug("Retrying request"), append(LogNode, Entry);
+    retry -> logger:debug("Retrying request"), append(LogNode, JournalEntries);
     Reply -> Reply
   end.
 
-
-%% @doc Read all log entries with a simple list accumulator.
-%% @equiv read_log_entries(Log, FirstIndex, LastIndex, fun(D,Acc)->Acc++[D]end,[])
--spec read_log_entries(node(), integer(), integer() | all) -> {ok, [journal_entry()]}.
-read_log_entries(LogNode, FirstIndex, LastIndex) ->
-  F = fun(D, Acc) -> Acc ++ [D] end,
-  read_log_entries(LogNode, FirstIndex, LastIndex, F, []).
-
-
-%% @doc Read all log entries belonging to the given log and in a certain range with a custom accumulator.
-%%
-%% The function works similar to lists:foldl for reading the entries.
-%%
-%% Returns the accumulator value after reading all matching log entries.
-%% @param Log the process returned by start_link.
-%% @param FirstIndex start reading from this index on, inclusive
-%% @param LastIndex stop at this index, inclusive
-%% @param FoldFunction function that takes a single log entry and the current accumulator and returns the new accumulator
-%% @param Starting accumulator
--spec read_log_entries(node(), integer(), integer() | all,
-    fun((journal_entry(), Acc) -> Acc), Acc) -> {ok, Acc}.
-read_log_entries(LogNode, FirstIndex, LastIndex, FoldFunction, Accumulator) ->
-  case gen_server:call(LogNode, {read_log_entries, FirstIndex, LastIndex, FoldFunction, Accumulator}) of
-    retry -> logger:debug("Retrying request"), read_log_entries(LogNode, FirstIndex, LastIndex, FoldFunction, Accumulator);
+-spec read_journal_entries(node()) -> [journal_entry()].
+read_journal_entries(LogNode) ->
+  case gen_server:call(LogNode, {read_log_entries, all}) of
+    retry -> logger:debug("Retrying request"), read_journal_entries(LogNode);
     Reply -> Reply
   end.
 
+-spec read_journal_entries(node(), key()) -> [journal_entry()].
+read_journal_entries(LogNode, Key) ->
+  case gen_server:call(LogNode, {read_log_entries, Key}) of
+    retry -> logger:debug("Retrying request"), read_journal_entries(LogNode, Key);
+    Reply -> Reply
+  end.
 
-%% @doc Stops the op_log process.
-%% @param Log log process to stop
 -spec stop(node()) -> any().
 stop(LogNode) ->
   gen_server:stop(LogNode).

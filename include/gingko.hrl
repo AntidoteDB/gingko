@@ -56,23 +56,12 @@
 
 -type log_server_state() :: #log_server_state{}.
 -record(log_server_state, {
-  % recovery related state
-  % receiver of the recovered log messages
-  recovery_receiver :: pid(),
-  % if recovering reply with busy status to requests
-  recovering :: true | false,
-
   % log name, used for storing logs in a directory related to the name
   journal_log_name :: string(),
   checkpoint_log_name :: string(),
   log_data_structure :: log_data_structure() | not_open,
-  % requests waiting until log is not recovering anymore or missing indices have been updated
-  waiting_for_reply = [] :: [any()],
   % handles syncing and opening the log
-  sync_server :: pid(),
-
-  % stores current writable index
-  next_index :: integer()
+  sync_server :: pid()
 }).
 
 -type key_struct() :: #key_struct{}.
@@ -116,7 +105,7 @@
 
 -type object_operation() :: #object_operation{}.
 -record(object_operation, {
-  object_id :: op_num(),
+  key_struct :: key_struct(),
   op_type :: update | read, %%TODO add others
   op_args :: term() %%TODO specify further if possible
 }).
@@ -124,21 +113,11 @@
 -type operation() :: system_operation() | object_operation().
 
 -record(journal_entry, {
-  version :: non_neg_integer(),
+  uuid :: term(),
   rt_timestamp :: clock_time(),
   tx_id :: tx_id(),
   operation :: operation()
 }).
-
-
-
-
-
-
-
-
-
-
 
 -type clocksi_payload() :: #clocksi_payload{}.
 -record(clocksi_payload, {
@@ -150,8 +129,6 @@
     tx_id :: tx_id()
 }).
 
-
-
 -record(update_log_payload, {
     key :: key(),
     type :: type(),
@@ -162,12 +139,3 @@
 -type reason() :: term().
 -type preflist() :: riak_core_apl:preflist().
 -type cache_id() :: ets:tab().
-
-%% The way records are stored in the log.
--record(log_record, {
-    %% The version of the log record, for backwards compatibility
-    version :: non_neg_integer(),
-    op_number :: #op_number{},
-    bucket_op_number :: #op_number{},
-    log_operation :: #journal_entry{}
-}).

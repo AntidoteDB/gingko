@@ -70,10 +70,12 @@ get_key_snapshot(KeyStruct, LogDataStructure) ->
 
 -spec get_checkpointed_snapshot(key_struct(), log_data_structure()) -> snapshot().
 get_checkpointed_snapshot(KeyStruct, LogDataStructure) ->
-    FindValue = dict:find(KeyStruct, LogDataStructure#log_data_structure.checkpoint_key_value_map),
+    CheckpointKeyValueMap = LogDataStructure#log_data_structure.checkpoint_key_value_map,
+    Type = KeyStruct#key_struct.type,
+    FindValue = dict:find(KeyStruct, CheckpointKeyValueMap),
     case FindValue of
         {ok, Value} -> Value;
-        error -> create_snapshot(KeyStruct#key_struct.type)
+        error -> create_snapshot(Type)
     end.
 
 %% @doc
