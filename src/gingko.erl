@@ -66,7 +66,38 @@ read(KeyStruct, TxId, MaximumSnapshotTime) ->
   %% * return that materialized version
 
   %% TODO Get up to time SnapshotTime instead of all
-  {ok, JournalEntries} = gingko_op_log:read_log_entries(?LOGGING_MASTER, 0, all),
+  {ok, JournalEntries} = read_journal_entries(?LOGGING_MASTER, 0, all),
+  logger:debug(#{step => "unfiltered log", payload => JournalEntries, snapshot_timestamp => MaximumSnapshotTime}),
+  Key = KeyStruct#key_struct.key,
+  Type = KeyStruct#key_struct.type,
+  {Ops, CommittedOps} = log_utilities:filter_terms_for_key(JournalEntries, {key, Key}, undefined, MaximumSnapshotTime, dict:new(), dict:new()),
+  logger:debug(#{step => "filtered terms", ops => Ops, committed => CommittedOps}),
+
+  case dict:find(Key, CommittedOps) of
+    {ok, PayloadForKey} -> PayloadForKey = PayloadForKey;
+    error -> PayloadForKey = []
+  end,
+
+  MaterializedObject = materializer:materialize_clocksi_payload(Type, materializer:create_snapshot(Type), PayloadForKey),
+  logger:info(#{step => "materialize", materialized => MaterializedObject}),
+
+  {ok, MaterializedObject}.
+
+-spec read(key_struct(), tx_id(), snapshot_time()) -> {ok, snapshot()}.
+read(KeyStruct, TxId, MaximumSnapshotTime) ->
+
+  logger:info("Read"),
+
+  %% This part needs caching/optimization
+  %% Currently the steps to materialize are as follows:
+  %% * read ALL log entries from the persistent log file
+  %% * filter log entries by key
+  %% * filter furthermore only by committed operations
+  %% * materialize operations into materialized version
+  %% * return that materialized version
+
+  %% TODO Get up to time SnapshotTime instead of all
+  {ok, JournalEntries} = read_journal_entries(?LOGGING_MASTER, 0, all),
   logger:debug(#{step => "unfiltered log", payload => JournalEntries, snapshot_timestamp => MaximumSnapshotTime}),
   Key = KeyStruct#key_struct.key,
   Type = KeyStruct#key_struct.type,
@@ -211,3 +242,25 @@ create_abort_operation() ->
     op_type = abort_txn,
     op_args = #abort_txn_args{}
   }.
+
+-spec append(node(), [journal_entry()]) -> ok  | {error, Reason :: term()}.
+append(LogNode, JournalEntries) ->
+  case gen_server:call(LogNode, {add_journal_entries, JournalEntries}) of
+    %% request got stuck in queue (server busy) and got retry signal
+    retry -> logger:debug("Retrying request"), append(LogNode, JournalEntries);
+    Reply -> Reply
+  end.
+
+-spec read_journal_entries(node()) -> [journal_entry()].
+read_journal_entries(LogNode) ->
+  case gen_server:call(LogNode, {get_journal_entries, all}) of
+    retry -> logger:debug("Retrying request"), read_journal_entries(LogNode);
+    Reply -> Reply
+  end.
+
+-spec read_journal_entries(node(), key()) -> [journal_entry()].
+read_journal_entries(LogNode, Key) ->
+  case gen_server:call(LogNode, {get_journal_entries, Key}) of
+    retry -> logger:debug("Retrying request"), read_journal_entries(LogNode, Key);
+    Reply -> Reply
+  end.

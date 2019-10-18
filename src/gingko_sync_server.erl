@@ -149,14 +149,14 @@ open_logs(State) ->
 close_logs(State) ->
   JournalLog = State#sync_server_state.journal_log,
   CheckpointLog = State#sync_server_state.checkpoint_log,
-  if (JournalLog =:= not_open) -> disk_log:close(JournalLog) end,
-  if (CheckpointLog =:= not_open) -> disk_log:close(CheckpointLog) end,
+  if (JournalLog /= not_open) -> disk_log:close(JournalLog) end,
+  if (CheckpointLog /= not_open) -> disk_log:close(CheckpointLog) end,
   State#sync_server_state{ journal_log = not_open, checkpoint_log = not_open }.
 
 -spec sync_logs(sync_server_state()) -> sync_server_state().
 sync_logs(State) ->
   JournalLog = State#sync_server_state.journal_log,
   CheckpointLog = State#sync_server_state.checkpoint_log,
-  if (JournalLog =:= not_open) -> disk_log:sync(JournalLog) end,
-  if (CheckpointLog =:= not_open) -> disk_log:sync(CheckpointLog) end,
+  if (JournalLog /= not_open) -> disk_log:sync(JournalLog) end,
+  if (CheckpointLog /= not_open) -> disk_log:sync(CheckpointLog) end,
   State.

@@ -79,7 +79,7 @@ get_checkpointed_snapshot(KeyStruct, LogDataStructure) ->
     end.
 
 %% @doc
--spec materialize_clocksi_payload(type(), snapshot(), [clocksi_payload()]) -> snapshot() | {error, {unexpected_operation, effect(), type()}}.
+-spec materialize_clocksi_payload(key_struct(), snapshot(), [clocksi_payload()]) -> snapshot() | {error, {unexpected_operation, effect(), type()}}.
 materialize_clocksi_payload(_Type, Snapshot, []) ->
     Snapshot;
 materialize_clocksi_payload(Type, Snapshot, [ClocksiPayload | Rest]) ->

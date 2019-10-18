@@ -8,8 +8,43 @@
   filter_terms_for_key/6
 ]).
 
+journal_entry_contains_key(Key, JournalEntry) ->
+  Operation = JournalEntry#journal_entry.operation,
+  if
+    is_record(Operation, object_operation) -> Operation#object_operation.key_struct#key_struct.key == Key;
+    true -> false
+  end.
 
-get_journal_entries_for_key
+journal_entries_contains_key(Key, JournalEntries) ->
+  lists:any(fun(J) -> journal_entry_contains_key(Key, J) end, JournalEntries).
+
+contains_commit_journal_entry(JournalEntries) ->
+  lists:any(fun(J) -> is_commit_journal_entry(J) end, JournalEntries).
+
+is_commit_journal_entry(JournalEntry) ->
+  Operation = JournalEntry#journal_entry.operation,
+  if
+    is_record(Operation, system_operation) -> Operation#system_operation.op_type == commit_txn;
+    true -> false
+  end.
+
+groupBy(Fun, List) -> lists:foldr(fun({Key, Value}, Dict) -> dict:append(Key, Value, Dict) end , dict:new(), [ {Fun(X), X} || X <- List ]).
+
+get_indexed_journal_entries(JournalEntries) ->
+  lists:mapfoldl(fun(J, Index) -> {{Index, J}, Index + 1} end, 0, JournalEntries).
+
+get_committed_journal_entries_for_key(Key, JournalEntries) ->
+
+  IndexedJournalEntries = get_indexed_journal_entries(JournalEntries),
+  TxIdToJournalEntries = groupBy(fun({_Index, J}) -> J#journal_entry.tx_id end, IndexedJournalEntries),
+  TxIdToJournalEntries = dict:filter(fun({_TxId, JList}) -> journal_entries_contains_key(Key, JList) andalso contains_commit_journal_entry(JList) end, TxIdToJournalEntries),
+  TxIdToJournalEntries = dict:map(fun(_TxId, JList) -> lists:sort(fun({Index1, _J1}, {Index2, _J2}) -> Index1 > Index2 end, JList) end, TxIdToJournalEntries),
+
+
+  CommitJournalEntries = lists:filter(fun(JournalEntry) -> is_commit_journal_entry(JournalEntry) end, JournalEntries),
+  CommittedTxIds = lists:map(fun(JournalEntry) -> JournalEntry#journal_entry.tx_id end, CommitJournalEntries),
+
+  ok.
 
 %% @doc Given a list of log_records, this method filters the ones corresponding to Key.
 %% If key is undefined then is returns all records for all keys
