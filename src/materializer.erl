@@ -34,13 +34,111 @@
 -endif.
 
 -export([
-    create_snapshot/1,
-    update_snapshot/3,
-    materialize_clocksi_payload/3,
-    materialize_eager/3,
-    check_operations/1,
-    check_operation/1,
-    belongs_to_snapshot_op/3]).
+  create_snapshot/1,
+  update_cache_entry/2,
+  materialize_snapshot/2,
+  materialize_snapshot/3,
+  materialize_clocksi_payload/3,
+  materialize_eager/3,
+  check_operations/1,
+  check_operation/1]).
+
+%%TODO complex handling of checkpoints in txns
+-spec is_system_operation_that_is_not_checkpoint(journal_entry()) -> boolean().
+is_system_operation_that_is_not_checkpoint(JournalEntry) ->
+  Operation = JournalEntry#journal_entry.operation,
+  if
+    is_record(Operation, system_operation) -> Operation#system_operation.op_type /= checkpoint;
+    true -> false
+  end.
+
+-spec is_journal_entry_update_and_contains_key(key_struct(), journal_entry()) -> boolean().
+is_journal_entry_update_and_contains_key(KeyStruct, JournalEntry) ->
+  Operation = JournalEntry#journal_entry.operation,
+  if
+    is_record(Operation, object_operation) ->
+      Operation#object_operation.key_struct == KeyStruct andalso Operation#object_operation.op_type == update;
+    true -> false
+  end.
+
+-spec contains_journal_entry_of_specific_system_operation(system_operation_type(), [journal_entry()], clock_time()) -> boolean().
+contains_journal_entry_of_specific_system_operation(SystemOperationType, JournalEntries, AfterRtTimestamp) ->
+  lists:any(fun(J) ->
+    is_journal_entry_of_specific_system_operation(SystemOperationType, J, AfterRtTimestamp) end, JournalEntries).
+
+-spec is_journal_entry_of_specific_system_operation(system_operation_type(), journal_entry(), clock_time()) -> boolean().
+is_journal_entry_of_specific_system_operation(SystemOperationType, JournalEntry, AfterRtTimestamp) ->
+  Operation = JournalEntry#journal_entry.operation,
+  if
+    is_record(Operation, system_operation) ->
+      Operation#system_operation.op_type == SystemOperationType andalso JournalEntry#journal_entry.rt_timestamp > AfterRtTimestamp;
+    true -> false
+  end.
+
+-spec get_indexed_journal_entries([journal_entry()]) -> [{non_neg_integer(), journal_entry()}].
+get_indexed_journal_entries(JournalEntries) ->
+  lists:mapfoldl(fun(J, Index) -> {{Index, J}, Index + 1} end, 0, JournalEntries).
+
+-spec separate_commit_from_update_journal_entries([journal_entry()]) -> {journal_entry(), [journal_entry()]}.
+separate_commit_from_update_journal_entries(JList) ->
+  separate_commit_from_update_journal_entries(JList, []).
+-spec separate_commit_from_update_journal_entries([journal_entry()], [journal_entry()]) -> {journal_entry(), [journal_entry()]}.
+separate_commit_from_update_journal_entries([CommitJournalEntry], JournalEntries) ->
+  {CommitJournalEntry, JournalEntries};
+separate_commit_from_update_journal_entries([UpdateJournalEntry | OtherJournalEntries], JournalEntries) ->
+  separate_commit_from_update_journal_entries(OtherJournalEntries, [UpdateJournalEntry | JournalEntries]).
+
+-spec transform_to_clock_si_payload(journal_entry(), journal_entry()) -> clocksi_payload().
+transform_to_clock_si_payload(CommitJournalEntry, JournalEntry) ->
+  #clocksi_payload{
+    key_struct = JournalEntry#journal_entry.operation#object_operation.key_struct,
+    op_param = JournalEntry#journal_entry.operation#object_operation.op_args,
+    snapshot_time = CommitJournalEntry#journal_entry.operation#system_operation.op_args#commit_txn_args.snapshot_time,
+    commit_time = CommitJournalEntry#journal_entry.operation#system_operation.op_args#commit_txn_args.commit_time,
+    tx_id = CommitJournalEntry#journal_entry.tx_id
+  }.
+
+-spec get_committed_journal_entries_for_key(key_struct(), [journal_entry()], clock_time()) -> [{journal_entry(), [journal_entry()]}].
+get_committed_journal_entries_for_key(KeyStruct, JournalEntries, AfterRtTimestamp) ->
+  RelevantJournalEntries = lists:filter(fun(J) ->
+    is_journal_entry_update_and_contains_key(KeyStruct, J) orelse is_journal_entry_of_specific_system_operation(commit_txn, J, AfterRtTimestamp) end, JournalEntries),
+  IndexedJournalEntries = get_indexed_journal_entries(RelevantJournalEntries),
+  JournalEntryToIndex = dict:from_list(lists:map(fun({Index, J}) -> {J, Index} end, IndexedJournalEntries)),
+  TxIdToJournalEntries = log_utilities:group_by(fun({_Index, J}) -> J#journal_entry.tx_id end, RelevantJournalEntries),
+  TxIdToJournalEntries = dict:filter(fun({_TxId, JList}) ->
+    contains_journal_entry_of_specific_system_operation(commit_txn, JList, AfterRtTimestamp) end, TxIdToJournalEntries),
+  TxIdToJournalEntries = dict:map(fun(_TxId, JList) -> lists:sort(fun(J1, J2) ->
+    dict:find(J1, JournalEntryToIndex) > dict:find(J2, JournalEntryToIndex) end, JList) end, TxIdToJournalEntries),
+
+  ListOfLists = lists:map(fun({_TxId, JList}) ->
+    separate_commit_from_update_journal_entries(JList) end, dict:to_list(TxIdToJournalEntries)),
+  ListOfLists = lists:sort(fun({J1, _JList1}, {J2, _JList2}) ->
+    dict:find(J1, JournalEntryToIndex) > dict:find(J2, JournalEntryToIndex) end, ListOfLists),
+  ListOfLists.
+
+-spec materialize_snapshot(checkpoint_entry(), [journal_entry()]) -> snapshot().
+materialize_snapshot(CheckpointEntry, JournalEntries) ->
+  KeyStruct = CheckpointEntry#snapshot.key_struct,
+  CheckpointTimestamp = CheckpointEntry#snapshot.commit_vts,
+  CheckpointValue = CheckpointEntry#snapshot.value,
+  CommittedJournalEntries = get_committed_journal_entries_for_key(KeyStruct, JournalEntries, CheckpointTimestamp),
+  ClockSIPayloads = lists:map(fun({J1, JList}) -> lists:map(fun(J) -> transform_to_clock_si_payload(J1, J) end, JList)
+                              end, CommittedJournalEntries),
+  lists:merge(ClockSIPayloads),
+  materializer:materialize_clocksi_payload(CheckpointValue, ClockSIPayloads).
+
+-spec materialize_snapshot(checkpoint_entry(), [journal_entry()], snapshot_time()) -> snapshot().
+materialize_snapshot(CheckpointEntry, JournalEntries, SnapshotTime) ->
+  KeyStruct = CheckpointEntry#snapshot.key_struct,
+  CheckpointTimestamp = CheckpointEntry#snapshot.commit_vts,
+  CheckpointSnapshotTime = CheckpointEntry#snapshot.snapshot_vts,
+  ValidSnapshotTime =
+    CheckpointValue = CheckpointEntry#snapshot.value,
+  CommittedJournalEntries = get_committed_journal_entries_for_key(KeyStruct, JournalEntries, CheckpointTimestamp),
+  ClockSIPayloads = lists:map(fun({J1, JList}) -> lists:map(fun(J) -> transform_to_clock_si_payload(J1, J) end, JList)
+                              end, CommittedJournalEntries),
+  lists:merge(ClockSIPayloads),
+  materializer:materialize_clocksi_payload(CheckpointValue, ClockSIPayloads).
 
 
 %% TODO
@@ -49,96 +147,73 @@
 %% @doc Creates an empty CRDT
 -spec create_snapshot(type()) -> snapshot().
 create_snapshot(Type) ->
-    Type:new().
+  Type:new().
 
 %% @doc Applies an downstream effect to a snapshot of a crdt.
 %%      This function yields an error if the crdt does not have a corresponding update operation.
--spec update_snapshot(type(), snapshot(), effect()) -> {ok, snapshot()} | {error, reason()}.
-update_snapshot(Type, Snapshot, Op) ->
-    try
-        Type:update(Op, Snapshot)
-    catch
-        _:_ ->
-            {error, {unexpected_operation, Op, Type}}
-    end.
-
--spec get_key_snapshot(key_struct(), log_data_structure()) -> snapshot().
-get_key_snapshot(KeyStruct, LogDataStructure) ->
-    Value = get_checkpointed_snapshot(KeyStruct, LogDataStructure),
-
-    ok.
-
--spec get_checkpointed_snapshot(key_struct(), log_data_structure()) -> snapshot().
-get_checkpointed_snapshot(KeyStruct, LogDataStructure) ->
-    CheckpointKeyValueMap = LogDataStructure#log_data_structure.checkpoint_key_value_map,
-    Type = KeyStruct#key_struct.type,
-    FindValue = dict:find(KeyStruct, CheckpointKeyValueMap),
-    case FindValue of
-        {ok, Value} -> Value;
-        error -> create_snapshot(Type)
-    end.
+-spec update_cache_entry(cache_entry(), effect()) -> {ok, cache_entry()} | {error, reason()}.
+update_cache_entry(CacheEntry, Op) ->
+  try
+    Snapshot = CacheEntry#cache_entry.blob,
+    Type = CacheEntry#cache_entry.key_struct#key_struct.type,
+    Snapshot = Type:update(Op, Snapshot),
+    CacheEntry#cache_entry{blob = Snapshot}
+  catch
+    _:_ ->
+      {error, {unexpected_operation, Op, Type}}
+  end.
 
 %% @doc
--spec materialize_clocksi_payload(key_struct(), snapshot(), [clocksi_payload()]) -> snapshot() | {error, {unexpected_operation, effect(), type()}}.
-materialize_clocksi_payload(_Type, Snapshot, []) ->
-    Snapshot;
-materialize_clocksi_payload(Type, Snapshot, [ClocksiPayload | Rest]) ->
-    Effect = ClocksiPayload#clocksi_payload.op_param,
-    logger:info("Materialize: ~p", [Effect]),
-    case update_snapshot(Type, Snapshot, Effect) of
-        {error, Reason} ->
-            {error, Reason};
-        {ok, Result} ->
-            materialize_clocksi_payload(Type, Result, Rest)
-    end.
+-spec materialize_clocksi_payload(key_struct(), cache_entry(), [clocksi_payload()]) -> cache_entry() | {error, {unexpected_operation, effect(), type()}}.
+materialize_clocksi_payload(CacheEntry, []) ->
+  CacheEntry;
+materialize_clocksi_payload(CacheEntry, [ClocksiPayload | Rest]) ->
+  Effect = ClocksiPayload#clocksi_payload.op_param,
+  logger:info("Materialize: ~p", [Effect]),
+  case update_cache_entry(CacheEntry, Effect) of
+    {error, Reason} ->
+      {error, Reason};
+    {ok, Result} ->
+      materialize_clocksi_payload(Result, Rest)
+  end.
 
 %% @doc Applies updates in given order without any checks, errors are simply propagated.
--spec materialize_eager(type(), snapshot(), [effect()]) -> snapshot() | {error, {unexpected_operation, effect(), type()}}.
-materialize_eager(_Type, Snapshot, []) ->
-    Snapshot;
-materialize_eager(Type, Snapshot, [Effect | Rest]) ->
-    case update_snapshot(Type, Snapshot, Effect) of
-        {error, Reason} ->
-            {error, Reason};
-        {ok, Result} ->
-            materialize_eager(Type, Result, Rest)
-    end.
+-spec materialize_eager(cache_entry(), [effect()]) -> cache_entry() | {error, {unexpected_operation, effect(), type()}}.
+materialize_eager(CacheEntry, []) ->
+    CacheEntry;
+materialize_eager(CacheEntry, [Effect | Rest]) ->
+  case update_cache_entry(CacheEntry, Effect) of
+    {error, Reason} ->
+      {error, Reason};
+    {ok, Result} ->
+      materialize_eager(Result, Rest)
+  end.
 
 
 %% @doc Check that in a list of client operations, all of them are correctly typed.
 -spec check_operations([client_op()]) -> ok | {error, {type_check_failed, client_op()}}.
 check_operations([]) ->
-    ok;
+  ok;
 check_operations([Op | Rest]) ->
-    case check_operation(Op) of
-        true ->
-            check_operations(Rest);
-        false ->
-            {error, {type_check_failed, Op}}
-    end.
+  case check_operation(Op) of
+    true ->
+      check_operations(Rest);
+    false ->
+      {error, {type_check_failed, Op}}
+  end.
 
 %% @doc Check that an operation is correctly typed.
 -spec check_operation(client_op()) -> boolean().
 check_operation(Op) ->
-    case Op of
-        {update, {_, Type, Update}} ->
-            antidote_crdt:is_type(Type) andalso
-                Type:is_operation(Update);
-        {read, {_, Type}} ->
-            antidote_crdt:is_type(Type);
-        _ ->
-            false
-    end.
-
-%% Should be called doesn't belong in SS
-%% returns true if op is more recent than SS (i.e. is not in the ss)
-%% returns false otw
--spec belongs_to_snapshot_op(snapshot_time() | ignore, dc_and_commit_time(), snapshot_time()) -> boolean().
-belongs_to_snapshot_op(ignore, {_OpDc, _OpCommitTime}, _OpSs) ->
-    true;
-belongs_to_snapshot_op(SSTime, {OpDc, OpCommitTime}, OpSs) ->
-    OpSs1 = dict:store(OpDc, OpCommitTime, OpSs),
-    not vectorclock:le(OpSs1, SSTime).
+  case Op of
+    {update, {_, Type, Update}} ->
+      antidote_crdt:is_type(Type) andalso
+        Type:is_operation(Update);
+    {read, {_, Type}} ->
+      antidote_crdt:is_type(Type);
+    _ ->
+      false
+  end.
 
 
 %%-ifdef(TEST).

@@ -1,7 +1,7 @@
 %TODO link to antidote_crdt types
 
 -type key() :: term().
--type op() :: {update, {key(), type(), term()}} | {read, {key(), type()}}. %TODO what is the term in update?
+-type op() :: {update, {key(), type(), effect()}} | {read, {key(), type()}}.
 -type type() :: atom(). 
 -type downstream_record() :: term(). 
 -type snapshot() :: term().
@@ -13,10 +13,10 @@
 }).
 -define(BUCKET, "antidote").
 
+-type key_operation() :: {update, key_struct(), effect()} | {read, key_struct()}.
 
 
-
--define(LOGGING_MASTER, gingko_op_log_server).
+-define(LOGGING_MASTER, gingko_log_server).
 %% Version of log records being used
 -define(LOG_RECORD_VERSION, 0).
 
@@ -30,7 +30,8 @@
 
 -type effect() :: term().
 -type dcid() :: 'undefined' | {atom(), tuple()}. %% TODO, is this the only structure that is returned by riak_core_ring:cluster_name(Ring)?
--type snapshot_time() :: 'undefined' | vectorclock:vectorclock().
+-type snapshot_time() :: 'undefined' | vectorclock().
+-type vectorclock() :: vectorclock:vectorclock().
 -type clock_time() :: non_neg_integer().
 -type dc_and_commit_time() :: {dcid(), clock_time()}.
 -type payload() :: term().
@@ -47,6 +48,14 @@
   running_log_servers :: [node()]
 }).
 
+-type gen_server_call_result() :: {reply,Reply,NewState} | {reply,Reply,NewState,Timeout}
+| {reply,Reply,NewState,hibernate}
+| {reply,Reply,NewState,{continue,Continue}}
+| {noreply,NewState} | {noreply,NewState,Timeout}
+| {noreply,NewState,hibernate}
+| {noreply,NewState,{continue,Continue}}
+| {stop,Reason,Reply,NewState} | {stop,Reason,NewState}.
+
 -type cache_entry() :: #cache_entry{}.
 -record(cache_entry, {
   key_struct :: key_struct(),
@@ -54,13 +63,14 @@
   present :: boolean(),
   valid_vts :: vectorclock(),
   used :: boolean(),
-  blob :: term()
+  blob :: crdt()
 }).
 
 -type cache_server_state() :: #cache_server_state{}.
 -record(cache_server_state, {
   key_cache_entry_dict :: dict(),
-  max_occupancy :: non_neg_integer()
+  max_occupancy :: non_neg_integer(),
+  log_server_pid :: pid()
 }).
 
 -type sync_server_state() :: #sync_server_state{}.
@@ -87,15 +97,19 @@
   type :: type()
 }).
 
--type checkpoint_entry() :: #checkpoint_entry{}.
--record(checkpoint_entry, {
+-type crdt() :: term().
+
+-type snapshot() :: #snapshot{}.
+-record(snapshot, {
   key_struct :: key_struct(),
-  rt_timestamp :: clock_time(),
-  value :: term()
+  commit_vts :: vectorclock(),
+  snapshot_vts :: vectorclock(),
+  value :: crdt()
 }).
 
 -type log_data_structure() :: #log_data_structure{}.
 -record(log_data_structure, {
+  volatile_journal_log :: [journal_entry()],
   persistent_journal_log :: log(),
   persistent_checkpoint_log :: log()
   }).
@@ -134,6 +148,7 @@
 
 -type operation() :: system_operation() | object_operation().
 
+-type journal_entry() :: #journal_entry{}.
 -record(journal_entry, {
   uuid :: term(),
   rt_timestamp :: clock_time(),
@@ -148,13 +163,6 @@
     snapshot_time :: snapshot_time(),
     commit_time :: dc_and_commit_time(),
     tx_id :: tx_id()
-}).
-
--record(update_log_payload, {
-    key :: key(),
-    type :: type(),
-    bucket :: term(), %TODO Get rid of that entry?
-    op :: op()
 }).
 
 -type reason() :: term().

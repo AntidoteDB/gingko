@@ -152,3 +152,57 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+
+-spec get(key_struct(), vectorclock(), cache_server_state()) -> {{ok, snapshot()}, cache_server_state()} | {{error, Reason}, cache_server_state()}.
+get(KeyStruct, DependencyVectorClock, CacheServerState) ->
+  CacheEntry = dict:find(KeyStruct, CacheServerState#cache_server_state.key_cache_entry_dict),
+  case CacheEntry of
+    error ->
+      %%TODO fill cache
+
+      %%TODO double check to avoid infinite recursion
+      get(KeyStruct, DependencyVectorClock, CacheServerState);
+    {ok, CacheEntry} ->
+      First = vectorclock:le(CacheEntry#cache_entry.commit_vts, DependencyVectorClock),
+      Second = vectorclock:le(DependencyVectorClock, CacheEntry#cache_entry.valid_vts),
+      Present = CacheEntry#cache_entry.present,
+      %%TODO visible
+      Conditions = First andalso Second andalso Present,
+      if
+        Conditions -> {{ok, CacheEntry#cache_entry.blob}, CacheServerState};
+        true ->
+          error %%TODO fill cache write error message
+      end
+  end.
+
+load_key(KeyStruct, CacheServerState) ->
+  LogServer = CacheServerState#cache_server_state.log_server_pid,
+  JournalEntries = gen_server:call(LogServer, get_journal_entries),
+  CheckpointEntry = gen_server:call(LogServer, {get_checkpoint, KeyStruct}),
+  Snapshot = materializer:materialize_snapshot(CheckpointEntry, JournalEntries),
+  CacheEntry = #cache_entry{ key_struct = KeyStruct, commit_vts =  }
+  OldDict = CacheServerState#cache_server_state.key_cache_entry_dict,
+  CacheServerState = CacheServerState#cache_server_state{ key_cache_entry_dict = dict:store(KeyStruct, )}.
+
+create_cache_entry(Snapshot) ->
+  KeyStruct = Snapshot#snapshot.key_struct,
+  CommitVts = Snapshot#snapshot.commit_vts,
+  SnapshotVts = Snapshot#snapshot.snapshot_vts,
+  Value = Snapshot#snapshot.value,
+  #cache_entry{ key_struct = KeyStruct, commit_vts = CommitVts, present = true, valid_vts = SnapshotVts, used = true, blob = Value }.
+
+clock(KeyStruct, CommitVectorClock, CacheServerState) ->
+%%TODO
+  ok.
+
+evict(KeyStruct, CommitVectorClock, CacheServerState) ->
+%%TODO
+  ok.
+
+inc(KeyStruct, CommitVectorClock, UpdateVectorClock, CacheServerState) ->
+%%TODO
+  ok.
+
+load(KeyStruct, CommitVectorClock, Value, CacheServerState) ->
+  %%TODO
+ok.
