@@ -10,7 +10,11 @@
 -author("kevin").
 -include("gingko.hrl").
 %% API
--export([add_journal_entry/1, add_or_update_snapshot/1, read_journal_entry/1, read_snapshot/1, read_all_journal_entries/0, match_journal_entries/1, read_journal_entries_with_tx_id/1, perform_tx_read/2]).
+-export([add_journal_entry/1, add_or_update_snapshot/1, read_journal_entry/1, read_snapshot/1, read_all_journal_entries/0, match_journal_entries/1, read_journal_entries_with_tx_id/1, perform_tx_read/2, persist_journal_entries/0]).
+
+-spec persistent_journal_entries() -> {atomic, ok} | {aborted, Reason}.
+persist_journal_entries() ->
+  mnesia:dump_tables([journal_entry]).
 
 -spec add_journal_entry(journal_entry()) -> ok | {error, {already_exists, [journal_entry()]}} | 'transaction abort'.
 add_journal_entry(JournalEntry) ->
@@ -22,9 +26,23 @@ add_journal_entry(JournalEntry) ->
       end,
   mnesia:activity(transaction, F).
 
+-spec add_or_update_snapshot(snapshot()) -> ok | {error, {newer_exists, snapshot()} | {error, {multiple_exist, ExistingSnapshots}} |  'transaction abort'.
 add_or_update_snapshot(Snapshot) ->
-  mnesia:activity(transaction, fun() -> mnesia:write(Snapshot) end).
+  F = fun() ->
+    case mnesia:read(snapshot, Snapshot#snapshot.key_struct) of
+      [] -> mnesia:write(Snapshot);
+      [ExistingSnapshot] ->
+        IsNewer = gingko_utils:is_in_vts_range(Snapshot#snapshot.commit_vts, {ExistingSnapshot#snapshot.commit_vts, none}) andalso gingko_utils:is_in_vts_range(Snapshot#snapshot.snapshot_vts, {ExistingSnapshot#snapshot.snapshot_vts, none}),
+        case IsNewer of
+          true -> mnesia:write(Snapshot);
+          false -> {error, {newer_exists, ExistingSnapshot}}
+        end;
+      ExistingSnapshots -> {error, {multiple_exist, ExistingSnapshots}}
+    end
+      end,
+  mnesia:activity(transaction, F).
 
+-spec read_journal_entry(jsn()) -> journal_entry() | {error, {"No Journal Entry found", jsn()}} | {error, {"Multiple Journal Entries found", jsn(), [journal_entry()]}}.
 read_journal_entry(Jsn) ->
   List = mnesia:activity(transaction, fun() -> mnesia:read(journal_entry, Jsn) end),
   case List of
@@ -33,16 +51,20 @@ read_journal_entry(Jsn) ->
     Js -> {error, {"Multiple Journal Entries found", Jsn, Js}}
   end.
 
+-spec read_all_journal_entries() -> [journal_entry()].
 read_all_journal_entries() ->
   mnesia:activity(transaction, fun() -> mnesia:foldl(fun(X, Acc) -> [X | Acc] end, [], journal_entry) end).
 
+-spec read_journal_entries_with_tx_id(txid()) -> [journal_entry()].
 read_journal_entries_with_tx_id(TxId) ->
   MatchJournalEntry = #journal_entry{jsn = '_', rt_timestamp = '_', tx_id = TxId, operation = '_'},
   match_journal_entries(MatchJournalEntry).
 
+-spec match_journal_entries(journal_entry()) -> [journal_entry()].
 match_journal_entries(MatchJournalEntry) ->
   mnesia:activity(transaction, fun() -> mnesia:match_object(MatchJournalEntry) end).
 
+-spec read_snapshot(key_struct()) -> snapshot() | {error, {"Multiple Snapshots found", key_struct(), [snapshot()]}}.
 read_snapshot(KeyStruct) ->
   List = mnesia:activity(transaction, fun() -> mnesia:read(snapshot, KeyStruct) end),
   case List of
@@ -55,7 +77,7 @@ checkpoint(DependencyVts) ->
   %TODO
   ok.
 
-  -spec perform_tx_read(journal_entry(), pid()) -> {ok, snapshot_value()} | {error, reason()}.
+-spec perform_tx_read(journal_entry(), pid()) -> {ok, snapshot_value()} | {error, reason()}.
 perform_tx_read(JournalEntry, CacheServerPid) ->
   CurrentJsn = gingko_utils:get_jsn_number(JournalEntry),
   KeyStruct = JournalEntry#journal_entry.operation#object_operation.key_struct,

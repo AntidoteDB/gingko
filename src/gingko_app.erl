@@ -39,7 +39,7 @@ install(Nodes) ->
   {atomic, ok} = mnesia:create_table(journal_entry,
     [{attributes, record_info(fields, journal_entry)},
       %{index, [#journal_entry.jsn]},TODO find out why index doesn't work here
-      {disc_copies, Nodes}
+      {ram_copies, Nodes}
     ]),
   {atomic, ok} = mnesia:create_table(snapshot,
     [{attributes, record_info(fields, snapshot)},

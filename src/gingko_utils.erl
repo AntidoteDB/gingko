@@ -98,6 +98,13 @@ sort_by_jsn_number(JournalEntries) ->
   lists:sort(fun(J1, J2) ->
     get_jsn_number(J1) < get_jsn_number(J2) end, JournalEntries).
 
+recover_journal_log() ->
+  AllJournalEntries = gingko_log:read_all_journal_entries(),
+  AllJournalEntries = lists:sort(fun(J1, J2) ->
+    gingko_utils:get_jsn_number(J1) < gingko_utils:get_jsn_number(J2) end, AllJournalEntries),
+
+  CheckpointJournalEntries = g.
+
 
 
 

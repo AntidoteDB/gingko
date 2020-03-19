@@ -97,8 +97,11 @@ get_committed_journal_entries(JournalEntries) ->
     dict:find(J1, JournalEntryToIndex) > dict:find(J2, JournalEntryToIndex) end, ListOfLists),
   ListOfLists.
 
-%%test_method() ->
+%%get_updated_values_for_checkpoint(CheckpointJournalEntry) ->
 %%  %TODO safety for failures
+%%  DependencyVts = CheckpointJournalEntry#journal_entry.operation#system_operation.op_args#checkpoint_args.dependency_vts,
+%%  %TODO does it make sense to store all updated values in the cache
+%%  %TODO only get till vorvorgehenden checkpoint of the journal (optimization later)
 %%
 %%  AllJournalEntries = gingko_log:read_all_journal_entries(),
 %%  AllJournalEntries = lists:sort(fun(J1, J2) ->
