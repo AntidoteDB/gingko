@@ -13,7 +13,7 @@
 -behaviour(gen_server).
 
 %% API
--export([start_link/0]).
+-export([start_link/1]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -25,127 +25,88 @@
 
 -define(SERVER, ?MODULE).
 
+-record(state, {
+  dcid :: dcid(),
+  key_cache_entry_dict :: term(),%%dict(key_struct(), [cache_entry()]),
+  max_occupancy :: non_neg_integer(),
+  occupancy :: non_neg_integer()
+}).
+-type state() :: #state{}.
+
 %%%===================================================================
 %%% API
 %%%===================================================================
 
-%%--------------------------------------------------------------------
-%% @doc
-%% Starts the server
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec(start_link() ->
+-spec(start_link({dcid(), pid(), non_neg_integer()}) ->
   {ok, Pid :: pid()} | ignore | {error, Reason :: term()}).
-start_link() ->
-  gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
+start_link({DcId, LogServerPid, InitialMaxOccupancy}) ->
+  gen_server:start_link({local, ?SERVER}, ?MODULE, {DcId, LogServerPid, InitialMaxOccupancy}, []).
 
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Initializes the server
-%%
-%% @spec init(Args) -> {ok, State} |
-%%                     {ok, State, Timeout} |
-%%                     ignore |
-%%                     {stop, Reason}
-%% @end
-%%--------------------------------------------------------------------
--spec(init(Args :: term()) ->
-  {ok, State :: cache_server_state()} | {ok, State :: cache_server_state(), timeout() | hibernate} |
+-spec(init({dcid(), pid(), non_neg_integer()}) ->
+  {ok, State :: state()} | {ok, State :: state(), timeout() | hibernate} |
   {stop, Reason :: term()} | ignore).
-init([]) ->
-  {ok, #cache_server_state{}}.
+init({DcId, InitialMaxOccupancy}) ->
+  {ok, #state{
+    dcid = DcId,
+    key_cache_entry_dict = dict:new(),
+    occupancy = 0,
+    max_occupancy = InitialMaxOccupancy
+  }}.
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Handling call messages
-%%
-%% @end
-%%--------------------------------------------------------------------
 -spec(handle_call(Request :: term(), From :: {pid(), Tag :: term()},
-    State :: cache_server_state()) ->
-  {reply, Reply :: term(), NewState :: cache_server_state()} |
-  {reply, Reply :: term(), NewState :: cache_server_state(), timeout() | hibernate} |
-  {noreply, NewState :: cache_server_state()} |
-  {noreply, NewState :: cache_server_state(), timeout() | hibernate} |
-  {stop, Reason :: term(), Reply :: term(), NewState :: cache_server_state()} |
-  {stop, Reason :: term(), NewState :: cache_server_state()}).
-handle_call(get, _From, State) ->
-  {reply, ok, State};
+    State :: state()) ->
+  {reply, Reply :: term(), NewState :: state()} |
+  {reply, Reply :: term(), NewState :: state(), timeout() | hibernate} |
+  {noreply, NewState :: state()} |
+  {noreply, NewState :: state(), timeout() | hibernate} |
+  {stop, Reason :: term(), Reply :: term(), NewState :: state()} |
+  {stop, Reason :: term(), NewState :: state()}).
+handle_call({get, KeyStruct, DependencyVts}, _From, State) ->
+  {Reply, NewState} = get(KeyStruct, DependencyVts, State),
+  {reply, Reply, NewState};
 
-handle_call(clock, _From, State) ->
-  {reply, ok, State};
+handle_call({clock, KeyStruct, CommitVts}, _From, State) ->
+  {Reply, NewState} = clock(KeyStruct, CommitVts, State),
+  {reply, Reply, NewState};
 
-handle_call(evict, _From, State) ->
-  {reply, ok, State};
+handle_call({evict, KeyStruct, CommitVts}, _From, State) ->
+  {Reply, NewState} = evict(KeyStruct, CommitVts, State),
+  {reply, Reply, NewState};
 
-handle_call(load, _From, State) ->
-  {reply, ok, State}.
+handle_call({inc, KeyStruct, CommitVts, UpdateVts}, _From, State) ->
+  {Reply, NewState} = inc(KeyStruct, CommitVts, UpdateVts, State),
+  {reply, Reply, NewState};
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Handling cast messages
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec(handle_cast(Request :: term(), State :: cache_server_state()) ->
-  {noreply, NewState :: cache_server_state()} |
-  {noreply, NewState :: cache_server_state(), timeout() | hibernate} |
-  {stop, Reason :: term(), NewState :: cache_server_state()}).
+handle_call({load, KeyStruct, CommitVts, Crdt}, _From, State) ->
+  {Reply, NewState} = load(KeyStruct, CommitVts, Crdt, State),
+  {reply, Reply, NewState}.
+
+-spec(handle_cast(Request :: term(), State :: state()) ->
+  {noreply, NewState :: state()} |
+  {noreply, NewState :: state(), timeout() | hibernate} |
+  {stop, Reason :: term(), NewState :: state()}).
 handle_cast(_Request, State) ->
   {noreply, State}.
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Handling all non call/cast messages
-%%
-%% @spec handle_info(Info, State) -> {noreply, State} |
-%%                                   {noreply, State, Timeout} |
-%%                                   {stop, Reason, State}
-%% @end
-%%--------------------------------------------------------------------
--spec(handle_info(Info :: timeout() | term(), State :: cache_server_state()) ->
-  {noreply, NewState :: cache_server_state()} |
-  {noreply, NewState :: cache_server_state(), timeout() | hibernate} |
-  {stop, Reason :: term(), NewState :: cache_server_state()}).
+-spec(handle_info(Info :: timeout() | term(), State :: state()) ->
+  {noreply, NewState :: state()} |
+  {noreply, NewState :: state(), timeout() | hibernate} |
+  {stop, Reason :: term(), NewState :: state()}).
 handle_info(_Info, State) ->
   {noreply, State}.
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% This function is called by a gen_server when it is about to
-%% terminate. It should be the opposite of Module:init/1 and do any
-%% necessary cleaning up. When it returns, the gen_server terminates
-%% with Reason. The return value is ignored.
-%%
-%% @spec terminate(Reason, State) -> void()
-%% @end
-%%--------------------------------------------------------------------
 -spec(terminate(Reason :: (normal | shutdown | {shutdown, term()} | term()),
-    State :: cache_server_state()) -> term()).
+    State :: state()) -> term()).
 terminate(_Reason, _State) ->
   ok.
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Convert process state when code is changed
-%%
-%% @spec code_change(OldVsn, State, Extra) -> {ok, NewState}
-%% @end
-%%--------------------------------------------------------------------
--spec(code_change(OldVsn :: term() | {down, term()}, State :: cache_server_state(),
+-spec(code_change(OldVsn :: term() | {down, term()}, State :: state(),
     Extra :: term()) ->
-  {ok, NewState :: cache_server_state()} | {error, Reason :: term()}).
+  {ok, NewState :: state()} | {error, Reason :: term()}).
 code_change(_OldVsn, State, _Extra) ->
   {ok, State}.
 
@@ -153,56 +114,125 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
--spec get(key_struct(), vectorclock(), cache_server_state()) -> {{ok, snapshot()}, cache_server_state()} | {{error, Reason}, cache_server_state()}.
-get(KeyStruct, DependencyVectorClock, CacheServerState) ->
-  CacheEntry = dict:find(KeyStruct, CacheServerState#cache_server_state.key_cache_entry_dict),
-  case CacheEntry of
-    error ->
-      %%TODO fill cache
+-spec get(key_struct(), vectorclock(), state()) -> {{ok, snapshot()}, state()} | {{error, reason()}, state()}.
+get(KeyStruct, DependencyVts, State) ->
+  Result = get_or_load_cache_entry(KeyStruct, State, false, false),
+  get_internal(Result, KeyStruct, DependencyVts).
 
-      %%TODO double check to avoid infinite recursion
-      get(KeyStruct, DependencyVectorClock, CacheServerState);
-    {ok, CacheEntry} ->
-      First = vectorclock:le(CacheEntry#cache_entry.commit_vts, DependencyVectorClock),
-      Second = vectorclock:le(DependencyVectorClock, CacheEntry#cache_entry.valid_vts),
+-spec get_internal({{ok, cache_entry(), boolean()}, state()} | {{error, Reason}, state()}, key_struct(), vectorclock()) -> {{ok, snapshot()}, state()} | {{error, Reason}, state()}.
+get_internal(Result, KeyStruct, DependencyVts) ->
+  case Result of
+    {{error, Reason}, State} -> {{error, Reason}, State};
+    {{ok, CacheEntry, CacheUpdated}, State} ->
+      GreaterThanCommitVts = vectorclock:le(CacheEntry#cache_entry.commit_vts, DependencyVts),
+      SmallerThanValidVts = vectorclock:le(DependencyVts, CacheEntry#cache_entry.valid_vts),
       Present = CacheEntry#cache_entry.present,
       %%TODO visible
-      Conditions = First andalso Second andalso Present,
+      Conditions = GreaterThanCommitVts andalso SmallerThanValidVts andalso Present,
       if
-        Conditions -> {{ok, CacheEntry#cache_entry.blob}, CacheServerState};
+        Conditions ->
+          UpdatedCacheEntry = CacheEntry#cache_entry{ used = true},
+
+          {{ok, UpdatedCacheEntry#cache_entry.blob}, State};
         true ->
-          error %%TODO fill cache write error message
+          if
+            CacheUpdated -> {{error, "Bad Cache Update"}, State};
+            true ->
+              Result = get_or_load_cache_entry(KeyStruct, State, false, false),
+              get_internal(Result, KeyStruct, DependencyVts)
+          end
       end
   end.
 
-load_key(KeyStruct, CacheServerState) ->
-  LogServer = CacheServerState#cache_server_state.log_server_pid,
-  JournalEntries = gen_server:call(LogServer, get_journal_entries),
-  CheckpointEntry = gen_server:call(LogServer, {get_checkpoint, KeyStruct}),
-  Snapshot = materializer:materialize_snapshot(CheckpointEntry, JournalEntries),
-  CacheEntry = #cache_entry{ key_struct = KeyStruct, commit_vts =  }
-  OldDict = CacheServerState#cache_server_state.key_cache_entry_dict,
-  CacheServerState = CacheServerState#cache_server_state{ key_cache_entry_dict = dict:store(KeyStruct, )}.
+-spec get_or_load_cache_entry(key_struct(), state(), boolean(), boolean()) -> {{ok, cache_entry(), boolean()}, state()} | {{error, reason()}, state()}.
+get_or_load_cache_entry(KeyStruct, State, CacheUpdated, ForceUpdate) ->
+  case ForceUpdate of
+    true ->
+      State = load_key_into_cache(KeyStruct, State),
+      get_or_load_cache_entry(KeyStruct, State, true, false);
+    _ ->
+      CacheEntry = dict:find(KeyStruct, State#state.key_cache_entry_dict),
+      case CacheEntry of
+        error ->
+          case CacheUpdated of
+            true -> {{error, "Bad Cache Update"}, State};
+            _ ->
+              get_or_load_cache_entry(KeyStruct, State, false, true)
+          end;
+        {ok, CacheEntry} -> {{ok, CacheEntry, CacheUpdated}, State}
+      end
+  end.
 
-create_cache_entry(Snapshot) ->
-  KeyStruct = Snapshot#snapshot.key_struct,
-  CommitVts = Snapshot#snapshot.commit_vts,
-  SnapshotVts = Snapshot#snapshot.snapshot_vts,
-  Value = Snapshot#snapshot.value,
-  #cache_entry{ key_struct = KeyStruct, commit_vts = CommitVts, present = true, valid_vts = SnapshotVts, used = true, blob = Value }.
+-spec load_key_into_cache(key_struct(), state()) -> state().
+load_key_into_cache(KeyStruct, State) -> load_key_into_cache(KeyStruct, State, {none, none}).
 
-clock(KeyStruct, CommitVectorClock, CacheServerState) ->
-%%TODO
-  ok.
+-spec load_key_into_cache(key_struct(), state(), vts_range()) -> state().
+load_key_into_cache(KeyStruct, State, VtsRange) ->
+  JournalEntries = gingko_log:read_all_journal_entries(),
+  CheckpointEntry = gingko_log:read_snapshot(KeyStruct),
+  Snapshot = materializer:materialize_snapshot(CheckpointEntry, JournalEntries, VtsRange),
+  CacheEntry = gingko_utils:create_cache_entry(Snapshot),
+  update_cache_entry_in_state(CacheEntry, State).
 
-evict(KeyStruct, CommitVectorClock, CacheServerState) ->
-%%TODO
-  ok.
+update_cache_entry_in_state(CacheEntry, State) ->
+  CacheDict = State#state.key_cache_entry_dict,
+  State#state{key_cache_entry_dict = dict:store(CacheEntry#cache_entry.key_struct, CacheEntry, CacheDict)}.
 
-inc(KeyStruct, CommitVectorClock, UpdateVectorClock, CacheServerState) ->
-%%TODO
-  ok.
 
-load(KeyStruct, CommitVectorClock, Value, CacheServerState) ->
+-spec clock(key_struct(), vectorclock(), state()) -> {ok, state()} | {error, state()}.
+clock(KeyStruct, CommitVts, State) ->
+  CacheEntryResult = dict:find(KeyStruct, State#state.key_cache_entry_dict),
+  case CacheEntryResult of
+    error ->
+      {error, State};
+    {ok, CacheEntry} ->
+      Equal = vectorclock:eq(CacheEntry#cache_entry.commit_vts, CommitVts),
+      if
+        Equal ->
+          CacheEntry = CacheEntry#cache_entry{ used = false },
+          {ok, update_cache_entry_in_state(CacheEntry, State)};
+        true ->
+          {error, State}
+      end
+  end.
+
+-spec evict(key_struct(), vectorclock(), state()) -> {ok, state()} | {error, state()}.
+evict(KeyStruct, CommitVts, State) ->
+  %%TODO occupancy
+  CacheEntryResult = dict:find(KeyStruct, State#state.key_cache_entry_dict),
+  case CacheEntryResult of
+    error ->
+      {error, State};
+    {ok, CacheEntry} ->
+      CanBeEvicted = vectorclock:eq(CacheEntry#cache_entry.commit_vts, CommitVts) andalso not CacheEntry#cache_entry.used,
+      if
+        CanBeEvicted ->
+          CacheEntry = CacheEntry#cache_entry{ present = false },
+          {ok, update_cache_entry_in_state(CacheEntry, State)};
+        true ->
+          {error, State}
+      end
+  end.
+
+inc(KeyStruct, CommitVts, UpdateVts, State) ->
   %%TODO
-ok.
+  ok.
+
+load(KeyStruct, CommitVts, Value, State) ->
+  %%TODO occupancy
+  CacheEntryResult = dict:find(KeyStruct, State#state.key_cache_entry_dict),
+  case CacheEntryResult of
+    error ->
+      {error, State};
+    {ok, CacheEntry} ->
+
+      load_key_into_cache(KeyStruct, State, {CommitVts, CommitVts}),
+      CanBeEvicted = vectorclock:eq(CacheEntry#cache_entry.commit_vts, CommitVts) andalso not CacheEntry#cache_entry.used,
+      if
+        CanBeEvicted ->
+          CacheEntry = CacheEntry#cache_entry{ present = false },
+          {ok, update_cache_entry_in_state(CacheEntry, State)};
+        true ->
+          {error, State}
+      end
+  end.
