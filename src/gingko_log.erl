@@ -12,7 +12,7 @@
 %% API
 -export([add_journal_entry/1, add_or_update_snapshot/1, read_journal_entry/1, read_snapshot/1, read_all_journal_entries/0, match_journal_entries/1, read_journal_entries_with_tx_id/1, perform_tx_read/2, persist_journal_entries/0]).
 
--spec persistent_journal_entries() -> {atomic, ok} | {aborted, Reason}.
+-spec persist_journal_entries() -> {atomic, ok} | {aborted, reason()}.
 persist_journal_entries() ->
   mnesia:dump_tables([journal_entry]).
 
@@ -26,7 +26,7 @@ add_journal_entry(JournalEntry) ->
       end,
   mnesia:activity(transaction, F).
 
--spec add_or_update_snapshot(snapshot()) -> ok | {error, {newer_exists, snapshot()} | {error, {multiple_exist, ExistingSnapshots}} |  'transaction abort'.
+-spec add_or_update_snapshot(snapshot()) -> ok | {error, {multiple_exist, [snapshot()]}}  | {error, {newer_exists, snapshot()}} | 'transaction abort'.
 add_or_update_snapshot(Snapshot) ->
   F = fun() ->
     case mnesia:read(snapshot, Snapshot#snapshot.key_struct) of
@@ -42,7 +42,7 @@ add_or_update_snapshot(Snapshot) ->
       end,
   mnesia:activity(transaction, F).
 
--spec read_journal_entry(jsn()) -> journal_entry() | {error, {"No Journal Entry found", jsn()}} | {error, {"Multiple Journal Entries found", jsn(), [journal_entry()]}}.
+-spec read_journal_entry(jsn()) -> journal_entry().%TODO bug | {error, {"No Journal Entry found", jsn()}} | {error, {"Multiple Journal Entries found", jsn(), [journal_entry()]}}.
 read_journal_entry(Jsn) ->
   List = mnesia:activity(transaction, fun() -> mnesia:read(journal_entry, Jsn) end),
   case List of
@@ -64,7 +64,7 @@ read_journal_entries_with_tx_id(TxId) ->
 match_journal_entries(MatchJournalEntry) ->
   mnesia:activity(transaction, fun() -> mnesia:match_object(MatchJournalEntry) end).
 
--spec read_snapshot(key_struct()) -> snapshot() | {error, {"Multiple Snapshots found", key_struct(), [snapshot()]}}.
+-spec read_snapshot(key_struct()) -> snapshot().%TODO bug | {error, {"Multiple Snapshots found", key_struct(), [snapshot()]}}.
 read_snapshot(KeyStruct) ->
   List = mnesia:activity(transaction, fun() -> mnesia:read(snapshot, KeyStruct) end),
   case List of
