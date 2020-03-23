@@ -14,10 +14,10 @@
 
 -define(BUCKET, "antidote").
 
--type key_operation() :: {update, key_struct(), effect()} | {read, key_struct()}.
+-type crdt() :: term().
+-type type_op() :: {Op :: atom(), OpArgs :: term()} | atom() | term(). %downstream(type_op, crdt())
+-type downstream_op() :: term(). %update(downstream_op, crdt())
 
-
--type effect() :: term().
 -type dcid() :: undefined | term().%%TODO riak_core_ring:riak_core_ring().
 
 -type dc_and_commit_time() :: {dcid(), clock_time()}.
@@ -51,13 +51,13 @@
 -type key_struct() :: #key_struct{}.
 
 
--type crdt() :: term().
+
 -type raw_value() :: term().
 
 -record(snapshot, {
   key_struct :: key_struct(),
-  commit_vts = none :: vectorclock_or_none(),
-  snapshot_vts = none :: vectorclock_or_none(),
+  commit_vts :: vectorclock(),
+  snapshot_vts :: vectorclock(),
   value :: snapshot_value()
 }).
 -type snapshot() :: #snapshot{}.
@@ -109,14 +109,14 @@
 -type journal_entry() :: #journal_entry{}.
 
 -record(jsn, {
-  dcid :: dcid(),
+  dcid = undefined :: dcid(),
   number :: non_neg_integer()
 }).
 -type jsn() :: #jsn{}.
 
 -record(update_payload, {
   key_struct :: key_struct(),
-  op_param :: effect(),
+  op_param :: downstream_op() | fun(), %%TODO define operations on non crdt types
   commit_vts :: vectorclock(),
   snapshot_vts :: vectorclock(),
   tx_id :: txid()

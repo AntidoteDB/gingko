@@ -35,42 +35,38 @@
 
 -export([
   create_snapshot/1,
-  filter_relevant_journal_entries/3,
+  filter_relevant_journal_entries/2,
   update_snapshot/4,
   materialize_snapshot/2,
-  materialize_snapshot/3, materialize_snapshot_temporarily/2]
+  materialize_snapshot/3, materialize_snapshot_temporarily/2, get_committed_journal_entries_for_key/2, materialize_multiple_snapshots/2]
 ).
 
--spec is_journal_entry_update_and_contains_key(key_struct(), journal_entry(), clock_range()) -> boolean().
-is_journal_entry_update_and_contains_key(KeyStruct, JournalEntry, ClockRange) ->
+
+-spec is_journal_entry_update_and_contains_key([key_struct()] | all_keys, journal_entry()) -> boolean().
+is_journal_entry_update_and_contains_key(KeyStructFilter, JournalEntry) ->
   Operation = JournalEntry#journal_entry.operation,
-  if
-    is_record(Operation, object_operation) ->
-      Operation#object_operation.key_struct == KeyStruct andalso Operation#object_operation.op_type == update andalso gingko_utils:is_in_clock_range(JournalEntry#journal_entry.rt_timestamp, ClockRange);
-    true -> false
+  case is_record(Operation, object_operation) of
+    true ->
+      Operation#object_operation.op_type == update andalso (KeyStructFilter == all_keys orelse lists:member(Operation#object_operation.key_struct, KeyStructFilter));
+    false -> false
   end.
 
--spec contains_journal_entry_of_specific_system_operation(system_operation_type(), [journal_entry()], clock_range()) -> boolean().
-contains_journal_entry_of_specific_system_operation(SystemOperationType, JournalEntries, ClockRange) ->
+-spec contains_journal_entry_of_specific_system_operation(system_operation_type(), [journal_entry()]) -> boolean().
+contains_journal_entry_of_specific_system_operation(SystemOperationType, JournalEntries) ->
   lists:any(fun(J) ->
-    is_journal_entry_of_specific_system_operation(SystemOperationType, J, ClockRange) end, JournalEntries).
+    is_journal_entry_of_specific_system_operation(SystemOperationType, J) end, JournalEntries).
 
--spec is_journal_entry_of_specific_system_operation(system_operation_type(), journal_entry(), clock_range()) -> boolean().
-is_journal_entry_of_specific_system_operation(SystemOperationType, JournalEntry, ClockRange) ->
+-spec is_journal_entry_of_specific_system_operation(system_operation_type(), journal_entry()) -> boolean().
+is_journal_entry_of_specific_system_operation(SystemOperationType, JournalEntry) ->
   Operation = JournalEntry#journal_entry.operation,
-  if
-    is_record(Operation, system_operation) ->
-      Operation#system_operation.op_type == SystemOperationType andalso gingko_utils:is_in_clock_range(JournalEntry#journal_entry.rt_timestamp, ClockRange);
-    true -> false
+  case is_record(Operation, system_operation) of
+    true -> Operation#system_operation.op_type == SystemOperationType;
+    false -> false
   end.
 
--spec filter_relevant_journal_entries(key_struct(), journal_entry(), clock_range()) -> boolean().
-filter_relevant_journal_entries(KeyStruct, JournalEntry, ClockRange) ->
-  is_journal_entry_update_and_contains_key(KeyStruct, JournalEntry, ClockRange) orelse is_journal_entry_of_specific_system_operation(commit_txn, JournalEntry, ClockRange).
-
--spec get_indexed_journal_entries([journal_entry()]) -> [{non_neg_integer(), journal_entry()}].
-get_indexed_journal_entries(JournalEntries) ->
-  lists:mapfoldl(fun(J, Index) -> {{Index, J}, Index + 1} end, 0, JournalEntries).
+-spec filter_relevant_journal_entries([key_struct()] | all_keys, journal_entry()) -> boolean().
+filter_relevant_journal_entries(KeyStructFilter, JournalEntry) ->
+  is_journal_entry_update_and_contains_key(KeyStructFilter, JournalEntry) orelse is_journal_entry_of_specific_system_operation(commit_txn, JournalEntry).
 
 -spec separate_commit_from_update_journal_entries([journal_entry()]) -> {journal_entry(), [journal_entry()]}.
 separate_commit_from_update_journal_entries(JList) ->
@@ -81,21 +77,22 @@ separate_commit_from_update_journal_entries([CommitJournalEntry], JournalEntries
 separate_commit_from_update_journal_entries([UpdateJournalEntry | OtherJournalEntries], JournalEntries) ->
   separate_commit_from_update_journal_entries(OtherJournalEntries, [UpdateJournalEntry | JournalEntries]).
 
--spec get_committed_journal_entries([journal_entry()]) -> [{journal_entry(), [journal_entry()]}].
-get_committed_journal_entries(JournalEntries) ->
-  IndexedJournalEntries = get_indexed_journal_entries(JournalEntries),
-  JournalEntryToIndex = dict:from_list(lists:map(fun({Index, J}) -> {J, Index} end, IndexedJournalEntries)),
-  TxIdToJournalEntries = gingko_utils:group_by(fun({_Index, J}) -> J#journal_entry.tx_id end, JournalEntries),
-  TxIdToJournalEntries = dict:filter(fun({_TxId, JList}) ->
-    contains_journal_entry_of_specific_system_operation(commit_txn, JList, {none, none}) end, TxIdToJournalEntries),
-  TxIdToJournalEntries = dict:map(fun(_TxId, JList) -> lists:sort(fun(J1, J2) ->
-    dict:find(J1, JournalEntryToIndex) > dict:find(J2, JournalEntryToIndex) end, JList) end, TxIdToJournalEntries),
+-spec get_committed_journal_entries_for_key([key_struct()] | all_keys, [journal_entry()]) -> [{journal_entry(), [journal_entry()]}].
+get_committed_journal_entries_for_key(KeyStructFilter, JournalEntries) ->
+  SortedJournalEntries = lists:sort(fun(J1, J2) ->
+    gingko_utils:get_jsn_number(J1) < gingko_utils:get_jsn_number(J2) end, JournalEntries),
+  TxIdToJournalEntries = gingko_utils:group_by(fun(J) -> J#journal_entry.tx_id end, SortedJournalEntries),
+  FilteredTxIdToJournalEntries = dict:filter(fun(_TxId, JList) ->
+    lists:any(fun(J) -> filter_relevant_journal_entries(KeyStructFilter, J) end, JList) end, TxIdToJournalEntries),
+  SortedTxIdToJournalEntries = dict:map(fun(_TxId, JList) -> lists:sort(fun(J1, J2) ->
+    gingko_utils:get_jsn_number(J1) < gingko_utils:get_jsn_number(J2) end, lists:filter(fun(J) -> filter_relevant_journal_entries(KeyStructFilter, J) end, JList)) end, FilteredTxIdToJournalEntries),
+  ListOfCommitToUpdateListTuples = lists:map(fun({_TxId, JList}) ->
+    separate_commit_from_update_journal_entries(JList) end, dict:to_list(SortedTxIdToJournalEntries)),
 
-  ListOfLists = lists:map(fun({_TxId, JList}) ->
-    separate_commit_from_update_journal_entries(JList) end, dict:to_list(TxIdToJournalEntries)),
-  ListOfLists = lists:sort(fun({J1, _JList1}, {J2, _JList2}) ->
-    dict:find(J1, JournalEntryToIndex) > dict:find(J2, JournalEntryToIndex) end, ListOfLists),
-  ListOfLists.
+  SortedListOfCommitToUpdateListTuples = lists:sort(fun({J1, _JList1}, {J2, _JList2}) ->
+    gingko_utils:get_jsn_number(J1) < gingko_utils:get_jsn_number(J2) end, ListOfCommitToUpdateListTuples),
+  logger:error("SortedListOfCommitToUpdateListTuples: ~ts",[SortedListOfCommitToUpdateListTuples]),
+  SortedListOfCommitToUpdateListTuples.
 
 %%get_updated_values_for_checkpoint(CheckpointJournalEntry) ->
 %%  %TODO safety for failures
@@ -107,7 +104,8 @@ get_committed_journal_entries(JournalEntries) ->
 %%  AllJournalEntries = lists:sort(fun(J1, J2) ->
 %%    gingko_utils:get_jsn_number(J1) < gingko_utils:get_jsn_number(J2) end, AllJournalEntries),
 %%  %TODO optimize (e.g. work with reversed list)
-%%  LastCheckpoint = lists:search(fun(J) -> gingko_utils:is_system_operation(J, checkpoint) end, lists:reverse(AllJournalEntries)),
+%%  LastCheckpoint = lists:search(fun(J) ->
+%%    gingko_utils:is_system_operation(J, checkpoint) end, lists:reverse(AllJournalEntries)),
 %%  LowestJsnNumber = case LastCheckpoint of
 %%                      false -> 0;
 %%                      {value, J} -> gingko_utils:get_jsn_number(J)
@@ -175,36 +173,47 @@ materialize_snapshot(Snapshot, JournalEntries, {MinVts, MaxVts}) ->
   ValidSnapshotTime = gingko_utils:is_in_vts_range(SnapshotVts, {none, MaxVts}),
   case ValidSnapshotTime of
     true ->
-      SnapshotValue = Snapshot#snapshot.value,
-      CommittedJournalEntries = get_committed_journal_entries(JournalEntries),
+      CommittedJournalEntries = get_committed_journal_entries_for_key([Snapshot#snapshot.key_struct], JournalEntries),
+      logger:error("CommittedJournalEntries: ~ts",[CommittedJournalEntries]),
       UpdatePayloads = lists:map(fun({J1, JList}) ->
-        lists:map(fun(J) -> transform_to_update_payload(J1, J) end, JList)
-                                  end, CommittedJournalEntries),
+        lists:map(fun(J) -> transform_to_update_payload(J1, J) end, JList) end, CommittedJournalEntries),
       lists:merge(UpdatePayloads),
-      materializer:materialize_update_payload(SnapshotValue, UpdatePayloads);
-    _ -> {error, {"Invalid Snapshot Time", Snapshot, JournalEntries, {MinVts, MaxVts}}}
+      materialize_update_payload(Snapshot, UpdatePayloads);
+    false -> {error, {"Invalid Snapshot Time", Snapshot, JournalEntries, {MinVts, MaxVts}}}
   end.
+
+-spec materialize_multiple_snapshots([snapshot()], [journal_entry()]) -> {ok, [snapshot()]} | {error, reason()}.
+materialize_multiple_snapshots(Snapshots, JournalEntries) ->
+  KeyStructs = lists:map(fun(S) -> S#snapshot.key_struct end, Snapshots),
+  CommittedJournalEntries = get_committed_journal_entries_for_key(KeyStructs, JournalEntries),
+  UpdatePayloads = lists:map(fun({J1, JList}) ->
+    lists:map(fun(J) -> transform_to_update_payload(J1, J) end, JList) end, CommittedJournalEntries),
+  UpdatePayloads = lists:flatten(UpdatePayloads),
+  KeyToUpdatesDict = gingko_utils:group_by(fun(U) -> U#update_payload.key_struct end, UpdatePayloads),
+  %TODO watch out for dict errors (check again that all keys are present)
+  Results = lists:map(fun(S) -> materializer:materialize_update_payload(S#snapshot.value, dict:fetch(S#snapshot.key_struct, KeyToUpdatesDict)) end, Snapshots),
+  {ok, lists:map(fun({ok, SV}) -> SV end, Results)}. %TODO fix
+%%  case lists:all(fun(R) -> {ok, X} == R end, Results) of
+%%    true -> {ok, lists:map(fun({ok, SV}) -> SV end, Results)};
+%%    false -> {error, {"One or more failed", Results}}
+%%  end.
 
 -spec create_snapshot(key_struct()) -> snapshot().
 create_snapshot(KeyStruct) ->
   Type = KeyStruct#key_struct.type,
   DefaultValue = gingko_utils:create_default_value(Type),
-  #snapshot{key_struct = KeyStruct, value = DefaultValue}.
+  #snapshot{key_struct = KeyStruct, commit_vts = vectorclock:new(), snapshot_vts = vectorclock:new(), value = DefaultValue}.
 
--spec update_snapshot(snapshot(), effect() | fun((Value :: term()) -> UpdatedValue :: term()), vectorclock(), vectorclock()) -> {ok, snapshot()} | {error, reason()}.
+-spec update_snapshot(snapshot(), downstream_op() | fun((Value :: term()) -> UpdatedValue :: term()), vectorclock(), vectorclock()) -> {ok, snapshot()} | {error, reason()}.
 update_snapshot(Snapshot, Op, CommitVts, SnapshotVts) ->
   SnapshotValue = Snapshot#snapshot.value,
   Type = Snapshot#snapshot.key_struct#key_struct.type,
   IsCrdt = antidote_crdt:is_type(Type),
   case IsCrdt of
     true ->
-      IsValidOp = Type:is_operation(Op),
-      case IsValidOp of
-        true ->
-          {ok, Snapshot#snapshot{commit_vts = CommitVts, snapshot_vts = SnapshotVts, value = Type:update(Op, SnapshotValue)}};
-        _ -> {error, {"Invalid Operation on CRDT", Snapshot, Op, CommitVts, SnapshotVts}}
-      end;
-    _ ->
+      {ok, Value} = Type:update(Op, SnapshotValue),
+      {ok, Snapshot#snapshot{commit_vts = CommitVts, snapshot_vts = SnapshotVts, value = Value}};
+    false ->
       try
         {ok, Snapshot#snapshot{commit_vts = CommitVts, snapshot_vts = SnapshotVts, value = Op(SnapshotValue)}}
       catch
@@ -231,8 +240,8 @@ materialize_update_payload(Snapshot, [UpdatePayload | Rest]) ->
 materialize_snapshot_temporarily(Snapshot, []) ->
   {ok, Snapshot};
 materialize_snapshot_temporarily(Snapshot, [JournalEntry | Rest]) ->
-  Effect = JournalEntry#update_payload.op_param,
-  case update_snapshot(Snapshot, Effect, Snapshot#snapshot.commit_vts, Snapshot#snapshot.snapshot_vts) of
+  DownstreamOp = JournalEntry#journal_entry.operation#object_operation.op_args,
+  case update_snapshot(Snapshot, DownstreamOp, Snapshot#snapshot.commit_vts, Snapshot#snapshot.snapshot_vts) of
     {error, Reason} ->
       {error, Reason};
     {ok, Result} ->

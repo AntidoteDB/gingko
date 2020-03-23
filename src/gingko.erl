@@ -34,6 +34,7 @@
   handle_info/2,
   terminate/2,
   code_change/3]).
+-export([create_checkpoint_operation/1, create_update_operation/2, create_journal_entry/3, create_abort_operation/0, create_begin_operation/1, create_commit_operation/2, create_prepare_operation/1, create_read_operation/2, append_journal_entry/1, create_and_append_journal_entry/3]).
 
 -define(SERVER, ?MODULE).
 
@@ -63,9 +64,10 @@ start_link({DcId, LogNames}) ->
   {stop, Reason :: term()} |
   ignore).
 init({DcId, _LogNames}) ->
-  {ok, CacheServerPid} = gingko_cache:start_link({DcId, self()}),
+  {ok, CacheServerPid} = gingko_cache:start_link({DcId, self(), 100}),
   {ok, #state{
     dcid = DcId,
+    next_jsn = #jsn{number = 0},
     cache_server_pid = CacheServerPid
   }}.
 
@@ -78,34 +80,31 @@ init({DcId, _LogNames}) ->
   {stop, Reason :: term(), Reply :: term(), NewState :: state()} |
   {stop, Reason :: term(), NewState :: state()}).
 handle_call({{Op, Args}, TxId}, _From, State) ->
-  Reply = ok,
-  State = increment_jsn(State),
-  Jsn = State#state.next_jsn,
+  NewState = increment_jsn(State),
+  Jsn = NewState#state.next_jsn,
   case Op of
     read ->
       {Key, Type} = Args,
       KeyStruct = #key_struct{key = Key, type = Type},
-      CacheServerPid = State#state.cache_server_pid,
-      Reply = read(KeyStruct, Jsn, TxId, CacheServerPid);
+      CacheServerPid = NewState#state.cache_server_pid,
+      {reply, read(KeyStruct, Jsn, TxId, CacheServerPid), NewState};
     update ->
-      {Key, Type, Effect} = Args,
+      {Key, Type, TypeOp} = Args,
       KeyStruct = #key_struct{key = Key, type = Type},
-      update(KeyStruct, Jsn, TxId, Effect);
+      CacheServerPid = NewState#state.cache_server_pid,
+      {reply, update(KeyStruct, Jsn, TxId, TypeOp, CacheServerPid), NewState};
     begin_txn ->
-      begin_txn(Jsn, TxId, Args);
+      {reply, begin_txn(Jsn, TxId, Args), NewState};
     prepare_txn ->
       PrepareTime = Args,
-      prepare_txn(Jsn, TxId, PrepareTime);
+      {reply, prepare_txn(Jsn, TxId, PrepareTime), NewState};
     commit_txn ->
       {CommitTime, SnapshotTime} = Args,
-      commit_txn(Jsn, TxId, CommitTime, SnapshotTime);
+      {reply, commit_txn(Jsn, TxId, CommitTime, SnapshotTime), NewState};
     abort_txn ->
-      abort_txn(Jsn, TxId)
-
-
-  end,
+      {reply, abort_txn(Jsn, TxId), NewState}
+  end.
   %TODO check if other arguments are needed
-  {reply, Reply, State}.
 
 -spec(handle_cast(Request :: term(), State :: state()) ->
   {noreply, NewState :: state()} |
@@ -141,14 +140,16 @@ code_change(_OldVsn, State, _Extra) ->
 
 -spec read(key_struct(), jsn(), txid(), pid()) -> {ok, snapshot_value()} | {error, reason()}.
 read(KeyStruct, Jsn, TxId, CacheServerPid) ->
+  {ok, Snapshot} = gingko_log:perform_tx_read(KeyStruct, TxId, CacheServerPid),
   Operation = create_read_operation(KeyStruct, []),
   JournalEntry = create_journal_entry(Jsn, TxId, Operation),
   append_journal_entry(JournalEntry),
-  gingko_log:perform_tx_read(JournalEntry, CacheServerPid).
+  {ok, Snapshot#snapshot.value}.
 
 
--spec update(key_struct(), jsn(), txid(), effect()) -> ok.
-update(KeyStruct, Jsn, TxId, DownstreamOp) ->
+-spec update(key_struct(), jsn(), txid(), type_op(), pid()) -> ok.
+update(KeyStruct, Jsn, TxId, TypeOp, CacheServerPid) ->
+  {ok, DownstreamOp} = gingko_utils:generate_downstream_op(KeyStruct, TxId, TypeOp, CacheServerPid),
   Operation = create_update_operation(KeyStruct, DownstreamOp),
   create_and_append_journal_entry(Jsn, TxId, Operation),
   ok.
@@ -161,7 +162,9 @@ begin_txn(Jsn, TxId, DependencyVts) ->
 -spec prepare_txn(jsn(), txid(), non_neg_integer()) -> ok.
 prepare_txn(Jsn, TxId, PrepareTime) ->
   Operation = create_prepare_operation(PrepareTime),
-  create_and_append_journal_entry(Jsn, TxId, Operation).
+  create_and_append_journal_entry(Jsn, TxId, Operation),
+  {atomic, ok} = gingko_log:persist_journal_entries(),
+  ok.
 
 -spec commit_txn(jsn(), txid(), vectorclock(), vectorclock()) -> ok.
 commit_txn(Jsn, TxId, CommitTime, SnapshotTime) ->
@@ -178,6 +181,8 @@ checkpoint(Jsn, TxId, DependencyVts) ->
   Operation = create_checkpoint_operation(DependencyVts),
   create_and_append_journal_entry(Jsn, TxId, Operation),
   gingko_log:checkpoint(DependencyVts).
+
+
 
 -spec create_and_append_journal_entry(jsn(), txid(), operation()) -> ok.
 create_and_append_journal_entry(Jsn, TxId, Operation) ->
@@ -205,12 +210,12 @@ create_read_operation(KeyStruct, Args) ->
     op_args = Args
   }.
 
--spec create_update_operation(key_struct(), term()) -> object_operation().
-create_update_operation(KeyStruct, Args) ->
+-spec create_update_operation(key_struct(), downstream_op()) -> object_operation().
+create_update_operation(KeyStruct, DownstreamOp) ->
   #object_operation{
     key_struct = KeyStruct,
     op_type = update,
-    op_args = Args
+    op_args = DownstreamOp
   }.
 
 -spec create_begin_operation(vectorclock()) -> system_operation().
@@ -249,8 +254,9 @@ create_checkpoint_operation(DependencyVts) ->
   }.
 
 -spec increment_jsn(state()) -> state().
-increment_jsn(State = #state{next_jsn = CurrentJsn}) ->
+increment_jsn(State) ->
   %%TODO mnesia transaction to find next jsn
+  CurrentJsn = State#state.next_jsn,
   CurrentNumber = CurrentJsn#jsn.number,
   NextJsn = CurrentJsn#jsn{number = CurrentNumber + 1},
   State#state{next_jsn = NextJsn}.

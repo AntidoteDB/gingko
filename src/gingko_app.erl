@@ -24,6 +24,7 @@ start(_StartType, _StartArgs) ->
   case gingko_sup:start_link() of
     {ok, Pid} ->
       {ok, Pid};
+    ok -> bad;
     Error ->
       Error
   end.
@@ -34,17 +35,21 @@ stop(_State) ->
   ok.
 
 install(Nodes) ->
-  ok = mnesia:create_schema(Nodes),
-  rpc:multicall(Nodes, application, start, [mnesia]),
-  {atomic, ok} = mnesia:create_table(journal_entry,
-    [{attributes, record_info(fields, journal_entry)},
-      %{index, [#journal_entry.jsn]},TODO find out why index doesn't work here
-      {ram_copies, Nodes}
-    ]),
-  {atomic, ok} = mnesia:create_table(snapshot,
-    [{attributes, record_info(fields, snapshot)},
-      %{index, [#snapshot.key_struct]},TODO find out why index doesn't work here
-      {disc_copies, Nodes}]),
-  rpc:multicall(Nodes, application, stop, [mnesia]).
+  case mnesia:create_schema(Nodes) of
+    ok ->
+      rpc:multicall(Nodes, application, start, [mnesia]),
+      {atomic, ok} = mnesia:create_table(journal_entry,
+        [{attributes, record_info(fields, journal_entry)},
+          %{index, [#journal_entry.jsn]},TODO find out why index doesn't work here
+          {ram_copies, Nodes}
+        ]),
+      {atomic, ok} = mnesia:create_table(snapshot,
+        [{attributes, record_info(fields, snapshot)},
+          %{index, [#snapshot.key_struct]},TODO find out why index doesn't work here
+          {disc_copies, Nodes}]),
+      rpc:multicall(Nodes, application, stop, [mnesia]);
+    _ ->
+      ok
+  end.
 
 

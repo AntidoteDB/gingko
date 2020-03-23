@@ -9,7 +9,7 @@ start_link() ->
 
 init(_Args) ->
   Worker = {gingko,
-    {gingko, start_link, [{'undefined', {"journal_log", "checkpoint_log"}}]},
+    {gingko, start_link, [{undefined, {"journal_log", "checkpoint_log"}}]},
     permanent, 5000, worker, [gingko]},
 
   SupFlags = #{strategy => one_for_one, intensity => 1, period => 5},

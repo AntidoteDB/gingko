@@ -1,4 +1,4 @@
-{application, gingko,
+{application, gingko_app,
  [{description, "Persistent backend for CRDT objects"},
   {vsn, "0.1.0"},
   {registered, [gingko_app]},

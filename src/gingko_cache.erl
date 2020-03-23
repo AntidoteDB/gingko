@@ -49,7 +49,7 @@ start_link({DcId, LogServerPid, InitialMaxOccupancy}) ->
 -spec(init({dcid(), pid(), non_neg_integer()}) ->
   {ok, State :: state()} | {ok, State :: state(), timeout() | hibernate} |
   {stop, Reason :: term()} | ignore).
-init({DcId, InitialMaxOccupancy}) ->
+init({DcId, Pid, InitialMaxOccupancy}) ->
   {ok, #state{
     dcid = DcId,
     key_cache_entry_dict = dict:new(),
@@ -125,19 +125,19 @@ get_internal(Result, KeyStruct, DependencyVts) ->
     {{error, Reason}, State} -> {{error, Reason}, State};
     {{ok, CacheEntry, CacheUpdated}, State} ->
       GreaterThanCommitVts = vectorclock:le(CacheEntry#cache_entry.commit_vts, DependencyVts),
-      SmallerThanValidVts = vectorclock:le(DependencyVts, CacheEntry#cache_entry.valid_vts),
+      SmallerThanValidVts =  vectorclock:le(DependencyVts, CacheEntry#cache_entry.valid_vts) orelse (CacheUpdated andalso CacheEntry#cache_entry.valid_vts == vectorclock:new()),
       Present = CacheEntry#cache_entry.present,
       %%TODO visible
       Conditions = GreaterThanCommitVts andalso SmallerThanValidVts andalso Present,
-      if
-        Conditions ->
-          UpdatedCacheEntry = CacheEntry#cache_entry{ used = true},
-
-          {{ok, UpdatedCacheEntry#cache_entry.blob}, State};
+      case Conditions of
         true ->
-          if
-            CacheUpdated -> {{error, "Bad Cache Update"}, State};
+          UpdatedCacheEntry = CacheEntry#cache_entry{ used = true},
+          {{ok, gingko_utils:create_snapshot(UpdatedCacheEntry)}, State};
+        false ->
+          case CacheUpdated of
             true ->
+              {{error, "Bad Cache Update"}, State};
+            false ->
               Result = get_or_load_cache_entry(KeyStruct, State, false, false),
               get_internal(Result, KeyStruct, DependencyVts)
           end
@@ -148,18 +148,19 @@ get_internal(Result, KeyStruct, DependencyVts) ->
 get_or_load_cache_entry(KeyStruct, State, CacheUpdated, ForceUpdate) ->
   case ForceUpdate of
     true ->
-      State = load_key_into_cache(KeyStruct, State),
-      get_or_load_cache_entry(KeyStruct, State, true, false);
+      NewState = load_key_into_cache(KeyStruct, State),
+      get_or_load_cache_entry(KeyStruct, NewState, true, false);
     _ ->
-      CacheEntry = dict:find(KeyStruct, State#state.key_cache_entry_dict),
-      case CacheEntry of
+      FoundCacheEntry = dict:find(KeyStruct, State#state.key_cache_entry_dict),
+      case FoundCacheEntry of
         error ->
           case CacheUpdated of
             true -> {{error, "Bad Cache Update"}, State};
             _ ->
               get_or_load_cache_entry(KeyStruct, State, false, true)
           end;
-        {ok, CacheEntry} -> {{ok, CacheEntry, CacheUpdated}, State}
+        {ok, CacheEntry} ->
+          {{ok, CacheEntry, CacheUpdated}, State}
       end
   end.
 
@@ -170,7 +171,7 @@ load_key_into_cache(KeyStruct, State) -> load_key_into_cache(KeyStruct, State, {
 load_key_into_cache(KeyStruct, State, VtsRange) ->
   JournalEntries = gingko_log:read_all_journal_entries(),
   CheckpointEntry = gingko_log:read_snapshot(KeyStruct),
-  Snapshot = materializer:materialize_snapshot(CheckpointEntry, JournalEntries, VtsRange),
+  {ok, Snapshot} = materializer:materialize_snapshot(CheckpointEntry, JournalEntries, VtsRange),
   CacheEntry = gingko_utils:create_cache_entry(Snapshot),
   update_cache_entry_in_state(CacheEntry, State).
 
@@ -187,11 +188,11 @@ clock(KeyStruct, CommitVts, State) ->
       {error, State};
     {ok, CacheEntry} ->
       Equal = vectorclock:eq(CacheEntry#cache_entry.commit_vts, CommitVts),
-      if
-        Equal ->
+      case Equal of
+        true ->
           CacheEntry = CacheEntry#cache_entry{ used = false },
           {ok, update_cache_entry_in_state(CacheEntry, State)};
-        true ->
+        false ->
           {error, State}
       end
   end.
@@ -205,11 +206,11 @@ evict(KeyStruct, CommitVts, State) ->
       {error, State};
     {ok, CacheEntry} ->
       CanBeEvicted = vectorclock:eq(CacheEntry#cache_entry.commit_vts, CommitVts) andalso not CacheEntry#cache_entry.used,
-      if
-        CanBeEvicted ->
+      case CanBeEvicted of
+        true ->
           CacheEntry = CacheEntry#cache_entry{ present = false },
           {ok, update_cache_entry_in_state(CacheEntry, State)};
-        true ->
+        false ->
           {error, State}
       end
   end.
@@ -228,11 +229,11 @@ load(KeyStruct, CommitVts, Value, State) ->
 
       load_key_into_cache(KeyStruct, State, {CommitVts, CommitVts}),
       CanBeEvicted = vectorclock:eq(CacheEntry#cache_entry.commit_vts, CommitVts) andalso not CacheEntry#cache_entry.used,
-      if
-        CanBeEvicted ->
+      case CanBeEvicted of
+        true ->
           CacheEntry = CacheEntry#cache_entry{ present = false },
           {ok, update_cache_entry_in_state(CacheEntry, State)};
-        true ->
+        false ->
           {error, State}
       end
   end.

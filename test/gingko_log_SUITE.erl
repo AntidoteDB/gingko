@@ -16,20 +16,21 @@ init_per_suite(Config) ->
   gingko_app:install([node()]),
   application:start(mnesia),
   application:start(gingko_app),
-  Config.
+  [{gingko_app_pid, gingko}|Config].
 
 end_per_suite(_Config) ->
-  application:stop(gingko_app),
+  application:stop(mnesia),
   ok.
 
 simple_write_and_read(_Config) ->
-  Jsn = #jsn{number = 1, dcid = 'undefined'},
+  gingko_log:clear_journal_entries(),
+  Jsn = #jsn{number = 1},
   JournalEntry = #journal_entry{jsn = Jsn},
   ok = gingko_log:add_journal_entry(JournalEntry),
   JournalEntry = gingko_log:read_journal_entry(Jsn).
 
 duplicate_journal_entry_write(_Config) ->
-  Jsn = #jsn{number = 1, dcid = 'undefined'},
+  Jsn = #jsn{number = 1},
   JournalEntry = #journal_entry{jsn = Jsn},
   {error, {already_exists, [JournalEntry]}} = gingko_log:add_journal_entry(JournalEntry).
 
@@ -44,9 +45,9 @@ update_snapshot(_Config) ->
   true = Snapshot2 == gingko_log:read_snapshot(KeyStruct).
 
 read_all_journal_entries(_Config) ->
-  Jsn1 = #jsn{number = 1, dcid = 'undefined'},
-  Jsn2 = #jsn{number = 2, dcid = 'undefined'},
-  Jsn3 = #jsn{number = 3, dcid = 'undefined'},
+  Jsn1 = #jsn{number = 1},
+  Jsn2 = #jsn{number = 2},
+  Jsn3 = #jsn{number = 3},
   JournalEntry1 = #journal_entry{jsn = Jsn1},
   JournalEntry2 = #journal_entry{jsn = Jsn2},
   JournalEntry3 = #journal_entry{jsn = Jsn3},
@@ -85,10 +86,68 @@ persistence_test_dumped_and_lost_entry(_Config) ->
   true = JournalEntry1 == gingko_log:read_journal_entry(Jsn1),
   {error, {"No Journal Entry found", Jsn2}} = gingko_log:read_journal_entry(Jsn2).
 
+multiple_snapshot_test(_Config) ->
+  ok.
+
 simulate_crash() ->
-  application:stop(gingko_app),
   mnesia:stop(),
   no = mnesia:system_info(is_running),
   mnesia:start(),
   yes = mnesia:system_info(is_running),
-  application:start(gingko_app).
+  mnesia:wait_for_tables([journal_entry, snapshot], 5000).
+
+fill_state() ->
+  KeyStruct1 = #key_struct{key = 1, type = antidote_crdt_register_mv},
+  KeyStruct2 = #key_struct{key = 2, type = antidote_crdt_counter_pn},
+  KeyStruct3 = #key_struct{key = 3, type = antidote_crdt_set_rw},
+  KeyStruct4 = #key_struct{key = 4, type = antidote_crdt_map_rr},
+  MapKeyStruct1 = #key_struct{key = 1, type = antidote_crdt_counter_pn},
+  MapKeyStruct2 = #key_struct{key = 2, type = antidote_crdt_set_rw},
+
+  TxId1 = #tx_id{local_start_time = erlang:monotonic_time(), server_pid = self()},
+  VC1 = vectorclock:new(),
+  %Transaction
+  Jsn1 = #jsn{number = 1},
+  Jsn2 = #jsn{number = 2},
+  Jsn3 = #jsn{number = 3},
+  Jsn4 = #jsn{number = 4},
+  Jsn5 = #jsn{number = 5},
+  Jsn6 = #jsn{number = 6},
+  Jsn7 = #jsn{number = 7},
+  Jsn8 = #jsn{number = 8},
+  Jsn9 = #jsn{number = 9},
+  Jsn10 = #jsn{number = 10},
+  Jsn11 = #jsn{number = 11},
+  Jsn12 = #jsn{number = 12},
+
+  BeginOp1 = gingko:create_begin_operation(VC1),
+  gingko:create_and_append_journal_entry(Jsn1, TxId1, BeginOp1),
+
+  DownstreamOp1 = crdt_helpers:get_counter_pn_increment(1, antidote_crdt_counter_pn:new()),
+  UpdateOp1 = gingko:create_update_operation(KeyStruct2, DownstreamOp1),
+  gingko:create_and_append_journal_entry(Jsn2, TxId1, UpdateOp1),
+
+  DownstreamOp2 = crdt_helpers:get_counter_fat_increment(3, antidote_crdt_counter_fat:new()),
+  UpdateOp2 = gingko:create_update_operation(KeyStruct1, DownstreamOp2),
+  gingko:create_and_append_journal_entry(Jsn3, TxId1, UpdateOp2),
+
+  ReadOp1 = gingko:create_read_operation(KeyStruct2, []),
+  gingko:create_and_append_journal_entry(Jsn4, TxId1, ReadOp1),
+
+  DownstreamOp3 = crdt_helpers:get_map_rr_update_downstream(MapKeyStruct1, {increment, 3}, antidote_crdt_map_rr:new()),
+  UpdateOp3 = gingko:create_update_operation(KeyStruct4, DownstreamOp3),
+  gingko:create_and_append_journal_entry(Jsn5, TxId1, UpdateOp3),
+
+  DownstreamOp4 = crdt_helpers:get_set_rw_add_downstream("Hello", antidote_crdt_set_rw:new()),
+  UpdateOp4 = gingko:create_update_operation(KeyStruct3, DownstreamOp4),
+  gingko:create_and_append_journal_entry(Jsn7, TxId1, UpdateOp4),
+
+
+%%  DownstreamOp4 = crdt_helpers:get_map_rr_update_downstream(MapKeyStruct2, {add, "Hello"}, antidote_crdt_map_rr:new()),
+%%  UpdateOp4 = gingko:create_update_operation(KeyStruct4, DownstreamOp4),
+%%  gingko:create_and_append_journal_entry(Jsn6, TxId1, UpdateOp4),
+
+
+  JournalEntry1 = #journal_entry{jsn = Jsn1},
+  JournalEntry2 = #journal_entry{jsn = Jsn2},
+  JournalEntry3 = #journal_entry{jsn = Jsn3}.
