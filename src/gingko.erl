@@ -140,10 +140,10 @@ code_change(_OldVsn, State, _Extra) ->
 
 -spec read(key_struct(), jsn(), txid(), pid()) -> {ok, snapshot_value()} | {error, reason()}.
 read(KeyStruct, Jsn, TxId, CacheServerPid) ->
-  {ok, Snapshot} = gingko_log:perform_tx_read(KeyStruct, TxId, CacheServerPid),
   Operation = create_read_operation(KeyStruct, []),
   JournalEntry = create_journal_entry(Jsn, TxId, Operation),
   append_journal_entry(JournalEntry),
+  {ok, Snapshot} = gingko_log:perform_tx_read(KeyStruct, TxId, CacheServerPid),
   {ok, Snapshot#snapshot.value}.
 
 
@@ -197,7 +197,7 @@ append_journal_entry(JournalEntry) ->
 create_journal_entry(Jsn, TxId, Operation) ->
   #journal_entry{
     jsn = Jsn,
-    rt_timestamp = erlang:timestamp(),
+    rt_timestamp = gingko_utils:get_timestamp(),
     tx_id = TxId,
     operation = Operation
   }.

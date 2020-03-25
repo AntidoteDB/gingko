@@ -43,27 +43,26 @@ simple_integration_test(Config) ->
   CurrentTime = gingko_utils:get_timestamp(),
   TxId1 = #tx_id{local_start_time = CurrentTime, server_pid = self()},
   VC1 = vectorclock:new(),
-  VC2 = vectorclock:set_clock_of_dc(undefined, CurrentTime, VC1),
+  VC2 = vectorclock:set(undefined, CurrentTime, VC1),
 
   ok = gen_server:call(Pid, {{begin_txn, VC2}, TxId1}),
   {Key1, Type1, TypeOp1} = {1, antidote_crdt_counter_pn, {increment, 1}},
   ok = gen_server:call(Pid, {{update, {Key1, Type1, TypeOp1}}, TxId1}),
-  %{ok, 1} = gen_server:call(Pid, {{read, {Key1, Type1}}, TxId1}),
+  {ok, 1} = gen_server:call(Pid, {{read, {Key1, Type1}}, TxId1}),
   ok = gen_server:call(Pid, {{prepare_txn, 100}, TxId1}),
   CommitTime = gingko_utils:get_timestamp() + 2,
-  VC3 = vectorclock:set_clock_of_dc(undefined, CommitTime, VC2),
+  VC3 = vectorclock:set(undefined, CommitTime, VC2),
   ok = gen_server:call(Pid, {{commit_txn, {VC3, VC3}}, TxId1}).
 
 two_transactions(Config) ->
   Pid = ?config(gingko_app_pid, Config),
-  logger:error("All Journal Entries: ~ts",[gingko_utils:sort_by_jsn_number(gingko_log:read_all_journal_entries())]),
   CurrentTime1 = gingko_utils:get_timestamp(),
   CurrentTime2 = gingko_utils:get_timestamp() + 1,
   TxId1 = #tx_id{local_start_time = CurrentTime1, server_pid = self()},
   TxId2 = #tx_id{local_start_time = CurrentTime2, server_pid = self()},
   VC1 = vectorclock:new(),
-  VC2 = vectorclock:set_clock_of_dc(undefined, CurrentTime1, VC1),
-  VC3 = vectorclock:set_clock_of_dc(undefined, CurrentTime2, VC1),
+  VC2 = vectorclock:set(undefined, CurrentTime1, VC1),
+  VC3 = vectorclock:set(undefined, CurrentTime2, VC1),
   ok = gen_server:call(Pid, {{begin_txn, VC2}, TxId1}),
   ok = gen_server:call(Pid, {{begin_txn, VC3}, TxId2}),
 
@@ -71,10 +70,8 @@ two_transactions(Config) ->
   ok = gen_server:call(Pid, {{update, {Key1, Type1, TypeOp1}}, TxId1}),
   {Key2, Type2, TypeOp2} = {1, antidote_crdt_counter_pn, {increment, 2}},
   ok = gen_server:call(Pid, {{update, {Key2, Type2, TypeOp2}}, TxId2}),
-  %true = gingko_log:read_snapshot(#key_struct{key = 1, type = antidote_crdt_counter_pn}),
-  %true = gingko_utils:sort_by_jsn_number(gingko_log:read_all_journal_entries()),
+
   {ok, 2} = gen_server:call(Pid, {{read, {Key1, Type1}}, TxId1}),
-  %true = false,
   {ok, 3} = gen_server:call(Pid, {{read, {Key2, Type2}}, TxId2}),
 
   ok = gen_server:call(Pid, {{prepare_txn, 100}, TxId1}),
@@ -82,7 +79,7 @@ two_transactions(Config) ->
 
   CommitTime1 = gingko_utils:get_timestamp() + 2,
   CommitTime2 = gingko_utils:get_timestamp() + 3,
-  VC4 = vectorclock:set_clock_of_dc(undefined, CommitTime1, VC2),
-  VC5 = vectorclock:set_clock_of_dc(undefined, CommitTime2, VC3),
+  VC4 = vectorclock:set(undefined, CommitTime1, VC2),
+  VC5 = vectorclock:set(undefined, CommitTime2, VC3),
   ok = gen_server:call(Pid, {{commit_txn, {VC4, VC4}}, TxId1}),
   ok = gen_server:call(Pid, {{commit_txn, {VC5, VC5}}, TxId1}).

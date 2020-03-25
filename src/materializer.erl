@@ -85,13 +85,15 @@ get_committed_journal_entries_for_key(KeyStructFilter, JournalEntries) ->
   FilteredTxIdToJournalEntries = dict:filter(fun(_TxId, JList) ->
     lists:any(fun(J) -> filter_relevant_journal_entries(KeyStructFilter, J) end, JList) end, TxIdToJournalEntries),
   SortedTxIdToJournalEntries = dict:map(fun(_TxId, JList) -> lists:sort(fun(J1, J2) ->
-    gingko_utils:get_jsn_number(J1) < gingko_utils:get_jsn_number(J2) end, lists:filter(fun(J) -> filter_relevant_journal_entries(KeyStructFilter, J) end, JList)) end, FilteredTxIdToJournalEntries),
-  ListOfCommitToUpdateListTuples = lists:map(fun({_TxId, JList}) ->
-    separate_commit_from_update_journal_entries(JList) end, dict:to_list(SortedTxIdToJournalEntries)),
-
+    gingko_utils:get_jsn_number(J1) < gingko_utils:get_jsn_number(J2) end, lists:filter(fun(J) ->
+    filter_relevant_journal_entries(KeyStructFilter, J) end, JList)) end, FilteredTxIdToJournalEntries),
+  ListOfCommitToUpdateListTuples = lists:filtermap(fun({_TxId, JList}) ->
+    case contains_journal_entry_of_specific_system_operation(commit_txn, JList) of
+      true -> {true, separate_commit_from_update_journal_entries(JList)};
+      false -> false
+    end end, dict:to_list(SortedTxIdToJournalEntries)),
   SortedListOfCommitToUpdateListTuples = lists:sort(fun({J1, _JList1}, {J2, _JList2}) ->
     gingko_utils:get_jsn_number(J1) < gingko_utils:get_jsn_number(J2) end, ListOfCommitToUpdateListTuples),
-  logger:error("SortedListOfCommitToUpdateListTuples: ~ts",[SortedListOfCommitToUpdateListTuples]),
   SortedListOfCommitToUpdateListTuples.
 
 %%get_updated_values_for_checkpoint(CheckpointJournalEntry) ->
@@ -171,14 +173,19 @@ materialize_snapshot(Snapshot, JournalEntries) ->
 materialize_snapshot(Snapshot, JournalEntries, {MinVts, MaxVts}) ->
   SnapshotVts = Snapshot#snapshot.snapshot_vts,
   ValidSnapshotTime = gingko_utils:is_in_vts_range(SnapshotVts, {none, MaxVts}),
+  SortedJournalEntries = lists:sort(fun(J1, J2) ->
+    gingko_utils:get_jsn_number(J1) < gingko_utils:get_jsn_number(J2) end, JournalEntries),
   case ValidSnapshotTime of
     true ->
       CommittedJournalEntries = get_committed_journal_entries_for_key([Snapshot#snapshot.key_struct], JournalEntries),
-      logger:error("CommittedJournalEntries: ~ts",[CommittedJournalEntries]),
       UpdatePayloads = lists:map(fun({J1, JList}) ->
         lists:map(fun(J) -> transform_to_update_payload(J1, J) end, JList) end, CommittedJournalEntries),
-      lists:merge(UpdatePayloads),
-      materialize_update_payload(Snapshot, UpdatePayloads);
+      FlattenedUpdatePayloads = lists:flatten(UpdatePayloads),
+      {ok, NewSnapshot} = materialize_update_payload(Snapshot, FlattenedUpdatePayloads),
+      Last = lists:last(SortedJournalEntries),
+      Timestamp = Last#journal_entry.rt_timestamp,
+%TODO fix vectorclock
+      {ok, NewSnapshot#snapshot{snapshot_vts = vectorclock:set(undefined, Timestamp, NewSnapshot#snapshot.snapshot_vts)}};
     false -> {error, {"Invalid Snapshot Time", Snapshot, JournalEntries, {MinVts, MaxVts}}}
   end.
 
@@ -188,10 +195,11 @@ materialize_multiple_snapshots(Snapshots, JournalEntries) ->
   CommittedJournalEntries = get_committed_journal_entries_for_key(KeyStructs, JournalEntries),
   UpdatePayloads = lists:map(fun({J1, JList}) ->
     lists:map(fun(J) -> transform_to_update_payload(J1, J) end, JList) end, CommittedJournalEntries),
-  UpdatePayloads = lists:flatten(UpdatePayloads),
-  KeyToUpdatesDict = gingko_utils:group_by(fun(U) -> U#update_payload.key_struct end, UpdatePayloads),
+  FlattenedUpdatePayloads = lists:flatten(UpdatePayloads),
+  KeyToUpdatesDict = gingko_utils:group_by(fun(U) -> U#update_payload.key_struct end, FlattenedUpdatePayloads),
   %TODO watch out for dict errors (check again that all keys are present)
-  Results = lists:map(fun(S) -> materializer:materialize_update_payload(S#snapshot.value, dict:fetch(S#snapshot.key_struct, KeyToUpdatesDict)) end, Snapshots),
+  Results = lists:map(fun(S) ->
+    materializer:materialize_update_payload(S#snapshot.value, dict:fetch(S#snapshot.key_struct, KeyToUpdatesDict)) end, Snapshots),
   {ok, lists:map(fun({ok, SV}) -> SV end, Results)}. %TODO fix
 %%  case lists:all(fun(R) -> {ok, X} == R end, Results) of
 %%    true -> {ok, lists:map(fun({ok, SV}) -> SV end, Results)};

@@ -124,8 +124,6 @@ perform_tx_read(KeyStruct, TxId, CacheServerPid) ->
   %TODO assure that begin is first (must be)
   Begin = hd(CurrentTxJournalEntries),
   {ok, SnapshotByBeforeTx} = gen_server:call(CacheServerPid, {get, KeyStruct, Begin#journal_entry.operation#system_operation.op_args#begin_txn_args.dependency_vts}),
-  logger:error("Snapshot: ~ts",[SnapshotByBeforeTx]),
   UpdatesToBeAdded = lists:filter(fun(J) ->
     gingko_utils:is_update_and_contains_key(J, KeyStruct) end, CurrentTxJournalEntries),
-  logger:error("Updates: ~ts",[UpdatesToBeAdded]),
   materializer:materialize_snapshot_temporarily(SnapshotByBeforeTx, UpdatesToBeAdded).

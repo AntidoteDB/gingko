@@ -1,8 +1,0 @@
-{"1.1.0",
-[{<<"antidote_crdt">>,{pkg,<<"antidote_crdt">>,<<"0.1.2">>},0},
- {<<"vectorclock">>,{pkg,<<"vectorclock">>,<<"0.1.0">>},0}]}.
-[
-{pkg_hash,[
- {<<"antidote_crdt">>, <<"A92A5ED8918D87AD22557825743C6EAC69DD6089D536E1BF5F9AC80992FA97F8">>},
- {<<"vectorclock">>, <<"CBC79A44193756CF20B9AC8DDB9F268FAF1FE84D00C396DB447373E6D1FEDFC5">>}]}
-].

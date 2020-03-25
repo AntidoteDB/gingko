@@ -36,7 +36,8 @@ duplicate_journal_entry_write(_Config) ->
 
 update_snapshot(_Config) ->
   KeyStruct = #key_struct{key = 1},
-  Snapshot = #snapshot{key_struct = KeyStruct, value = none},
+  Vts = vectorclock:new(),
+  Snapshot = #snapshot{key_struct = KeyStruct, commit_vts = Vts, snapshot_vts = Vts, value = none},
   ok = gingko_log:add_or_update_snapshot(Snapshot),
   true = Snapshot == gingko_log:read_snapshot(KeyStruct),
   Snapshot2 = Snapshot#snapshot{value = 1},

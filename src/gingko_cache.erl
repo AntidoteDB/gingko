@@ -125,7 +125,7 @@ get_internal(Result, KeyStruct, DependencyVts) ->
     {{error, Reason}, State} -> {{error, Reason}, State};
     {{ok, CacheEntry, CacheUpdated}, State} ->
       GreaterThanCommitVts = vectorclock:le(CacheEntry#cache_entry.commit_vts, DependencyVts),
-      SmallerThanValidVts =  vectorclock:le(DependencyVts, CacheEntry#cache_entry.valid_vts) orelse (CacheUpdated andalso CacheEntry#cache_entry.valid_vts == vectorclock:new()),
+      SmallerThanValidVts =  vectorclock:le(DependencyVts, CacheEntry#cache_entry.valid_vts),
       Present = CacheEntry#cache_entry.present,
       %%TODO visible
       Conditions = GreaterThanCommitVts andalso SmallerThanValidVts andalso Present,
@@ -138,8 +138,8 @@ get_internal(Result, KeyStruct, DependencyVts) ->
             true ->
               {{error, "Bad Cache Update"}, State};
             false ->
-              Result = get_or_load_cache_entry(KeyStruct, State, false, false),
-              get_internal(Result, KeyStruct, DependencyVts)
+              NewResult = get_or_load_cache_entry(KeyStruct, State, false, true),
+              get_internal(NewResult, KeyStruct, DependencyVts)
           end
       end
   end.
@@ -150,7 +150,7 @@ get_or_load_cache_entry(KeyStruct, State, CacheUpdated, ForceUpdate) ->
     true ->
       NewState = load_key_into_cache(KeyStruct, State),
       get_or_load_cache_entry(KeyStruct, NewState, true, false);
-    _ ->
+    false ->
       FoundCacheEntry = dict:find(KeyStruct, State#state.key_cache_entry_dict),
       case FoundCacheEntry of
         error ->
@@ -175,6 +175,7 @@ load_key_into_cache(KeyStruct, State, VtsRange) ->
   CacheEntry = gingko_utils:create_cache_entry(Snapshot),
   update_cache_entry_in_state(CacheEntry, State).
 
+-spec update_cache_entry_in_state(cache_entry(), state()) -> state().
 update_cache_entry_in_state(CacheEntry, State) ->
   CacheDict = State#state.key_cache_entry_dict,
   State#state{key_cache_entry_dict = dict:store(CacheEntry#cache_entry.key_struct, CacheEntry, CacheDict)}.
