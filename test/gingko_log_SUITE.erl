@@ -54,7 +54,7 @@ read_all_journal_entries(_Config) ->
   JournalEntry3 = #journal_entry{jsn = Jsn3},
   ok = gingko_log:add_journal_entry(JournalEntry2),
   ok = gingko_log:add_journal_entry(JournalEntry3),
-  Result = gingko_log:read_all_journal_entries(),
+  Result = gingko_log:read_all_journal_entries_sorted(),
   true = lists:member(JournalEntry1, Result) andalso lists:member(JournalEntry2, Result) andalso lists:member(JournalEntry3, Result).
 
 persistence_test_lost_entry(_Config) ->

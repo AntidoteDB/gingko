@@ -10,7 +10,7 @@
 -author("kevin").
 -include("gingko.hrl").
 %% API
--export([add_journal_entry/1, add_or_update_snapshot/1, read_journal_entry/1, read_snapshot/1, read_all_journal_entries/0, match_journal_entries/1, read_journal_entries_with_tx_id/1, perform_tx_read/3, persist_journal_entries/0, clear_journal_entries/0]).
+-export([add_journal_entry/1, add_or_update_snapshot/1, read_journal_entry/1, read_snapshot/1, read_all_journal_entries/0, match_journal_entries/1, read_journal_entries_with_tx_id/1, perform_tx_read/3, persist_journal_entries/0, clear_journal_entries/0, read_all_journal_entries_sorted/0, read_journal_entries_with_tx_id_sorted/1]).
 
 -spec persist_journal_entries() -> {atomic, ok} | {aborted, reason()}.
 persist_journal_entries() ->
@@ -58,12 +58,22 @@ read_journal_entry(Jsn) ->
 
 -spec read_all_journal_entries() -> [journal_entry()].
 read_all_journal_entries() ->
-  mnesia:activity(transaction, fun() -> mnesia:foldl(fun(X, Acc) -> [X | Acc] end, [], journal_entry) end).
+  mnesia:activity(transaction, fun() -> mnesia:foldl(fun(J, Acc) -> [J | Acc] end, [], journal_entry) end).
+
+-spec read_all_journal_entries_sorted() -> [journal_entry()].
+read_all_journal_entries_sorted() ->
+  mnesia:activity(transaction, fun() -> mnesia:foldl(fun(J, Acc) -> gingko_utils:sorted_insert(J, Acc, fun(J1, J2) -> gingko_utils:get_jsn_number(J1) =< gingko_utils:get_jsn_number(J2) end) end, [], journal_entry) end).
+
+
 
 -spec read_journal_entries_with_tx_id(txid()) -> [journal_entry()].
 read_journal_entries_with_tx_id(TxId) ->
   MatchJournalEntry = #journal_entry{jsn = '_', rt_timestamp = '_', tx_id = TxId, operation = '_'},
   match_journal_entries(MatchJournalEntry).
+
+-spec read_journal_entries_with_tx_id_sorted(txid()) -> [journal_entry()].
+read_journal_entries_with_tx_id_sorted(TxId) ->
+  gingko_utils:sort_by_jsn_number(read_journal_entries_with_tx_id(TxId)).
 
 -spec match_journal_entries(journal_entry()) -> [journal_entry()].
 match_journal_entries(MatchJournalEntry) ->
@@ -97,9 +107,7 @@ read_snapshots(KeyStructs) ->
 %TODO reconsider dependency vts for checkpoints placed in the journal
 checkpoint(DependencyVts) ->
   persist_journal_entries(),
-  JournalEntries = read_all_journal_entries(),
-  JournalEntries = lists:sort(fun(J1, J2) ->
-    gingko_utils:get_jsn_number(J1) < gingko_utils:get_jsn_number(J2) end, JournalEntries),
+  JournalEntries = read_all_journal_entries_sorted(),
   %TODO optimize (e.g. work with reversed list)
   %We want to go to the checkpoint that was previous to the recently added one TODO make sure checkpoints are placed correctly
   %TODO We assume for now that all commits in the journal before the checkpoint are part of the checkpoint!
@@ -112,7 +120,7 @@ checkpoint(DependencyVts) ->
     gingko_utils:is_system_operation(J, commit_txn) end, RelevantJournalEntriesForCommits),
   AllTxIds = sets:from_list(lists:map(fun(J) -> J#journal_entry.tx_id end, AllCommits)),
   RelevantJournalEntriesForCheckpoint = lists:filter(fun(J) ->
-    sets:is_element(J#journal_entry.tx_id, AllTxIds) andalso materializer:filter_relevant_journal_entries(all_keys, J) end, JournalEntries),
+    sets:is_element(J#journal_entry.tx_id, AllTxIds) andalso materializer:is_update_of_keys_or_commit(J, all_keys) end, JournalEntries),
   AllUpdatedKeys = gingko_utils:get_keys_from_updates(RelevantJournalEntriesForCheckpoint),
   Snapshots = read_snapshots(AllUpdatedKeys),
   materializer:materialize_multiple_snapshots(Snapshots, RelevantJournalEntriesForCheckpoint).
@@ -120,10 +128,17 @@ checkpoint(DependencyVts) ->
 
 -spec perform_tx_read(key_struct(), txid(), pid()) -> {ok, snapshot()} | {error, reason()}.
 perform_tx_read(KeyStruct, TxId, CacheServerPid) ->
-  CurrentTxJournalEntries = gingko_utils:sort_by_jsn_number(gingko_log:read_journal_entries_with_tx_id(TxId)),
+  CurrentTxJournalEntries = read_journal_entries_with_tx_id_sorted(TxId),
   %TODO assure that begin is first (must be)
   Begin = hd(CurrentTxJournalEntries),
   {ok, SnapshotByBeforeTx} = gen_server:call(CacheServerPid, {get, KeyStruct, Begin#journal_entry.operation#system_operation.op_args#begin_txn_args.dependency_vts}),
   UpdatesToBeAdded = lists:filter(fun(J) ->
-    gingko_utils:is_update_and_contains_key(J, KeyStruct) end, CurrentTxJournalEntries),
+    gingko_utils:is_update_of_keys(J, [KeyStruct]) end, CurrentTxJournalEntries),
   materializer:materialize_snapshot_temporarily(SnapshotByBeforeTx, UpdatesToBeAdded).
+
+recover_journal_log() ->
+  AllJournalEntries = gingko_log:read_all_journal_entries_sorted(),
+  AllJournalEntries = lists:sort(fun(J1, J2) ->
+    gingko_utils:get_jsn_number(J1) < gingko_utils:get_jsn_number(J2) end, AllJournalEntries),
+
+  CheckpointJournalEntries = g.

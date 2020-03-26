@@ -64,7 +64,7 @@ start_link({DcId, LogNames}) ->
   {stop, Reason :: term()} |
   ignore).
 init({DcId, _LogNames}) ->
-  {ok, CacheServerPid} = gingko_cache:start_link({DcId, self(), 100}),
+  {ok, CacheServerPid} = gingko_cache:start_link({DcId, self(), [{max_occupancy, 100}]}),
   {ok, #state{
     dcid = DcId,
     next_jsn = #jsn{number = 0},

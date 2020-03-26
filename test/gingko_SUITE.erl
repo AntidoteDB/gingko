@@ -27,8 +27,8 @@ init_per_suite(Config) ->
   application:set_env(mnesia, dir, Priv),
   ok = application:load(gingko_app),
   gingko_app:install([node()]),
-  application:start(mnesia),
-  application:start(gingko_app),
+  ok = application:start(mnesia),
+  ok = application:start(gingko_app),
   [{gingko_app_pid, gingko}|Config].
 
 end_per_suite(_Config) ->
@@ -83,3 +83,10 @@ two_transactions(Config) ->
   VC5 = vectorclock:set(undefined, CommitTime2, VC3),
   ok = gen_server:call(Pid, {{commit_txn, {VC4, VC4}}, TxId1}),
   ok = gen_server:call(Pid, {{commit_txn, {VC5, VC5}}, TxId1}).
+
+checkpoint(Config) ->
+  Pid = ?config(gingko_app_pid, Config),
+  %VC1 = vectorclock:new(),
+  %VC2 = vectorclock:set(undefined, CurrentTime1, VC1),
+  %ok = gen_server:call(Pid, {{begin_txn, VC2}, TxId1}),
+ok.

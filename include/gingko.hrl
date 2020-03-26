@@ -30,15 +30,25 @@
 -type reason() :: term().
 -type log_names() :: {string(), string()}.
 
+
+-record(cache_usage, {
+  used = true :: boolean(),
+  first_used = 0 :: clock_time(),
+  last_used = 0 :: clock_time(),
+  times_used = 1 :: non_neg_integer()
+}).
+-type cache_usage() :: #cache_usage{}.
+
 -record(cache_entry, {
   key_struct :: key_struct(),
   commit_vts :: vectorclock(),
-  present :: boolean(),
+  present = true :: boolean(),
   valid_vts :: vectorclock(),
-  used :: boolean(),
+  usage = #cache_usage{} :: cache_usage(),
   blob :: term() | crdt()
 }).
 -type cache_entry() :: #cache_entry{}.
+
 
 
 
