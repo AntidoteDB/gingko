@@ -11,7 +11,7 @@
 -include("gingko.hrl").
 
 %% API
--export([is_in_vts_range/2, get_clock_range/2, is_in_clock_range/2, create_cache_entry/1, group_by/2, add_to_value_list_or_create_single_value_list/3, create_default_value/1, get_jsn_number/1, sort_by_jsn_number/1, is_system_operation/2, is_update_of_keys/2, is_update/1, get_keys_from_updates/1, generate_downstream_op/4, create_snapshot/1, get_timestamp/0, sorted_insert/3, contains_system_operation/2, is_update_of_keys_or_commit/2, get_dcid/0, update_cache_usage/2]).
+-export([is_in_vts_range/2, get_clock_range/2, is_in_clock_range/2, create_cache_entry/1, create_default_value/1, get_jsn_number/1, sort_by_jsn_number/1, is_system_operation/2, is_update_of_keys/2, is_update/1, get_keys_from_updates/1, generate_downstream_op/4, create_snapshot_from_cache_entry/1, get_timestamp/0, contains_system_operation/2, is_update_of_keys_or_commit/2, get_dcid/0, update_cache_usage/2, get_latest_vts/1, get_DCSf_vts/0, get_GCSf_vts/0]).
 
 -spec get_timestamp() -> non_neg_integer().
 get_timestamp() ->
@@ -21,14 +21,11 @@ get_timestamp() ->
 -spec get_dcid() -> dcid().
 get_dcid() -> undefined. %TODO implement
 
--spec group_by(fun((ListType :: term()) -> GroupKeyType :: term()), [ListType :: term()]) -> dict:dict(GroupKeyType :: term(), ListType :: term()).
-group_by(Fun, List) ->
-  lists:foldr(fun({Key, Value}, Dict) -> dict:append(Key, Value, Dict) end, dict:new(), [{Fun(X), X} || X <- List]).
+-spec get_DCSf_vts() -> vectorclock().
+get_DCSf_vts() -> vectorclock:new(). %TODO implement
 
--spec add_to_value_list_or_create_single_value_list(DictionaryTypeAToValueTypeBList :: dict:dict(KeyTypeA :: term(), TypeBList :: [term()]), KeyTypeA :: term(), ValueTypeB :: term()) -> term().
-add_to_value_list_or_create_single_value_list(DictionaryTypeAToValueTypeBList, KeyTypeA, ValueTypeB) ->
-  dict:update(KeyTypeA, fun(ValueTypeBList) ->
-    [ValueTypeB | ValueTypeBList] end, [ValueTypeB], DictionaryTypeAToValueTypeBList).
+-spec get_GCSf_vts() -> vectorclock().
+get_GCSf_vts() -> vectorclock:new(). %TODO implement
 
 -spec is_in_vts_range(vectorclock(), vts_range()) -> boolean().
 is_in_vts_range(Vts, VtsRange) ->
@@ -75,8 +72,8 @@ update_cache_usage(CacheEntry, Used) ->
                   end,
   CacheEntry#cache_entry{usage = NewCacheUsage}.
 
-  -spec create_snapshot(cache_entry()) -> snapshot().
-create_snapshot(CacheEntry) ->
+  -spec create_snapshot_from_cache_entry(cache_entry()) -> snapshot().
+create_snapshot_from_cache_entry(CacheEntry) ->
   KeyStruct = CacheEntry#cache_entry.key_struct,
   CommitVts = CacheEntry#cache_entry.commit_vts,
   SnapshotVts = CacheEntry#cache_entry.valid_vts,
@@ -134,13 +131,18 @@ sort_by_jsn_number(JournalEntries) ->
   lists:sort(fun(J1, J2) ->
     get_jsn_number(J1) < get_jsn_number(J2) end, JournalEntries).
 
--spec sorted_insert(TypeA :: term(), [TypeA :: term()], fun((TypeA :: term(), TypeA :: term()) -> boolean())) -> [TypeA :: term()].
-sorted_insert(X, [], _Comparer) -> [X];
-sorted_insert(X, L = [H | T], Comparer) ->
-  case Comparer(X, H) of
-    true -> [X | L];
-    false -> [H | sorted_insert(X, T, Comparer)]
-  end.
+-spec get_latest_vts([journal_entry()]) -> vectorclock().
+get_latest_vts(SortedJournalEntries) ->
+  ReversedSortedJournalEntries = lists:reverse(SortedJournalEntries),
+  LastJournalEntry = hd(ReversedSortedJournalEntries),
+  LastJournalEntryWithVts = hd(lists:filter(fun(J) ->
+    gingko_utils:is_system_operation(J, begin_txn) orelse gingko_utils:is_system_operation(J, commit_txn) end, ReversedSortedJournalEntries)),
+  LastVts = case gingko_utils:is_system_operation(LastJournalEntryWithVts, begin_txn) of
+              true -> LastJournalEntryWithVts#journal_entry.operation#system_operation.op_args#begin_txn_args.dependency_vts;
+              false -> LastJournalEntryWithVts#journal_entry.operation#system_operation.op_args#commit_txn_args.commit_vts
+            end,
+  Timestamp = LastJournalEntry#journal_entry.rt_timestamp,
+  vectorclock:set(gingko_utils:get_dcid(), Timestamp, LastVts).
 
 -spec generate_downstream_op(key_struct(), txid(), type_op(), pid()) ->
   {ok, downstream_op()} | {error, atom()}.

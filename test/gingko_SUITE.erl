@@ -52,7 +52,7 @@ simple_integration_test(Config) ->
   ok = gen_server:call(Pid, {{prepare_txn, 100}, TxId1}),
   CommitTime = gingko_utils:get_timestamp() + 2,
   VC3 = vectorclock:set(undefined, CommitTime, VC2),
-  ok = gen_server:call(Pid, {{commit_txn, {VC3, VC3}}, TxId1}).
+  ok = gen_server:call(Pid, {{commit_txn, VC3}, TxId1}).
 
 two_transactions(Config) ->
   Pid = ?config(gingko_app_pid, Config),
@@ -81,8 +81,8 @@ two_transactions(Config) ->
   CommitTime2 = gingko_utils:get_timestamp() + 3,
   VC4 = vectorclock:set(undefined, CommitTime1, VC2),
   VC5 = vectorclock:set(undefined, CommitTime2, VC3),
-  ok = gen_server:call(Pid, {{commit_txn, {VC4, VC4}}, TxId1}),
-  ok = gen_server:call(Pid, {{commit_txn, {VC5, VC5}}, TxId1}).
+  ok = gen_server:call(Pid, {{commit_txn, VC4}, TxId1}),
+  ok = gen_server:call(Pid, {{commit_txn, VC5}, TxId1}).
 
 checkpoint(Config) ->
   Pid = ?config(gingko_app_pid, Config),

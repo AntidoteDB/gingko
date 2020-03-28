@@ -25,19 +25,20 @@
 
 -define(SERVER, ?MODULE).
 
+-type cache_dict() :: dict:dict(key_struct(), [cache_entry()]).
+
 %TODO think of default values
 -record(state, {
   dcid :: dcid(),
-  key_cache_entry_dict :: dict:dict(key_struct(), [cache_entry()]), %TODO double dict for optimization later
+  key_cache_entry_dict :: cache_dict(), %TODO double dict for optimization later
   max_occupancy = 100 :: non_neg_integer(),
-  occupancy = 0 :: non_neg_integer(),
   reset_used_interval_millis = 1000 :: non_neg_integer(),
   reset_used_timer = none :: none | reference(),
-  number_of_evictions = 10 :: non_neg_integer(),
   eviction_interval_millis = 1000 :: non_neg_integer(),
   eviction_timer = none :: none | reference(),
-  eviction_strategy = interval :: interval | fifo | lru | lfu,
-  deletion_strategy = interval :: interval | only_mark | delete_directly
+  eviction_threshold_in_percent = 90 :: 0..100, %TODO values above 100 are simply 100
+  target_threshold_in_percent = 00 :: 0..100, %TODO think about this one (currently based on the eviction threshold)
+  eviction_strategy = interval :: interval | fifo | lru | lfu
   %TODO decide on parameters
 }).
 -type state() :: #state{}.
@@ -55,6 +56,7 @@ start_link({DcId, LogServerPid, CacheConfig}) ->
 %%% gen_server callbacks
 %%%===================================================================
 
+%TODO finish with all parameters
 -spec apply_cache_config(state(), [{atom(), term()}]) -> state().
 apply_cache_config(State, CacheConfig) ->
   MaxOccupancy =
@@ -68,10 +70,6 @@ apply_cache_config(State, CacheConfig) ->
       {reset_used_interval_millis, Value2} -> {true, Value2};
       false -> {false, State#state.reset_used_interval_millis}
     end,
-  NumberOfEvictions = case lists:keyfind(number_of_evictions, 1, CacheConfig) of
-                        {number_of_evictions, Value3} -> Value3;
-                        false -> State#state.number_of_evictions
-                      end,
   {UpdateEvictionTimer, EvictionIntervalMillis} =
     case lists:keyfind(eviction_interval_millis, 1, CacheConfig) of
       {eviction_interval_millis, Value4} -> {true, Value4};
@@ -81,11 +79,7 @@ apply_cache_config(State, CacheConfig) ->
                        {eviction_strategy, Value5} -> Value5;
                        false -> State#state.eviction_strategy
                      end,
-  DeletionStrategy = case lists:keyfind(deletion_strategy, 1, CacheConfig) of
-                       {deletion_strategy, Value6} -> Value6;
-                       false -> State#state.deletion_strategy
-                     end,
-  NewState = State#state{max_occupancy = MaxOccupancy, reset_used_interval_millis = UsedResetIntervalMillis, number_of_evictions = NumberOfEvictions, eviction_interval_millis = EvictionIntervalMillis, eviction_strategy = EvictionStrategy, deletion_strategy = DeletionStrategy},
+  NewState = State#state{max_occupancy = MaxOccupancy, reset_used_interval_millis = UsedResetIntervalMillis, eviction_interval_millis = EvictionIntervalMillis, eviction_strategy = EvictionStrategy},
   update_timers(NewState, UpdateResetUsedTimer, UpdateEvictionTimer).
 
 -spec update_timers(state(), boolean(), boolean()) -> state().
@@ -122,8 +116,7 @@ update_timers(State, UpdateResetUsedTimer, UpdateEvictionTimer) ->
 init({DcId, Pid, CacheConfig}) ->
   State = #state{
     dcid = DcId,
-    key_cache_entry_dict = dict:new(),
-    occupancy = 0
+    key_cache_entry_dict = dict:new()
   },
   {ok, apply_cache_config(State, CacheConfig)}.
 
@@ -153,6 +146,10 @@ handle_call({inc, KeyStruct, CommitVts, UpdateVts}, _From, State) ->
 
 handle_call({load, KeyStruct, CommitVts, Crdt}, _From, State) ->
   {Reply, NewState} = load(KeyStruct, CommitVts, Crdt, State),
+  {reply, Reply, NewState};
+
+handle_call({update_cache_config, CacheConfig}, _From, State) ->
+  {Reply, NewState} = {ok, apply_cache_config(State, CacheConfig)},
   {reply, Reply, NewState}.
 
 -spec(handle_cast(Request :: term(), State :: state()) ->
@@ -167,10 +164,17 @@ handle_cast(_Request, State) ->
   {noreply, NewState :: state(), timeout() | hibernate} |
   {stop, Reason :: term(), NewState :: state()}).
 handle_info({eviction_event}, State) ->
-
-  {noreply, State};
+  OldTimer = State#state.eviction_timer,
+  erlang:cancel_timer(OldTimer),
+  NewState = start_eviction_process(State),
+  NewTimer = erlang:send_after(NewState#state.eviction_interval_millis, self(), eviction_event),
+  {noreply, NewState#state{eviction_timer = NewTimer}};
 handle_info({reset_used_event}, State) ->
-  {noreply, State};
+  OldTimer = State#state.reset_used_timer,
+  erlang:cancel_timer(OldTimer),
+  NewState = reset_used(State),
+  NewTimer = erlang:send_after(NewState#state.reset_used_interval_millis, self(), reset_used_event),
+  {noreply, NewState#state{reset_used_timer = NewTimer}};
 handle_info(_Info, State) ->
   {noreply, State}.
 
@@ -191,69 +195,115 @@ code_change(_OldVsn, State, _Extra) ->
 
 -spec get(key_struct(), vectorclock(), state()) -> {{ok, snapshot()}, state()} | {{error, reason()}, state()}.
 get(KeyStruct, DependencyVts, State) ->
-  Result = get_or_load_cache_entry(KeyStruct, State, false, false),
+  Result = get_or_load_cache_entry(KeyStruct, DependencyVts, State, false, false),
   get_internal(Result, KeyStruct, DependencyVts).
 
--spec get_internal({{ok, cache_entry(), boolean()}, state()} | {{error, Reason}, state()}, key_struct(), vectorclock()) -> {{ok, snapshot()}, state()} | {{error, Reason}, state()}.
+-spec get_internal({{ok, [cache_entry()], boolean()}, key_struct(), state()} | {{error, Reason}, state()}, key_struct(), vectorclock()) -> {{ok, snapshot()}, state()} | {{error, Reason}, state()}.
 get_internal(Result, KeyStruct, DependencyVts) ->
   case Result of
     {{error, Reason}, State} -> {{error, Reason}, State};
-    {{ok, CacheEntry, CacheUpdated}, State} ->
-      GreaterThanCommitVts = vectorclock:le(CacheEntry#cache_entry.commit_vts, DependencyVts),
-      SmallerThanValidVts = vectorclock:le(DependencyVts, CacheEntry#cache_entry.valid_vts),
-      Present = CacheEntry#cache_entry.present,
-      %%TODO visible
-      Conditions = GreaterThanCommitVts andalso SmallerThanValidVts andalso Present,
-      case Conditions of
-        true ->
-          UpdatedCacheEntry = CacheEntry#cache_entry{usage = gingko_utils:update_cache_usage(CacheEntry, true)},
-          {{ok, gingko_utils:create_snapshot(UpdatedCacheEntry)}, State};
-        false ->
+    {{ok, CacheEntries, CacheUpdated}, State} ->
+      MatchingEntries = lists:filter(
+        fun(C) ->
+          gingko_utils:is_in_vts_range(DependencyVts, {C#cache_entry.commit_vts, C#cache_entry.valid_vts})
+        %%TODO check: this should also mean visible
+        end, CacheEntries),
+      case MatchingEntries of
+        [] ->
           case CacheUpdated of
             true ->
               {{error, "Bad Cache Update"}, State};
             false ->
-              NewResult = get_or_load_cache_entry(KeyStruct, State, false, true),
+              NewResult = get_or_load_cache_entry(KeyStruct, DependencyVts, State, false, true),
               get_internal(NewResult, KeyStruct, DependencyVts)
-          end
+          end;
+        [C] ->
+          UpdatedCacheEntry = C#cache_entry{usage = gingko_utils:update_cache_usage(C, true)},
+          {{ok, gingko_utils:create_snapshot_from_cache_entry(UpdatedCacheEntry)}, State};
+        _Multiple ->
+          {{error, "Multiple cache entries with the same key and commit vts exist which should not happen!"}, State}
       end
   end.
 
--spec get_or_load_cache_entry(key_struct(), state(), boolean(), boolean()) -> {{ok, cache_entry(), boolean()}, state()} | {{error, reason()}, state()}.
-get_or_load_cache_entry(KeyStruct, State, CacheUpdated, ForceUpdate) ->
+-spec get_or_load_cache_entry(key_struct(), vectorclock(), state(), boolean(), boolean()) -> {{ok, [cache_entry()], boolean()}, state()} | {{error, reason()}, state()}.
+get_or_load_cache_entry(KeyStruct, DependencyVts, State, CacheUpdated, ForceUpdate) ->
   case ForceUpdate of
     true ->
-      NewState = load_key_into_cache(KeyStruct, State),
-      get_or_load_cache_entry(KeyStruct, NewState, true, false);
+      NewState = load_key_into_cache(KeyStruct, State, {none, DependencyVts}),
+      get_or_load_cache_entry(KeyStruct, DependencyVts, NewState, true, false);
     false ->
-      FoundCacheEntry = dict:find(KeyStruct, State#state.key_cache_entry_dict),
-      case FoundCacheEntry of
+      FoundCacheEntries = dict:find(KeyStruct, State#state.key_cache_entry_dict),
+      case FoundCacheEntries of
         error ->
           case CacheUpdated of
             true -> {{error, "Bad Cache Update"}, State};
-            _ ->
-              get_or_load_cache_entry(KeyStruct, State, false, true)
+            false ->
+              get_or_load_cache_entry(KeyStruct, DependencyVts, State, false, true)
           end;
-        {ok, CacheEntry} ->
-          {{ok, CacheEntry, CacheUpdated}, State}
+        {ok, CacheEntries} ->
+          {{ok, CacheEntries, CacheUpdated}, State}
       end
   end.
 
--spec load_key_into_cache(key_struct(), state()) -> state().
-load_key_into_cache(KeyStruct, State) -> load_key_into_cache(KeyStruct, State, {none, none}).
-
--spec load_key_into_cache(key_struct(), state(), vts_range()) -> state().
-load_key_into_cache(KeyStruct, State, VtsRange) ->
+-spec load_key_into_cache(key_struct(), state(), vectorclock()) -> state().
+load_key_into_cache(KeyStruct, State, DependencyVts) ->
   SortedJournalEntries = gingko_log:read_all_journal_entries_sorted(),
-  CheckpointEntry = gingko_log:read_snapshot(KeyStruct),
-  {ok, Snapshot} = materializer:materialize_snapshot(CheckpointEntry, SortedJournalEntries, VtsRange),
+
+  CheckpointJournalEntries = lists:filter(fun(J) ->
+    gingko_utils:is_system_operation(J, checkpoint) end, lists:reverse(SortedJournalEntries)),
+  {MostRecentSnapshot, NewState} =
+    case CheckpointJournalEntries of
+      [] ->
+        CS1 = materializer:create_new_snapshot(KeyStruct),
+        {CS1, update_cache_entry_in_state(gingko_utils:create_cache_entry(CS1), State)};
+      [LastCheckpointJournalEntry|_Js] ->
+        FoundCacheEntries = dict:find(KeyStruct, State#state.key_cache_entry_dict),
+        case FoundCacheEntries of
+          [] ->
+            CS2 = gingko_log:read_snapshot(KeyStruct),
+            {CS2, update_cache_entry_in_state(gingko_utils:create_cache_entry(CS2), State)};
+          CacheEntries ->
+            CheckpointVts = LastCheckpointJournalEntry#journal_entry.operation#system_operation.op_args#checkpoint_args.dependency_vts,
+            ValidCacheEntries = lists:filter(fun(C) -> gingko_utils:is_in_vts_range(C#cache_entry.commit_vts, {none, DependencyVts}) andalso C#cache_entry.valid_vts, {CheckpointVts, DependencyVts} end, CacheEntries),
+            case ValidCacheEntries of
+              [] ->
+                CS3 = gingko_log:read_snapshot(KeyStruct),
+                {CS3, update_cache_entry_in_state(gingko_utils:create_cache_entry(CS3), State)};
+              [ValidCacheEntry|_FoundValidCacheEntries] ->
+                CS4 = gingko_utils:create_snapshot_from_cache_entry(ValidCacheEntry),
+                {CS4, State}
+            end
+        end
+    end,
+  {ok, Snapshot} = materializer:materialize_snapshot(MostRecentSnapshot, SortedJournalEntries, DependencyVts),
   CacheEntry = gingko_utils:create_cache_entry(Snapshot),
-  update_cache_entry_in_state(CacheEntry, State).
+  update_cache_entry_in_state(CacheEntry, NewState).
 
 -spec update_cache_entry_in_state(cache_entry(), state()) -> state().
 update_cache_entry_in_state(CacheEntry, State) ->
+  KeyStruct = CacheEntry#cache_entry.key_struct,
+  CommitVts = CacheEntry#cache_entry.commit_vts,
+  ValidVts = CacheEntry#cache_entry.valid_vts,
   CacheDict = State#state.key_cache_entry_dict,
-  State#state{key_cache_entry_dict = dict:store(CacheEntry#cache_entry.key_struct, CacheEntry, CacheDict)}.
+  CacheEntryList = general_utils:get_or_default(CacheDict, CacheEntry#cache_entry.key_struct, []),
+  MatchingEntries = lists:filter(fun(C) -> C#cache_entry.commit_vts == CommitVts end, CacheEntryList),
+  UpdateNecessary =
+    case MatchingEntries of
+      [] -> true;
+      [C] -> gingko_utils:is_in_vts_range(ValidVts, {C#cache_entry.valid_vts, none});
+      _Multiple ->
+        logger:error("Multiple cache entries with the same key and commit vts exist which should not happen!~nExisting Cache Entries:~n~p~nCache Entry Update:~n~p~n", [CacheEntryList, CacheEntry]),
+        true
+    end,
+  case UpdateNecessary of
+    true ->
+      NewCacheList = [CacheEntry | lists:filter(fun(C) -> C#cache_entry.commit_vts /= CommitVts end, CacheEntryList)],
+      NewCacheDict = dict:store(KeyStruct, NewCacheList, CacheDict),
+      State#state{key_cache_entry_dict = NewCacheDict};
+    false ->
+      logger:error("Unnecessary cache update!~nExisting Cache Entries:~n~p~nCache Entry Update:~n~p~n", [CacheEntryList, CacheEntry]),
+      State
+  end.
 
 
 -spec clock(key_struct(), vectorclock(), state()) -> {ok, state()} | {error, state()}.
@@ -295,6 +345,7 @@ inc(KeyStruct, CommitVts, UpdateVts, State) ->
   %%TODO
   ok.
 
+-spec load(key_struct(), vectorclock(), snapshot_value(), state()) -> {ok, state()} | {error, {reason(), state()}}.
 load(KeyStruct, CommitVts, Value, State) ->
   %%TODO occupancy
   start_eviction_process(State), %TODO check performance of synchronized process
@@ -303,7 +354,6 @@ load(KeyStruct, CommitVts, Value, State) ->
     error ->
       {error, State};
     {ok, CacheEntry} ->
-
       load_key_into_cache(KeyStruct, State, {CommitVts, CommitVts}),
       CanBeEvicted = vectorclock:eq(CacheEntry#cache_entry.commit_vts, CommitVts) andalso not CacheEntry#cache_entry.usage,
       case CanBeEvicted of
@@ -315,22 +365,148 @@ load(KeyStruct, CommitVts, Value, State) ->
       end
   end.
 
--spec start_eviction_process(state()) -> ok.
+-spec start_eviction_process(state()) -> state().
 start_eviction_process(State) ->
   MaxOccupancy = State#state.max_occupancy,
-  CurrentOccupancy = State#state.occupancy,
-  NumberOfEvictions = State#state.number_of_evictions,
+  CurrentOccupancy = dict:fold(fun(_Key, CList, Number) ->
+    Number + length(CList) end, 0, State#state.key_cache_entry_dict),
+  EvictionThreshold = State#state.eviction_threshold_in_percent * MaxOccupancy div 100,
+  TargetThreshold = State#state.target_threshold_in_percent * EvictionThreshold div 100,
+  EvictionNeeded = CurrentOccupancy > EvictionThreshold,
+  CacheDict = State#state.key_cache_entry_dict,
+  NewCacheDict =
+    case {EvictionNeeded, State#state.eviction_strategy} of
+      {true, interval} -> %No preference on cache entries
+        interval_evict(CacheDict, CurrentOccupancy, TargetThreshold);
+      {true, fifo} ->
+        fifo_evict(CacheDict, CurrentOccupancy, TargetThreshold);
+      {true, lru} ->
+        lru_evict(CacheDict, CurrentOccupancy, TargetThreshold);
+      {true, lfu} ->
+        lfu_evict(CacheDict, CurrentOccupancy, TargetThreshold);
+      {false, _} ->
+        CacheDict
+    end,
+  State#state{key_cache_entry_dict = NewCacheDict}.
 
-  case CurrentOccupancy >= MaxOccupancy of
-    true -> ok;
-    false -> ok
-  end,
-  ok.
+-spec interval_evict(cache_dict(), non_neg_integer(), non_neg_integer()) -> cache_dict().
+interval_evict(CacheDict, CurrentOccupancy, TargetThreshold) ->
+  {RemainingOccupancy, NewUsedCacheDict} =
+    dict:fold(
+      fun(Key, CList, {Occupancy, NewCacheDictAcc}) ->
+        {NewOccupancy, ListOfCacheEntries} =
+          lists:foldl(
+            fun(C, {InnOcc, CL}) ->
+              case InnOcc =< TargetThreshold orelse C#cache_entry.usage#cache_usage.used of
+                true -> {InnOcc, [C | CL]};
+                false -> {InnOcc - 1, CL}
+              end
+            end, {Occupancy, []}, CList),
+        case ListOfCacheEntries of
+          [] -> {NewOccupancy, NewCacheDictAcc};
+          List -> {NewOccupancy, dict:store(Key, List, NewCacheDictAcc)}
+        end
+      end, {CurrentOccupancy, dict:new()}, CacheDict),
+  case RemainingOccupancy >= TargetThreshold of
+    true ->
+      lru_evict(reset_used(NewUsedCacheDict, 0), RemainingOccupancy, TargetThreshold); %TODO default lru
+    false -> NewUsedCacheDict
+  end.
 
-%TODO rethink cache_entry definition (instead of used -> times used and last used for more precise cache management)
+-spec fifo_evict(cache_dict(), non_neg_integer(), non_neg_integer()) -> cache_dict().
+fifo_evict(CacheDict, CurrentOccupancy, TargetThreshold) ->
+  ValueList = lists:flatten(lists:map(fun({_Key, Value}) -> Value end, dict:to_list(CacheDict))),
+  SortedByFirstUsage = lists:sort(fun(C1, C2) ->
+    C1#cache_entry.usage#cache_usage.first_used < C2#cache_entry.usage#cache_usage.first_used end, ValueList),
+  {RemainingOccupancy, NewUsedCacheDict} =
+    lists:foldl(
+      fun(C, {OccIn, Dict}) ->
+        case OccIn =< TargetThreshold orelse C#cache_entry.usage#cache_usage.used of
+          true ->
+            {OccIn, general_utils:add_to_value_list_or_create_single_value_list(Dict, C#cache_entry.key_struct, C)};
+          false -> {OccIn - 1, Dict}
+        end
+      end, {CurrentOccupancy, dict:new()}, SortedByFirstUsage),
+  case RemainingOccupancy >= TargetThreshold of
+    true ->
+      fifo_evict(reset_used(NewUsedCacheDict, 0), RemainingOccupancy, TargetThreshold);
+    false -> NewUsedCacheDict
+  end.
+
+-spec lru_evict(cache_dict(), non_neg_integer(), non_neg_integer()) -> cache_dict().
+lru_evict(CacheDict, CurrentOccupancy, TargetThreshold) ->
+  ValueList = lists:flatten(lists:map(fun({_Key, Value}) -> Value end, dict:to_list(CacheDict))),
+  SortedByFirstUsage = lists:sort(fun(C1, C2) ->
+    C1#cache_entry.usage#cache_usage.last_used < C2#cache_entry.usage#cache_usage.last_used end, ValueList),
+  {RemainingOccupancy, NewUsedCacheDict} =
+    lists:foldl(
+      fun(C, {OccIn, Dict}) ->
+        case OccIn =< TargetThreshold orelse C#cache_entry.usage#cache_usage.used of
+          true ->
+            {OccIn, general_utils:add_to_value_list_or_create_single_value_list(Dict, C#cache_entry.key_struct, C)};
+          false -> {OccIn - 1, Dict}
+        end
+      end, {CurrentOccupancy, dict:new()}, SortedByFirstUsage),
+  case RemainingOccupancy >= TargetThreshold of
+    true ->
+      lru_evict(reset_used(NewUsedCacheDict, 0), RemainingOccupancy, TargetThreshold);
+    false -> NewUsedCacheDict
+  end.
+
+-spec lfu_evict(cache_dict(), non_neg_integer(), non_neg_integer()) -> cache_dict().
+lfu_evict(CacheDict, CurrentOccupancy, TargetThreshold) ->
+  ValueList = lists:flatten(lists:map(fun({_Key, Value}) -> Value end, dict:to_list(CacheDict))),
+  SortedByFirstUsage = lists:sort(fun(C1, C2) ->
+    C1#cache_entry.usage#cache_usage.times_used < C2#cache_entry.usage#cache_usage.times_used end, ValueList),
+  {RemainingOccupancy, NewUsedCacheDict} =
+    lists:foldl(
+      fun(C, {OccIn, Dict}) ->
+        case OccIn =< TargetThreshold orelse C#cache_entry.usage#cache_usage.used of
+          true ->
+            {OccIn, general_utils:add_to_value_list_or_create_single_value_list(Dict, C#cache_entry.key_struct, C)};
+          false -> {OccIn - 1, Dict}
+        end
+      end, {CurrentOccupancy, dict:new()}, SortedByFirstUsage),
+  case RemainingOccupancy >= TargetThreshold of
+    true ->
+      lfu_evict(reset_used(NewUsedCacheDict, 0), RemainingOccupancy, TargetThreshold);
+    false -> NewUsedCacheDict
+  end.
+
 -spec reset_used(state()) -> state().
 reset_used(State) ->
-  Dict = State#state.key_cache_entry_dict,
-  NewDict = dict:map(fun(_Key, CList) ->
-    lists:map(fun(C) -> C#cache_entry{usage = gingko_utils:update_cache_usage(C, false)} end, CList) end, Dict),
-  State#state{key_cache_entry_dict = NewDict}.
+  ResetInterval = State#state.reset_used_interval_millis * 1000,
+  CacheDict = State#state.key_cache_entry_dict,
+  NewCacheDict = reset_used(CacheDict, ResetInterval),
+  State#state{key_cache_entry_dict = NewCacheDict}.
+
+-spec reset_used(cache_dict(), non_neg_integer()) -> cache_dict().
+reset_used(CacheDict, ResetInterval) ->
+  CurrentTime = gingko_utils:get_timestamp(),
+  MatchTime = CurrentTime - ResetInterval,
+  dict:map(fun(_Key, CList) ->
+    lists:map(
+      fun(C) ->
+        case C#cache_entry.usage#cache_usage.last_used < MatchTime of
+          true -> C#cache_entry{usage = gingko_utils:update_cache_usage(C, false)};
+          false -> C
+        end end, CList) end, CacheDict).
+
+-spec clean_up_cache_after_checkpoint(state(), vectorclock()) -> state().
+clean_up_cache_after_checkpoint(State, LastCheckpointVts) ->
+  CacheDict = State#state.key_cache_entry_dict,
+  NewCacheDict =
+    dict:fold(
+      fun(Key, CList, NewCacheDictAcc) ->
+        ListOfCacheEntries =
+          lists:filter(
+            fun(C) ->
+              gingko_utils:is_in_vts_range(C#cache_entry.valid_vts, {LastCheckpointVts, none})
+            end, CList),
+        case ListOfCacheEntries of
+          [] -> NewCacheDictAcc;
+          List -> dict:store(Key, List, NewCacheDictAcc)
+        end
+      end, dict:new(), CacheDict),
+  State#state{key_cache_entry_dict = NewCacheDict}.
+

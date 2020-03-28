@@ -62,7 +62,7 @@ read_all_journal_entries() ->
 
 -spec read_all_journal_entries_sorted() -> [journal_entry()].
 read_all_journal_entries_sorted() ->
-  mnesia:activity(transaction, fun() -> mnesia:foldl(fun(J, Acc) -> gingko_utils:sorted_insert(J, Acc, fun(J1, J2) -> gingko_utils:get_jsn_number(J1) =< gingko_utils:get_jsn_number(J2) end) end, [], journal_entry) end).
+  mnesia:activity(transaction, fun() -> mnesia:foldl(fun(J, Acc) -> general_utils:sorted_insert(J, Acc, fun(J1, J2) -> gingko_utils:get_jsn_number(J1) =< gingko_utils:get_jsn_number(J2) end) end, [], journal_entry) end).
 
 
 
@@ -83,7 +83,7 @@ match_journal_entries(MatchJournalEntry) ->
 read_snapshot(KeyStruct) ->
   SnapshotList = mnesia:activity(transaction, fun() -> mnesia:read(snapshot, KeyStruct) end),
   case SnapshotList of
-    [] -> materializer:create_snapshot(KeyStruct);
+    [] -> materializer:create_new_snapshot(KeyStruct);
     [S] -> S;
     Ss -> {error, {"Multiple Snapshots found", KeyStruct, Ss}}
   end.
@@ -120,7 +120,7 @@ checkpoint(DependencyVts) ->
     gingko_utils:is_system_operation(J, commit_txn) end, RelevantJournalEntriesForCommits),
   AllTxIds = sets:from_list(lists:map(fun(J) -> J#journal_entry.tx_id end, AllCommits)),
   RelevantJournalEntriesForCheckpoint = lists:filter(fun(J) ->
-    sets:is_element(J#journal_entry.tx_id, AllTxIds) andalso materializer:is_update_of_keys_or_commit(J, all_keys) end, JournalEntries),
+    sets:is_element(J#journal_entry.tx_id, AllTxIds) andalso gingko_utils:is_update_of_keys_or_commit(J, all_keys) end, JournalEntries),
   AllUpdatedKeys = gingko_utils:get_keys_from_updates(RelevantJournalEntriesForCheckpoint),
   Snapshots = read_snapshots(AllUpdatedKeys),
   materializer:materialize_multiple_snapshots(Snapshots, RelevantJournalEntriesForCheckpoint).

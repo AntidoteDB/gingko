@@ -34,14 +34,16 @@
   handle_info/2,
   terminate/2,
   code_change/3]).
--export([create_checkpoint_operation/1, create_update_operation/2, create_journal_entry/3, create_abort_operation/0, create_begin_operation/1, create_commit_operation/2, create_prepare_operation/1, create_read_operation/2, append_journal_entry/1, create_and_append_journal_entry/3]).
+-export([create_checkpoint_operation/1, create_update_operation/2, create_journal_entry/3, create_abort_operation/0, create_begin_operation/1, create_commit_operation/1, create_prepare_operation/1, create_read_operation/2, append_journal_entry/1, create_and_append_journal_entry/3]).
 
 -define(SERVER, ?MODULE).
 
 -record(state, {
   dcid :: dcid(),
   cache_server_pid :: pid(),
-  next_jsn :: jsn()
+  next_jsn :: jsn(),
+  checkpoint_interval_millis = 10000 :: non_neg_integer(),
+  checkpoint_timer = none :: none | reference()
 }).
 -type state() :: #state{}.
 
@@ -49,27 +51,55 @@
 %%% API
 %%%===================================================================
 
--spec(start_link({dcid(), log_names()}) ->
+-spec(start_link({dcid(), [{atom(), term()}]}) ->
   {ok, Pid :: pid()} | ignore | {error, Reason :: term()}).
-start_link({DcId, LogNames}) ->
-  gen_server:start_link({local, ?SERVER}, ?MODULE, {DcId, LogNames}, []).
+start_link({DcId, GingkoConfig}) ->
+  gen_server:start_link({local, ?SERVER}, ?MODULE, {DcId, GingkoConfig}, []).
 
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
 
--spec(init({dcid(), log_names()}) ->
+%TODO finish with all parameters
+-spec apply_gingko_config(state(), [{atom(), term()}]) -> state().
+apply_gingko_config(State, GingkoConfig) ->
+  {UpdateCheckpointTimer, CheckpointIntervalMillis} =
+    case lists:keyfind(checkpoint_interval_millis, 1, GingkoConfig) of
+      {checkpoint_interval_millis, Value1} -> {true, Value1};
+      false -> {false, State#state.checkpoint_interval_millis}
+    end,
+  NewState = State#state{checkpoint_interval_millis = CheckpointIntervalMillis},
+  update_timers(NewState, UpdateCheckpointTimer).
+
+-spec update_timers(state(), boolean()) -> state().
+update_timers(State, UpdateCheckpointTimer) ->
+  TimerCheckpoint =
+    case State#state.checkpoint_timer of
+      none ->
+        erlang:send_after(State#state.checkpoint_timer, self(), checkpoint_event);
+      Reference1 ->
+        case UpdateCheckpointTimer of
+          true ->
+            erlang:cancel_timer(Reference1),
+            erlang:send_after(State#state.checkpoint_interval_millis, self(), checkpoint_event);
+          false -> Reference1
+        end
+    end,
+  State#state{checkpoint_timer = TimerCheckpoint}.
+
+-spec(init({dcid(), [{atom(), term()}]}) ->
   {ok, State :: state()} |
   {ok, State :: state(), timeout() | hibernate} |
   {stop, Reason :: term()} |
   ignore).
-init({DcId, _LogNames}) ->
+init({DcId, GingkoConfig}) ->
   {ok, CacheServerPid} = gingko_cache:start_link({DcId, self(), [{max_occupancy, 100}]}),
-  {ok, #state{
+  NewState = #state{
     dcid = DcId,
     next_jsn = #jsn{number = 0},
     cache_server_pid = CacheServerPid
-  }}.
+  },
+  {ok, apply_gingko_config(NewState, GingkoConfig)}.
 
 -spec(handle_call(Request :: term(), From :: {pid(), Tag :: term()},
     State :: state()) ->
@@ -99,8 +129,8 @@ handle_call({{Op, Args}, TxId}, _From, State) ->
       PrepareTime = Args,
       {reply, prepare_txn(Jsn, TxId, PrepareTime), NewState};
     commit_txn ->
-      {CommitTime, SnapshotTime} = Args,
-      {reply, commit_txn(Jsn, TxId, CommitTime, SnapshotTime), NewState};
+      CommitTime = Args,
+      {reply, commit_txn(Jsn, TxId, CommitTime), NewState};
     abort_txn ->
       {reply, abort_txn(Jsn, TxId), NewState}
   end.
@@ -118,6 +148,14 @@ handle_cast(_Request, State) ->
   {noreply, NewState :: state()} |
   {noreply, NewState :: state(), timeout() | hibernate} |
   {stop, Reason :: term(), NewState :: state()}).
+handle_info(checkpoint_event, State) ->
+  %TODO
+  NewState = increment_jsn(State),
+  Jsn = NewState#state.next_jsn,
+  TxId = #tx_id{local_start_time = gingko_utils:get_timestamp(), server_pid = self()},
+  Vts = gingko_utils:get_GCSf_vts(),
+  checkpoint(Jsn, TxId, Vts),
+  {noreply, NewState};
 handle_info(_Info, State) ->
   {noreply, State}.
 
@@ -166,9 +204,9 @@ prepare_txn(Jsn, TxId, PrepareTime) ->
   {atomic, ok} = gingko_log:persist_journal_entries(),
   ok.
 
--spec commit_txn(jsn(), txid(), vectorclock(), vectorclock()) -> ok.
-commit_txn(Jsn, TxId, CommitTime, SnapshotTime) ->
-  Operation = create_commit_operation(CommitTime, SnapshotTime),
+-spec commit_txn(jsn(), txid(), vectorclock()) -> ok.
+commit_txn(Jsn, TxId, CommitTime) ->
+  Operation = create_commit_operation(CommitTime),
   create_and_append_journal_entry(Jsn, TxId, Operation).
 
 -spec abort_txn(jsn(), txid()) -> ok.
@@ -232,11 +270,11 @@ create_prepare_operation(PrepareTime) ->
     op_args = #prepare_txn_args{prepare_time = PrepareTime}
   }.
 
--spec create_commit_operation(vectorclock(), vectorclock()) -> system_operation().
-create_commit_operation(CommitTime, SnapshotTime) ->
+-spec create_commit_operation(vectorclock()) -> system_operation().
+create_commit_operation(CommitTime) ->
   #system_operation{
     op_type = commit_txn,
-    op_args = #commit_txn_args{commit_vts = CommitTime, snapshot_vts = SnapshotTime}
+    op_args = #commit_txn_args{commit_vts = CommitTime}
   }.
 
 -spec create_abort_operation() -> system_operation().
@@ -255,8 +293,7 @@ create_checkpoint_operation(DependencyVts) ->
 
 -spec increment_jsn(state()) -> state().
 increment_jsn(State) ->
-  %%TODO mnesia transaction to find next jsn
+  %%TODO check performance
   CurrentJsn = State#state.next_jsn,
-  CurrentNumber = CurrentJsn#jsn.number,
-  NextJsn = CurrentJsn#jsn{number = CurrentNumber + 1},
+  NextJsn = CurrentJsn#jsn{number = mnesia:table_info(journal_entry, size) + 1},
   State#state{next_jsn = NextJsn}.

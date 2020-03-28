@@ -41,7 +41,7 @@ update_snapshot(_Config) ->
   ok = gingko_log:add_or_update_snapshot(Snapshot),
   true = Snapshot == gingko_log:read_snapshot(KeyStruct),
   Snapshot2 = Snapshot#snapshot{value = 1},
-  true = Snapshot2 =/= gingko_log:read_snapshot(KeyStruct),
+  true = Snapshot2 /= gingko_log:read_snapshot(KeyStruct),
   ok = gingko_log:add_or_update_snapshot(Snapshot2),
   true = Snapshot2 == gingko_log:read_snapshot(KeyStruct).
 

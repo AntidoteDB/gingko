@@ -1,3 +1,4 @@
+
 -define(LOGGING_MASTER, gingko_log_server).
 %% Version of log records being used
 -define(LOG_RECORD_VERSION, 0).
@@ -42,7 +43,6 @@
 -record(cache_entry, {
   key_struct :: key_struct(),
   commit_vts :: vectorclock(),
-  present = true :: boolean(),
   valid_vts :: vectorclock(),
   usage = #cache_usage{} :: cache_usage(),
   blob :: term() | crdt()
@@ -79,8 +79,7 @@
 -record(prepare_txn_args, {prepare_time :: non_neg_integer()}).
 -type prepare_txn_args() :: #prepare_txn_args{}.
 -record(commit_txn_args, {
-  commit_vts :: vectorclock(),
-  snapshot_vts :: vectorclock()
+  commit_vts :: vectorclock()
 }).
 -type commit_txn_args() :: #commit_txn_args{}.
 -record(abort_txn_args, {}).
