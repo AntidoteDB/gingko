@@ -93,7 +93,7 @@ update_timers(State, UpdateCheckpointTimer) ->
   {stop, Reason :: term()} |
   ignore).
 init({DcId, GingkoConfig}) ->
-  {ok, CacheServerPid} = gingko_cache:start_link({DcId, self(), [{max_occupancy, 100}]}),
+  {ok, CacheServerPid} = gingko_cache:start_link({DcId, [{max_occupancy, 100}]}),
   NewState = #state{
     dcid = DcId,
     next_jsn = #jsn{number = 0},
@@ -150,12 +150,15 @@ handle_cast(_Request, State) ->
   {stop, Reason :: term(), NewState :: state()}).
 handle_info(checkpoint_event, State) ->
   %TODO
+  OldTimer = State#state.checkpoint_timer,
+  erlang:cancel_timer(OldTimer),
   NewState = increment_jsn(State),
   Jsn = NewState#state.next_jsn,
   TxId = #tx_id{local_start_time = gingko_utils:get_timestamp(), server_pid = self()},
   Vts = gingko_utils:get_GCSf_vts(),
   checkpoint(Jsn, TxId, Vts),
-  {noreply, NewState};
+  NewTimer = erlang:send_after(NewState#state.checkpoint_interval_millis, self(), eviction_event),
+  {noreply, NewState#state{checkpoint_timer = NewTimer}};
 handle_info(_Info, State) ->
   {noreply, State}.
 

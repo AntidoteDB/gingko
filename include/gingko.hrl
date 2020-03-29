@@ -49,18 +49,11 @@
 }).
 -type cache_entry() :: #cache_entry{}.
 
-
-
-
-
-
 -record(key_struct, {
   key :: key(),
   type :: type()
 }).
 -type key_struct() :: #key_struct{}.
-
-
 
 -type raw_value() :: term().
 
@@ -112,7 +105,7 @@
 -record(journal_entry, {
   jsn :: jsn(),
   rt_timestamp :: clock_time(),
-  tx_id :: txid() | none,
+  tx_id :: txid(),
   operation :: operation()
 }).
 -type journal_entry() :: #journal_entry{}.
@@ -125,7 +118,7 @@
 
 -record(update_payload, {
   key_struct :: key_struct(),
-  op_param :: downstream_op() | fun(), %%TODO define operations on non crdt types
+  update_op :: downstream_op() | fun((Value :: term()) -> UpdatedValue :: term()), %%TODO define operations on non crdt types
   commit_vts :: vectorclock(),
   snapshot_vts :: vectorclock(),
   tx_id :: txid()

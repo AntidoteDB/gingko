@@ -24,7 +24,6 @@ start(_StartType, _StartArgs) ->
   case gingko_sup:start_link() of
     {ok, Pid} ->
       {ok, Pid};
-    ok -> bad;
     Error ->
       Error
   end.

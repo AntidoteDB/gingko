@@ -11,7 +11,7 @@
 -include("gingko.hrl").
 
 %% API
--export([is_in_vts_range/2, get_clock_range/2, is_in_clock_range/2, create_cache_entry/1, create_default_value/1, get_jsn_number/1, sort_by_jsn_number/1, is_system_operation/2, is_update_of_keys/2, is_update/1, get_keys_from_updates/1, generate_downstream_op/4, create_snapshot_from_cache_entry/1, get_timestamp/0, contains_system_operation/2, is_update_of_keys_or_commit/2, get_dcid/0, update_cache_usage/2, get_latest_vts/1, get_DCSf_vts/0, get_GCSf_vts/0]).
+-export([create_new_snapshot/1, is_in_vts_range/2, get_clock_range/2, is_in_clock_range/2, create_cache_entry/1, create_default_value/1, get_jsn_number/1, sort_by_jsn_number/1, is_system_operation/2, is_update_of_keys/2, is_update/1, get_keys_from_updates/1, generate_downstream_op/4, create_snapshot_from_cache_entry/1, get_timestamp/0, contains_system_operation/2, is_update_of_keys_or_commit/2, get_dcid/0, update_cache_usage/2, get_latest_vts/1, get_DCSf_vts/0, get_GCSf_vts/0]).
 
 -spec get_timestamp() -> non_neg_integer().
 get_timestamp() ->
@@ -54,6 +54,12 @@ is_in_clock_range(ClockTime, ClockRange) ->
     {MinClockTime, MaxClockTime} -> MinClockTime >= ClockTime andalso ClockTime =< MaxClockTime
   end.
 
+-spec create_new_snapshot(key_struct()) -> snapshot().
+create_new_snapshot(KeyStruct) ->
+  Type = KeyStruct#key_struct.type,
+  DefaultValue = gingko_utils:create_default_value(Type),
+  #snapshot{key_struct = KeyStruct, commit_vts = vectorclock:new(), snapshot_vts = vectorclock:new(), value = DefaultValue}.
+
 -spec create_cache_entry(snapshot()) -> cache_entry().
 create_cache_entry(Snapshot) ->
   KeyStruct = Snapshot#snapshot.key_struct,
@@ -72,7 +78,7 @@ update_cache_usage(CacheEntry, Used) ->
                   end,
   CacheEntry#cache_entry{usage = NewCacheUsage}.
 
-  -spec create_snapshot_from_cache_entry(cache_entry()) -> snapshot().
+-spec create_snapshot_from_cache_entry(cache_entry()) -> snapshot().
 create_snapshot_from_cache_entry(CacheEntry) ->
   KeyStruct = CacheEntry#cache_entry.key_struct,
   CommitVts = CacheEntry#cache_entry.commit_vts,
@@ -116,11 +122,13 @@ is_update(JournalEntry) ->
 
 -spec get_keys_from_updates([journal_entry()]) -> [key_struct()].
 get_keys_from_updates(JournalEntries) ->
-  lists:filtermap(fun(J) ->
-    case is_update(J) of
-      true -> {true, J#journal_entry.operation#object_operation.key_struct};
-      false -> false
-    end end, JournalEntries).
+  lists:filtermap(
+    fun(J) ->
+      case is_update(J) of
+        true -> {true, J#journal_entry.operation#object_operation.key_struct};
+        false -> false
+      end
+    end, JournalEntries).
 
 -spec get_jsn_number(journal_entry()) -> non_neg_integer().
 get_jsn_number(JournalEntry) ->
@@ -128,19 +136,24 @@ get_jsn_number(JournalEntry) ->
 
 -spec sort_by_jsn_number([journal_entry()]) -> [journal_entry()].
 sort_by_jsn_number(JournalEntries) ->
-  lists:sort(fun(J1, J2) ->
-    get_jsn_number(J1) < get_jsn_number(J2) end, JournalEntries).
+  lists:sort(fun(J1, J2) -> get_jsn_number(J1) < get_jsn_number(J2) end, JournalEntries).
 
 -spec get_latest_vts([journal_entry()]) -> vectorclock().
 get_latest_vts(SortedJournalEntries) ->
   ReversedSortedJournalEntries = lists:reverse(SortedJournalEntries),
   LastJournalEntry = hd(ReversedSortedJournalEntries),
-  LastJournalEntryWithVts = hd(lists:filter(fun(J) ->
-    gingko_utils:is_system_operation(J, begin_txn) orelse gingko_utils:is_system_operation(J, commit_txn) end, ReversedSortedJournalEntries)),
-  LastVts = case gingko_utils:is_system_operation(LastJournalEntryWithVts, begin_txn) of
-              true -> LastJournalEntryWithVts#journal_entry.operation#system_operation.op_args#begin_txn_args.dependency_vts;
-              false -> LastJournalEntryWithVts#journal_entry.operation#system_operation.op_args#commit_txn_args.commit_vts
-            end,
+  LastJournalEntryWithVts = hd(
+    lists:filter(
+      fun(J) ->
+        gingko_utils:is_system_operation(J, begin_txn) orelse gingko_utils:is_system_operation(J, commit_txn)
+      end, ReversedSortedJournalEntries)),
+  LastVts =
+    case gingko_utils:is_system_operation(LastJournalEntryWithVts, begin_txn) of
+      true ->
+        LastJournalEntryWithVts#journal_entry.operation#system_operation.op_args#begin_txn_args.dependency_vts;
+      false ->
+        LastJournalEntryWithVts#journal_entry.operation#system_operation.op_args#commit_txn_args.commit_vts
+    end,
   Timestamp = LastJournalEntry#journal_entry.rt_timestamp,
   vectorclock:set(gingko_utils:get_dcid(), Timestamp, LastVts).
 

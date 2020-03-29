@@ -14,7 +14,10 @@
 
 -spec group_by(fun((ListType :: term()) -> GroupKeyType :: term()), [ListType :: term()]) -> dict:dict(GroupKeyType :: term(), ListType :: term()).
 group_by(Fun, List) ->
-  lists:foldr(fun({Key, Value}, Dict) -> dict:append(Key, Value, Dict) end, dict:new(), [{Fun(X), X} || X <- List]).
+  lists:foldr(
+    fun({Key, Value}, Dict) ->
+      dict:append(Key, Value, Dict)
+    end, dict:new(), [{Fun(X), X} || X <- List]).
 
 -spec add_to_value_list_or_create_single_value_list(DictionaryTypeAToValueTypeBList :: dict:dict(KeyTypeA :: term(), TypeBList :: [term()]), KeyTypeA :: term(), ValueTypeB :: term()) -> term().
 add_to_value_list_or_create_single_value_list(DictionaryTypeAToValueTypeBList, KeyTypeA, ValueTypeB) ->
