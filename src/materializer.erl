@@ -33,7 +33,7 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
--export([create_new_snapshot/1, update_snapshot/4, materialize_snapshot/2, materialize_snapshot/3, materialize_snapshot_temporarily/2, get_committed_journal_entries_for_keys/2, materialize_multiple_snapshots/2]).
+-export([create_new_snapshot/1, update_snapshot/4, materialize_snapshot/3, materialize_snapshot_temporarily/2, get_committed_journal_entries_for_keys/2, materialize_multiple_snapshots/2]).
 
 
 -spec separate_commit_from_update_journal_entries([journal_entry()]) -> {journal_entry(), [journal_entry()]}.
@@ -74,10 +74,6 @@ transform_to_update_payload(CommitJournalEntry, JournalEntry) ->
   }.
 
 %%TODO journal entries are presorted based on the current transaction and the snapshot vts
--spec materialize_snapshot(snapshot(), [journal_entry()]) -> {ok, snapshot()} | {error, reason()}.
-materialize_snapshot(Snapshot, SortedJournalEntries) ->
-  materialize_snapshot(Snapshot, SortedJournalEntries, {none, none}).
-
 -spec materialize_snapshot(snapshot(), [journal_entry()], vectorclock()) -> {ok, snapshot()} | {error, reason()}.
 materialize_snapshot(Snapshot, SortedJournalEntries, MaxVts) ->
   SnapshotVts = Snapshot#snapshot.snapshot_vts,

@@ -76,7 +76,7 @@ update_timers(State, UpdateCheckpointTimer) ->
   TimerCheckpoint =
     case State#state.checkpoint_timer of
       none ->
-        erlang:send_after(State#state.checkpoint_timer, self(), checkpoint_event);
+        erlang:send_after(State#state.checkpoint_interval_millis, self(), checkpoint_event);
       Reference1 ->
         case UpdateCheckpointTimer of
           true ->

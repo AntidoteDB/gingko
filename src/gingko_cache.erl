@@ -229,7 +229,7 @@ get_internal(Result, KeyStruct, DependencyVts) ->
 get_or_load_cache_entry(KeyStruct, DependencyVts, State, CacheUpdated, ForceUpdate) ->
   case ForceUpdate of
     true ->
-      NewState = load_key_into_cache(KeyStruct, State, {none, DependencyVts}),
+      NewState = load_key_into_cache(KeyStruct, State, DependencyVts),
       get_or_load_cache_entry(KeyStruct, DependencyVts, NewState, true, false);
     false ->
       FoundCacheEntries = dict:find(KeyStruct, State#state.key_cache_entry_dict),
@@ -334,7 +334,7 @@ evict(KeyStruct, CommitVts, State) ->
       CanBeEvicted = vectorclock:eq(CacheEntry#cache_entry.commit_vts, CommitVts) andalso not CacheEntry#cache_entry.usage,
       case CanBeEvicted of
         true ->
-          CacheEntry = CacheEntry#cache_entry{present = false},
+          %CacheEntry = CacheEntry#cache_entry{present = false},
           {ok, update_cache_entry_in_state(CacheEntry, State)};
         false ->
           {error, State}
@@ -354,11 +354,11 @@ load(KeyStruct, CommitVts, Value, State) ->
     error ->
       {error, State};
     {ok, CacheEntry} ->
-      load_key_into_cache(KeyStruct, State, {CommitVts, CommitVts}),
+      load_key_into_cache(KeyStruct, State, CommitVts),
       CanBeEvicted = vectorclock:eq(CacheEntry#cache_entry.commit_vts, CommitVts) andalso not CacheEntry#cache_entry.usage,
       case CanBeEvicted of
         true ->
-          CacheEntry = CacheEntry#cache_entry{present = false},
+          %CacheEntry = CacheEntry#cache_entry{present = false},
           {ok, update_cache_entry_in_state(CacheEntry, State)};
         false ->
           {error, State}
