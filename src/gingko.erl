@@ -156,7 +156,7 @@ handle_info(checkpoint_event, State) ->
   Jsn = NewState#state.next_jsn,
   TxId = #tx_id{local_start_time = gingko_utils:get_timestamp(), server_pid = self()},
   Vts = gingko_utils:get_GCSf_vts(),
-  checkpoint(Jsn, TxId, Vts),
+  checkpoint(Jsn, TxId, Vts, NewState#state.cache_server_pid),
   NewTimer = erlang:send_after(NewState#state.checkpoint_interval_millis, self(), eviction_event),
   {noreply, NewState#state{checkpoint_timer = NewTimer}};
 handle_info(_Info, State) ->
@@ -217,13 +217,13 @@ abort_txn(Jsn, TxId) ->
   Operation = create_abort_operation(),
   create_and_append_journal_entry(Jsn, TxId, Operation).
 
--spec checkpoint(jsn(), txid(), vectorclock()) -> ok.
-checkpoint(Jsn, TxId, DependencyVts) ->
+-spec checkpoint(jsn(), txid(), vectorclock(), pid()) -> ok.
+checkpoint(Jsn, TxId, DependencyVts, CacheServerPid) ->
+  true = false,
   Operation = create_checkpoint_operation(DependencyVts),
   create_and_append_journal_entry(Jsn, TxId, Operation),
-  gingko_log:checkpoint(DependencyVts).
-
-
+  {atomic, ok} = gingko_log:persist_journal_entries(),
+  gingko_log:checkpoint(CacheServerPid).
 
 -spec create_and_append_journal_entry(jsn(), txid(), operation()) -> ok.
 create_and_append_journal_entry(Jsn, TxId, Operation) ->

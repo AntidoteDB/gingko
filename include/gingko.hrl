@@ -57,6 +57,12 @@
 
 -type raw_value() :: term().
 
+-record(checkpoint_entry, {
+  key_struct :: key_struct(),
+  value :: snapshot_value()
+}).
+-type checkpoint_entry() :: #checkpoint_entry{}.
+
 -record(snapshot, {
   key_struct :: key_struct(),
   commit_vts :: vectorclock(),

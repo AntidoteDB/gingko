@@ -33,7 +33,7 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
--export([materialize_snapshot/3, materialize_snapshot_temporarily/2, materialize_multiple_snapshots/3]).
+-export([materialize_snapshot/3, materialize_snapshot_temporarily/2, materialize_multiple_snapshots/3, get_committed_journal_entries_for_keys/2]).
 
 
 -spec separate_commit_from_update_journal_entries([journal_entry()]) -> {journal_entry(), [journal_entry()]}.
@@ -54,18 +54,20 @@ get_committed_journal_entries_for_keys(SortedJournalEntries, KeyStructFilter) ->
         gingko_utils:is_update_of_keys_or_commit(J, KeyStructFilter)
       end, SortedJournalEntries),
   TxIdToJournalEntries = general_utils:group_by(fun(J) -> J#journal_entry.tx_id end, FilteredJournalEntries),
+  FilteredTxIdToJournalEntries =
+    dict:filter(
+      fun(_TxId, JList) ->
+        gingko_utils:contains_system_operation(JList, commit_txn) andalso length(JList) > 1 %Keep only transactions that were committed and have updates
+      end, TxIdToJournalEntries),
   SortedTxIdToJournalEntries =
     dict:map(
       fun(_TxId, JList) ->
         gingko_utils:sort_by_jsn_number(JList) %Last journal entry is commit then
-      end, TxIdToJournalEntries),
+      end, FilteredTxIdToJournalEntries),
   ListOfCommitToUpdateListTuples =
-    lists:filtermap(
+    lists:map(
       fun({_TxId, JList}) ->
-        case gingko_utils:contains_system_operation(JList, commit_txn) of %Keep only transactions that were committed
-          true -> {true, separate_commit_from_update_journal_entries(JList)}; %{CommitJournalEntry, [UpdateJournalEntry]}
-          false -> false
-        end
+        separate_commit_from_update_journal_entries(JList) %{CommitJournalEntry, [UpdateJournalEntry]}
       end, dict:to_list(SortedTxIdToJournalEntries)),
   SortedListOfCommitToUpdateListTuples =
     lists:sort(
@@ -93,63 +95,86 @@ materialize_snapshot(Snapshot, SortedJournalEntries, DependencyVts) ->
       CommittedJournalEntries = get_committed_journal_entries_for_keys(SortedJournalEntries, [Snapshot#snapshot.key_struct]),
       RelevantCommittedJournalEntries =
         lists:filter(
-          fun({J, _Js}) ->
-            CommitVts1 = J#journal_entry.operation#system_operation.op_args#commit_txn_args.commit_vts,
+          fun({CommitJ, _UpdateJList}) ->
+            CommitVts1 = CommitJ#journal_entry.operation#system_operation.op_args#commit_txn_args.commit_vts,
             gingko_utils:is_in_vts_range(CommitVts1, {SnapshotVts, DependencyVts})
           end, CommittedJournalEntries),
       UpdatePayloads =
         lists:map(
-          fun({J1, JList}) ->
+          fun({CommitJ, UpdateJList}) ->
             lists:map(
-              fun(J) -> transform_to_update_payload(J1, J) end, JList)
+              fun(UpdateJ) -> transform_to_update_payload(CommitJ, UpdateJ) end, UpdateJList)
           end, RelevantCommittedJournalEntries),
       FlattenedUpdatePayloads = lists:flatten(UpdatePayloads),
       {ok, NewSnapshot} = materialize_update_payload(Snapshot, FlattenedUpdatePayloads),
-      CommitsLaterThanDependencyVts =
-        lists:filtermap(
-          fun({J, _Js}) ->
-            CommitVts2 = J#journal_entry.operation#system_operation.op_args#commit_txn_args.commit_vts,
-            case gingko_utils:is_in_vts_range(CommitVts2, {DependencyVts, none}) of
-              true -> {true, J};
-              false -> false
-            end
-          end, CommittedJournalEntries),
-      ValidSnapshotVts =
-        case CommitsLaterThanDependencyVts of
-          [] ->
-            gingko_utils:get_latest_vts(SortedJournalEntries);
-          CommitList ->
-            FirstCommitLaterThanMaxVts = hd(CommitList),
-            RelevantSortedJournalEntries =
-              lists:takewhile(
-                fun(J) ->
-                  gingko_utils:get_jsn_number(J) < gingko_utils:get_jsn_number(FirstCommitLaterThanMaxVts)
-                end, SortedJournalEntries),
-            gingko_utils:get_latest_vts(RelevantSortedJournalEntries)
-        end,
+      ValidSnapshotVts = get_latest_valid_snapshot_vts(SortedJournalEntries, CommittedJournalEntries, DependencyVts), %Optimization to set the latest SnapshotVts to avoid later reloads
       {ok, NewSnapshot#snapshot{snapshot_vts = ValidSnapshotVts}};
     false -> {error, {"Invalid Snapshot Time", Snapshot, SortedJournalEntries, DependencyVts}}
   end.
 
+%TODO think about removing this method because it is complex to implement correctly
 -spec materialize_multiple_snapshots([snapshot()], [journal_entry()], vectorclock()) -> {ok, [snapshot()]} | {error, reason()}.
 materialize_multiple_snapshots(Snapshots, SortedJournalEntries, DependencyVts) ->
-  KeyStructs = lists:map(fun(S) -> S#snapshot.key_struct end, Snapshots),
-  CommittedJournalEntries = get_committed_journal_entries_for_keys(SortedJournalEntries, KeyStructs),
-  UpdatePayloads =
-    lists:map(
-      fun({J1, JList}) ->
-        lists:map(fun(J) -> transform_to_update_payload(J1, J) end, JList)
+  KeyStructsToSnapshots = dict:from_list(lists:map(fun(S) -> {S#snapshot.key_struct, S} end, Snapshots)),
+  ValidSnapshotTime = lists:all(fun(S) ->
+    gingko_utils:is_in_vts_range(S#snapshot.snapshot_vts, {none, DependencyVts}) end, Snapshots),
+  case ValidSnapshotTime of
+    true ->
+      CommittedJournalEntries = get_committed_journal_entries_for_keys(SortedJournalEntries, dict:fetch_keys(KeyStructsToSnapshots)),
+      RelevantCommittedJournalEntries =
+        lists:filter(
+          fun({CommitJ, UpdateJList}) ->
+            KeysInUpdates = sets:from_list(lists:map(fun(UpdateJ) ->
+              UpdateJ#journal_entry.operation#object_operation.key_struct end, UpdateJList)),
+            SnapshotVtsToCheck = lists:map(fun(K) -> dict:fetch(K, KeyStructsToSnapshots) end, KeysInUpdates),
+            CommitVts1 = CommitJ#journal_entry.operation#system_operation.op_args#commit_txn_args.commit_vts,
+            lists:all(fun(SnapshotVts) ->
+              gingko_utils:is_in_vts_range(CommitVts1, {SnapshotVts, DependencyVts}) end, SnapshotVtsToCheck)
+          end, CommittedJournalEntries),
+      UpdatePayloads =
+        lists:map(
+          fun({CommitJ, UpdateJList}) ->
+            lists:map(fun(UpdateJ) -> transform_to_update_payload(CommitJ, UpdateJ) end, UpdateJList)
+          end, RelevantCommittedJournalEntries),
+      FlattenedUpdatePayloads = lists:flatten(UpdatePayloads),
+      %TODO there might be keys that are valid longer
+      ValidSnapshotVts = get_latest_valid_snapshot_vts(SortedJournalEntries, CommittedJournalEntries, DependencyVts),
+      KeyToUpdatesDict = general_utils:group_by(fun(U) -> U#update_payload.key_struct end, FlattenedUpdatePayloads),
+      %TODO watch out for dict errors (check again that all keys are present)
+      Results =
+        lists:map(
+          fun(S) ->
+            materialize_update_payload(S#snapshot.value, dict:fetch(S#snapshot.key_struct, KeyToUpdatesDict))
+          end, Snapshots),
+      {ok, lists:map(fun({ok, SV}) -> SV#snapshot{snapshot_vts = ValidSnapshotVts} end, Results)}; %TODO check for crashes
+    false -> ok
+  end.
+
+-spec get_latest_valid_snapshot_vts([journal_entry()], [{journal_entry(), [journal_entry()]}], vectorclock()) -> vectorclock().
+get_latest_valid_snapshot_vts(SortedJournalEntries, CommittedJournalEntries, DependencyVts) ->
+  CommitsLaterThanDependencyVts =
+    lists:filtermap(
+      fun({CommitJ, _UpdateJList}) ->
+        CommitVts2 = CommitJ#journal_entry.operation#system_operation.op_args#commit_txn_args.commit_vts,
+        case gingko_utils:is_in_vts_range(CommitVts2, {DependencyVts, none}) of
+          true -> {true, CommitJ};
+          false -> false
+        end
       end, CommittedJournalEntries),
-  FlattenedUpdatePayloads = lists:flatten(UpdatePayloads),
-  KeyToUpdatesDict = general_utils:group_by(fun(U) -> U#update_payload.key_struct end, FlattenedUpdatePayloads),
-  %TODO watch out for dict errors (check again that all keys are present)
-  Results = lists:map(fun(S) ->
-    materializer:materialize_update_payload(S#snapshot.value, dict:fetch(S#snapshot.key_struct, KeyToUpdatesDict)) end, Snapshots),
-  {ok, lists:map(fun({ok, SV}) -> SV end, Results)}. %TODO fix
-%%  case lists:all(fun(R) -> {ok, X} == R end, Results) of
-%%    true -> {ok, lists:map(fun({ok, SV}) -> SV end, Results)};
-%%    false -> {error, {"One or more failed", Results}}
-%%  end.
+  ValidSnapshotVts =
+    case CommitsLaterThanDependencyVts of
+      [] ->
+        gingko_utils:get_latest_vts(SortedJournalEntries);
+      CommitList ->
+        FirstCommitLaterThanMaxVts = hd(CommitList),
+        RelevantSortedJournalEntries =
+          lists:takewhile(
+            fun(J) ->
+              gingko_utils:get_jsn_number(J) < gingko_utils:get_jsn_number(FirstCommitLaterThanMaxVts)
+            end, SortedJournalEntries),
+        gingko_utils:get_latest_vts(RelevantSortedJournalEntries)
+    end,
+  ValidSnapshotVts.
 
 -spec update_snapshot(snapshot(), downstream_op() | fun((Value :: term()) -> UpdatedValue :: term()), vectorclock(), vectorclock()) -> {ok, snapshot()} | {error, reason()}.
 update_snapshot(Snapshot, Op, CommitVts, SnapshotVts) ->

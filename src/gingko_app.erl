@@ -20,7 +20,7 @@
   {ok, pid(), State :: term()} |
   {error, Reason :: term()}).
 start(_StartType, _StartArgs) ->
-  mnesia:wait_for_tables([journal_entry, snapshot], 5000),
+  mnesia:wait_for_tables([journal_entry, checkpoint_entry], 5000),
   case gingko_sup:start_link() of
     {ok, Pid} ->
       {ok, Pid};
@@ -42,8 +42,8 @@ install(Nodes) ->
           %{index, [#journal_entry.jsn]},TODO find out why index doesn't work here
           {ram_copies, Nodes}
         ]),
-      {atomic, ok} = mnesia:create_table(snapshot,
-        [{attributes, record_info(fields, snapshot)},
+      {atomic, ok} = mnesia:create_table(checkpoint_entry,
+        [{attributes, record_info(fields, checkpoint_entry)},
           %{index, [#snapshot.key_struct]},TODO find out why index doesn't work here
           {disc_copies, Nodes}]),
       rpc:multicall(Nodes, application, stop, [mnesia]);

@@ -11,7 +11,7 @@
 -include("gingko.hrl").
 
 %% API
--export([create_new_snapshot/1, is_in_vts_range/2, get_clock_range/2, is_in_clock_range/2, create_cache_entry/1, create_default_value/1, get_jsn_number/1, sort_by_jsn_number/1, is_system_operation/2, is_update_of_keys/2, is_update/1, get_keys_from_updates/1, generate_downstream_op/4, create_snapshot_from_cache_entry/1, get_timestamp/0, contains_system_operation/2, is_update_of_keys_or_commit/2, get_dcid/0, update_cache_usage/2, get_latest_vts/1, get_DCSf_vts/0, get_GCSf_vts/0]).
+-export([create_new_snapshot/2, is_in_vts_range/2, get_clock_range/2, is_in_clock_range/2, create_cache_entry/1, create_default_value/1, get_jsn_number/1, sort_by_jsn_number/1, is_system_operation/2, is_update_of_keys/2, is_update/1, get_keys_from_updates/1, generate_downstream_op/4, create_snapshot_from_cache_entry/1, get_timestamp/0, contains_system_operation/2, is_update_of_keys_or_commit/2, get_dcid/0, update_cache_usage/2, get_latest_vts/1, get_DCSf_vts/0, get_GCSf_vts/0, create_snapshot_from_checkpoint_entry/2]).
 
 -spec get_timestamp() -> non_neg_integer().
 get_timestamp() ->
@@ -54,11 +54,11 @@ is_in_clock_range(ClockTime, ClockRange) ->
     {MinClockTime, MaxClockTime} -> MinClockTime >= ClockTime andalso ClockTime =< MaxClockTime
   end.
 
--spec create_new_snapshot(key_struct()) -> snapshot().
-create_new_snapshot(KeyStruct) ->
+-spec create_new_snapshot(key_struct(), vectorclock()) -> snapshot().
+create_new_snapshot(KeyStruct, DependencyVts) ->
   Type = KeyStruct#key_struct.type,
   DefaultValue = gingko_utils:create_default_value(Type),
-  #snapshot{key_struct = KeyStruct, commit_vts = vectorclock:new(), snapshot_vts = vectorclock:new(), value = DefaultValue}.
+  #snapshot{key_struct = KeyStruct, commit_vts = DependencyVts, snapshot_vts = DependencyVts, value = DefaultValue}.
 
 -spec create_cache_entry(snapshot()) -> cache_entry().
 create_cache_entry(Snapshot) ->
@@ -85,6 +85,12 @@ create_snapshot_from_cache_entry(CacheEntry) ->
   SnapshotVts = CacheEntry#cache_entry.valid_vts,
   Value = CacheEntry#cache_entry.blob,
   #snapshot{key_struct = KeyStruct, commit_vts = CommitVts, snapshot_vts = SnapshotVts, value = Value}.
+
+-spec create_snapshot_from_checkpoint_entry(checkpoint_entry(), vectorclock()) -> snapshot().
+create_snapshot_from_checkpoint_entry(CheckpointEntry, DependencyVts) ->
+  KeyStruct = CheckpointEntry#checkpoint_entry.key_struct,
+  Value = CheckpointEntry#checkpoint_entry.value,
+  #snapshot{key_struct = KeyStruct, commit_vts = DependencyVts, snapshot_vts = DependencyVts, value = Value}.
 
 -spec create_default_value(type()) -> crdt() | none. %%TODO Consider other types
 create_default_value(Type) ->
@@ -140,6 +146,7 @@ sort_by_jsn_number(JournalEntries) ->
 
 -spec get_latest_vts([journal_entry()]) -> vectorclock().
 get_latest_vts(SortedJournalEntries) ->
+  %TODO error when list is empty (check if relevant)
   ReversedSortedJournalEntries = lists:reverse(SortedJournalEntries),
   LastJournalEntry = hd(ReversedSortedJournalEntries),
   LastJournalEntryWithVts = hd(

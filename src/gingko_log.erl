@@ -10,7 +10,7 @@
 -author("kevin").
 -include("gingko.hrl").
 %% API
--export([add_journal_entry/1, add_or_update_snapshot/1, read_journal_entry/1, read_snapshot/1, read_all_journal_entries/0, match_journal_entries/1, read_journal_entries_with_tx_id/1, perform_tx_read/3, persist_journal_entries/0, clear_journal_entries/0, read_all_journal_entries_sorted/0, read_journal_entries_with_tx_id_sorted/1, checkpoint/1]).
+-export([add_journal_entry/1, add_or_update_checkpoint_entry/1, read_journal_entry/1, read_checkpoint_entry/2, read_all_journal_entries/0, match_journal_entries/1, read_journal_entries_with_tx_id/1, perform_tx_read/3, persist_journal_entries/0, clear_journal_entries/0, read_all_journal_entries_sorted/0, read_journal_entries_with_tx_id_sorted/1, checkpoint/1]).
 
 -spec persist_journal_entries() -> {atomic, ok} | {aborted, reason()}.
 persist_journal_entries() ->
@@ -27,24 +27,6 @@ add_journal_entry(JournalEntry) ->
     case mnesia:read(journal_entry, JournalEntry#journal_entry.jsn) of
       [] -> mnesia:write(JournalEntry);
       ExistingJournalEntries -> {error, {already_exists, ExistingJournalEntries}}
-    end
-      end,
-  mnesia:activity(transaction, F).
-
--spec add_or_update_snapshot(snapshot()) -> ok | {error, {multiple_exist, [snapshot()]}}  | {error, {newer_exists, snapshot()}} | 'transaction abort'.
-add_or_update_snapshot(Snapshot) ->
-  F = fun() ->
-    case mnesia:read(snapshot, Snapshot#snapshot.key_struct) of
-      [] -> mnesia:write(Snapshot);
-      [ExistingSnapshot] ->
-        IsNewer =
-          gingko_utils:is_in_vts_range(Snapshot#snapshot.commit_vts, {ExistingSnapshot#snapshot.commit_vts, none}) andalso
-            gingko_utils:is_in_vts_range(Snapshot#snapshot.snapshot_vts, {ExistingSnapshot#snapshot.snapshot_vts, none}),
-        case IsNewer of
-          true -> mnesia:write(Snapshot);
-          false -> {error, {newer_exists, ExistingSnapshot}}
-        end;
-      ExistingSnapshots -> {error, {multiple_exist, ExistingSnapshots}}
     end
       end,
   mnesia:activity(transaction, F).
@@ -80,7 +62,7 @@ read_all_journal_entries_sorted() ->
 
 -spec read_journal_entries_with_tx_id(txid()) -> [journal_entry()].
 read_journal_entries_with_tx_id(TxId) ->
-  MatchJournalEntry = #journal_entry{jsn = '_', rt_timestamp = '_', tx_id = TxId, operation = '_'},
+  MatchJournalEntry = #journal_entry{tx_id = TxId, _ = '_'},
   match_journal_entries(MatchJournalEntry).
 
 -spec read_journal_entries_with_tx_id_sorted(txid()) -> [journal_entry()].
@@ -91,35 +73,42 @@ read_journal_entries_with_tx_id_sorted(TxId) ->
 match_journal_entries(MatchJournalEntry) ->
   mnesia:activity(transaction, fun() -> mnesia:match_object(MatchJournalEntry) end).
 
--spec read_snapshot(key_struct()) -> snapshot().%TODO compiler bug | {error, {"Multiple Snapshots found", key_struct(), [snapshot()]}}.
-read_snapshot(KeyStruct) ->
-  SnapshotList = mnesia:activity(transaction, fun() -> mnesia:read(snapshot, KeyStruct) end),
+-spec read_all_checkpoint_entry_keys() -> [key_struct()].
+read_all_checkpoint_entry_keys() ->
+  mnesia:activity(transaction,
+    fun() ->
+      mnesia:foldl(fun(C, Acc) -> [C#checkpoint_entry.key_struct | Acc] end, [], checkpoint_entry)
+    end).
+
+-spec read_checkpoint_entry(key_struct(), vectorclock()) -> snapshot().%TODO compiler bug | {error, {"Multiple Snapshots found", key_struct(), [snapshot()]}}.
+read_checkpoint_entry(KeyStruct, DependencyVts) ->
+  SnapshotList = mnesia:activity(transaction, fun() -> mnesia:read(checkpoint_entry, KeyStruct) end),
   case SnapshotList of
-    [] -> gingko_utils:create_new_snapshot(KeyStruct);
-    [S] -> S;
-    SList -> {error, {"Multiple Snapshots found", KeyStruct, SList}}
+    [] -> gingko_utils:create_new_snapshot(KeyStruct, DependencyVts);
+    [C] -> gingko_utils:create_snapshot_from_checkpoint_entry(C, DependencyVts);
+    CList -> {error, {"Multiple Snapshots found", KeyStruct, CList}}
   end.
 
 %TODO testing necessary
--spec read_snapshots([key_struct()]) -> [snapshot()].%TODO compiler bug | {error, {"Multiple Snapshots found", key_struct(), [snapshot()]}}.
-read_snapshots(KeyStructs) ->
+-spec read_checkpoint_entries([key_struct()], vectorclock()) -> [snapshot()].%TODO compiler bug | {error, {"Multiple Snapshots found", key_struct(), [snapshot()]}}.
+read_checkpoint_entries(KeyStructs, DependencyVts) ->
   SnapshotList =
     mnesia:activity(transaction,
       fun() ->
         lists:filtermap(
           fun(K) ->
-            case mnesia:read(snapshot, K) of
-              [] -> false;
-              [_S] -> true;
-              SList ->
-                {true, {error, {"Multiple snapshots for one key found", K, SList}}}
+            case mnesia:read(checkpoint_entry, K) of
+              [] -> {true, gingko_utils:create_new_snapshot(K, DependencyVts)};
+              [C] -> {true, gingko_utils:create_snapshot_from_checkpoint_entry(C, DependencyVts)};
+              CList ->
+                {true, {error, {"Multiple snapshots for one key found", K, CList}}}
             end
           end, KeyStructs)
       end),
   AnyErrors =
     lists:any(
-      fun(J) ->
-        case J of
+      fun(C) ->
+        case C of
           {error, _} -> true;
           _ -> false
         end
@@ -129,28 +118,58 @@ read_snapshots(KeyStructs) ->
     false -> SnapshotList
   end.
 
-%TODO reconsider dependency vts for checkpoints placed in the journal
+-spec add_or_update_checkpoint_entry(snapshot()) -> ok | 'transaction abort'.
+add_or_update_checkpoint_entry(Snapshot) ->
+  F = fun() ->
+    mnesia:write(#checkpoint_entry{key_struct = Snapshot#snapshot.key_struct, value = Snapshot#snapshot.value}) end,
+  mnesia:activity(transaction, F).
 
-checkpoint(DependencyVts) ->
-  persist_journal_entries(),
-  JournalEntries = read_all_journal_entries_sorted(),
-  %TODO optimize (e.g. work with reversed list)
-  %We want to go to the checkpoint that was previous to the recently added one TODO make sure checkpoints are placed correctly
-  %TODO We assume for now that all commits in the journal before the checkpoint are part of the checkpoint!
-  RelevantJournalList = tl(lists:reverse(JournalEntries)),
-  LastCheckpointJournalEntry = lists:search(fun(J) ->
+-spec add_or_update_checkpoint_entries([snapshot()]) -> ok | 'transaction abort'.
+add_or_update_checkpoint_entries(Snapshots) ->
+  F =
+    fun() ->
+      lists:foreach(
+        fun(Snapshot) ->
+          mnesia:write(#checkpoint_entry{key_struct = Snapshot#snapshot.key_struct, value = Snapshot#snapshot.value})
+        end, Snapshots)
+    end,
+  mnesia:activity(transaction, F).
+
+-spec checkpoint(pid()) -> ok.
+checkpoint(CacheServerPid) ->
+  SortedJournalEntries = read_all_journal_entries_sorted(),
+  RelevantJournalList = lists:reverse(SortedJournalEntries),
+  Checkpoints = lists:filter(fun(J) ->
     gingko_utils:is_system_operation(J, checkpoint) end, RelevantJournalList),
-  RelevantJournalEntriesForCommits = lists:takewhile(fun(J) ->
-    gingko_utils:is_system_operation(J, checkpoint) end, RelevantJournalList),
-  AllCommits = lists:filter(fun(J) ->
-    gingko_utils:is_system_operation(J, commit_txn) end, RelevantJournalEntriesForCommits),
-  AllTxIds = sets:from_list(lists:map(fun(J) -> J#journal_entry.tx_id end, AllCommits)),
-  RelevantJournalEntriesForCheckpoint = lists:filter(fun(J) ->
-    sets:is_element(J#journal_entry.tx_id, AllTxIds) andalso gingko_utils:is_update_of_keys_or_commit(J, all_keys) end, JournalEntries),
-  AllUpdatedKeys = gingko_utils:get_keys_from_updates(RelevantJournalEntriesForCheckpoint),
-  Snapshots = read_snapshots(AllUpdatedKeys),
-  materializer:materialize_multiple_snapshots(Snapshots, RelevantJournalEntriesForCheckpoint).
-%TODO think about caching all values that have been just checkpointed
+  {PreviousCheckpointVts, CurrentCheckpointVts} =
+    case Checkpoints of
+      [] -> {vectorclock:new(), vectorclock:new()}; %Should not happen really
+      [CurrentCheckpoint1] ->
+        {vectorclock:new(), CurrentCheckpoint1#journal_entry.operation#system_operation.op_args#checkpoint_args.dependency_vts};
+      [CurrentCheckpoint2, PreviousCheckpoint | _] ->
+        {PreviousCheckpoint#journal_entry.operation#system_operation.op_args#checkpoint_args.dependency_vts, CurrentCheckpoint2#journal_entry.operation#system_operation.op_args#checkpoint_args.dependency_vts}
+    end,
+  %Get all keys from previous checkpoint and their dependency vts
+  CommittedJournalEntries = materializer:get_committed_journal_entries_for_keys(SortedJournalEntries, all_keys),
+  RelevantKeysInJournal =
+    sets:to_list(sets:from_list(
+      lists:filtermap(
+        fun({CommitJ, UpdateJList}) ->
+          CommitVts = CommitJ#journal_entry.operation#system_operation.op_args#commit_txn_args.commit_vts,
+          case gingko_utils:is_in_vts_range(CommitVts, {PreviousCheckpointVts, CurrentCheckpointVts}) of
+            true -> {true, lists:map(fun(UpdateJ) ->
+              UpdateJ#journal_entry.operation#object_operation.key_struct end, UpdateJList)};
+            false -> false
+          end
+        end, CommittedJournalEntries))),
+  SnapshotsToStore =
+    lists:map(
+      fun(K) ->
+        {ok, Snapshot} = gen_server:call(CacheServerPid, {get, K, CurrentCheckpointVts}),
+        Snapshot
+      end, RelevantKeysInJournal),
+  add_or_update_checkpoint_entries(SnapshotsToStore),
+  gen_server:call(CacheServerPid, {checkpoint_cache_cleanup, CurrentCheckpointVts}).
 
 -spec perform_tx_read(key_struct(), txid(), pid()) -> {ok, snapshot()} | {error, reason()}.
 perform_tx_read(KeyStruct, TxId, CacheServerPid) ->
@@ -164,10 +183,3 @@ perform_tx_read(KeyStruct, TxId, CacheServerPid) ->
         gingko_utils:is_update_of_keys(J, [KeyStruct])
       end, CurrentTxJournalEntries),
   materializer:materialize_snapshot_temporarily(SnapshotBeforeTx, UpdatesToBeAdded).
-
-recover_journal_log() ->
-  AllJournalEntries = gingko_log:read_all_journal_entries_sorted(),
-  AllJournalEntries = lists:sort(fun(J1, J2) ->
-    gingko_utils:get_jsn_number(J1) < gingko_utils:get_jsn_number(J2) end, AllJournalEntries),
-
-  CheckpointJournalEntries = g.

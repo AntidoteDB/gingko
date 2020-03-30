@@ -38,12 +38,12 @@ update_snapshot(_Config) ->
   KeyStruct = #key_struct{key = 1},
   Vts = vectorclock:new(),
   Snapshot = #snapshot{key_struct = KeyStruct, commit_vts = Vts, snapshot_vts = Vts, value = none},
-  ok = gingko_log:add_or_update_snapshot(Snapshot),
-  true = Snapshot == gingko_log:read_snapshot(KeyStruct),
+  ok = gingko_log:add_or_update_checkpoint_entry(Snapshot),
+  true = Snapshot == gingko_log:read_checkpoint_entry(KeyStruct, Vts),
   Snapshot2 = Snapshot#snapshot{value = 1},
-  true = Snapshot2 /= gingko_log:read_snapshot(KeyStruct),
-  ok = gingko_log:add_or_update_snapshot(Snapshot2),
-  true = Snapshot2 == gingko_log:read_snapshot(KeyStruct).
+  true = Snapshot2 /= gingko_log:read_checkpoint_entry(KeyStruct, Vts),
+  ok = gingko_log:add_or_update_checkpoint_entry(Snapshot2),
+  true = Snapshot2 == gingko_log:read_checkpoint_entry(KeyStruct, Vts).
 
 read_all_journal_entries(_Config) ->
   Jsn1 = #jsn{number = 1},
@@ -95,7 +95,7 @@ simulate_crash() ->
   no = mnesia:system_info(is_running),
   mnesia:start(),
   yes = mnesia:system_info(is_running),
-  mnesia:wait_for_tables([journal_entry, snapshot], 5000).
+  mnesia:wait_for_tables([journal_entry, checkpoint_entry], 5000).
 
 fill_state() ->
   KeyStruct1 = #key_struct{key = 1, type = antidote_crdt_register_mv},

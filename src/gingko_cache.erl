@@ -134,6 +134,10 @@ handle_call({get, KeyStruct, DependencyVts}, _From, State) ->
 
 handle_call({update_cache_config, CacheConfig}, _From, State) ->
   {Reply, NewState} = {ok, apply_cache_config(State, CacheConfig)},
+  {reply, Reply, NewState};
+
+handle_call({checkpoint_cache_cleanup, CheckpointVts}, _From, State) ->
+  {Reply, NewState} = {ok, clean_up_cache_after_checkpoint(State, CheckpointVts)},
   {reply, Reply, NewState}.
 
 -spec(handle_cast(Request :: term(), State :: state()) ->
@@ -237,16 +241,16 @@ load_key_into_cache(KeyStruct, State, DependencyVts) ->
   {MostRecentSnapshot, NewState} =
     case CheckpointJournalEntries of
       [] ->
-        CS1 = gingko_utils:create_new_snapshot(KeyStruct),
+        CS1 = gingko_utils:create_new_snapshot(KeyStruct, vectorclock:new()),
         {CS1, update_cache_entry_in_state(gingko_utils:create_cache_entry(CS1), State)};
       [LastCheckpointJournalEntry | _Js] ->
         FoundCacheEntries = dict:find(KeyStruct, State#state.key_cache_entry_dict),
+        CheckpointVts = LastCheckpointJournalEntry#journal_entry.operation#system_operation.op_args#checkpoint_args.dependency_vts,
         case FoundCacheEntries of
           error ->
-            CS2 = gingko_log:read_snapshot(KeyStruct),
+            CS2 = gingko_log:read_checkpoint_entry(KeyStruct, CheckpointVts),
             {CS2, update_cache_entry_in_state(gingko_utils:create_cache_entry(CS2), State)};
           {ok, CacheEntries} ->
-            CheckpointVts = LastCheckpointJournalEntry#journal_entry.operation#system_operation.op_args#checkpoint_args.dependency_vts,
             ValidCacheEntries =
               lists:filter(
                 fun(C) ->
@@ -255,7 +259,7 @@ load_key_into_cache(KeyStruct, State, DependencyVts) ->
                 end, CacheEntries),
             case ValidCacheEntries of
               [] ->
-                CS3 = gingko_log:read_snapshot(KeyStruct),
+                CS3 = gingko_log:read_checkpoint_entry(KeyStruct, CheckpointVts),
                 {CS3, update_cache_entry_in_state(gingko_utils:create_cache_entry(CS3), State)};
               [ValidCacheEntry | _FoundValidCacheEntries] ->
                 CS4 = gingko_utils:create_snapshot_from_cache_entry(ValidCacheEntry),
