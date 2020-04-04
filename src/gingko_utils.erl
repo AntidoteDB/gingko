@@ -11,7 +11,7 @@
 -include("gingko.hrl").
 
 %% API
--export([create_new_snapshot/2, is_in_vts_range/2, get_clock_range/2, is_in_clock_range/2, create_cache_entry/1, create_default_value/1, get_jsn_number/1, sort_by_jsn_number/1, is_system_operation/2, is_update_of_keys/2, is_update/1, get_keys_from_updates/1, generate_downstream_op/4, create_snapshot_from_cache_entry/1, get_timestamp/0, contains_system_operation/2, is_update_of_keys_or_commit/2, get_dcid/0, update_cache_usage/2, get_latest_vts/1, get_DCSf_vts/0, get_GCSf_vts/0, create_snapshot_from_checkpoint_entry/2]).
+-export([create_new_snapshot/2, is_in_vts_range/2, get_clock_range/2, is_in_clock_range/2, create_cache_entry/1, create_default_value/1, sort_by_jsn_number/1, is_system_operation/2, is_update_of_keys/2, is_update/1, get_keys_from_updates/1, generate_downstream_op/5, create_snapshot_from_cache_entry/1, get_timestamp/0, contains_system_operation/2, is_update_of_keys_or_commit/2, get_dcid/0, update_cache_usage/2, get_latest_vts/1, get_DCSf_vts/0, get_GCSf_vts/0, create_snapshot_from_checkpoint_entry/2]).
 
 -spec get_timestamp() -> non_neg_integer().
 get_timestamp() ->
@@ -136,13 +136,9 @@ get_keys_from_updates(JournalEntries) ->
       end
     end, JournalEntries).
 
--spec get_jsn_number(journal_entry()) -> non_neg_integer().
-get_jsn_number(JournalEntry) ->
-  JournalEntry#journal_entry.jsn#jsn.number.
-
 -spec sort_by_jsn_number([journal_entry()]) -> [journal_entry()].
 sort_by_jsn_number(JournalEntries) ->
-  lists:sort(fun(J1, J2) -> get_jsn_number(J1) < get_jsn_number(J2) end, JournalEntries).
+  lists:sort(fun(J1, J2) -> J1#journal_entry.jsn < J2#journal_entry.jsn end, JournalEntries).
 
 -spec get_latest_vts([journal_entry()]) -> vectorclock().
 get_latest_vts(SortedJournalEntries) ->
@@ -164,9 +160,9 @@ get_latest_vts(SortedJournalEntries) ->
   Timestamp = LastJournalEntry#journal_entry.rt_timestamp,
   vectorclock:set(gingko_utils:get_dcid(), Timestamp, LastVts).
 
--spec generate_downstream_op(key_struct(), txid(), type_op(), pid()) ->
+-spec generate_downstream_op(key_struct(), txid(), type_op(), atom(), pid()) ->
   {ok, downstream_op()} | {error, atom()}.
-generate_downstream_op(KeyStruct, TxId, TypeOp, CacheServerPid) ->
+generate_downstream_op(KeyStruct, TxId, TypeOp, TableName, CacheServerPid) ->
   %% TODO: Check if read can be omitted for some types as registers
   Type = KeyStruct#key_struct.type,
   NeedState = Type:require_state_downstream(TypeOp),
@@ -174,7 +170,7 @@ generate_downstream_op(KeyStruct, TxId, TypeOp, CacheServerPid) ->
     %% If state is needed to generate downstream, read it from the partition.
   case NeedState of
     true ->
-      case gingko_log:perform_tx_read(KeyStruct, TxId, CacheServerPid) of
+      case gingko_log:perform_tx_read(KeyStruct, TxId, TableName, CacheServerPid) of
         {ok, S} ->
           S;
         {error, Reason} ->

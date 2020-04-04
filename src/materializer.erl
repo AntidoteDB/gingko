@@ -72,7 +72,7 @@ get_committed_journal_entries_for_keys(SortedJournalEntries, KeyStructFilter) ->
   SortedListOfCommitToUpdateListTuples =
     lists:sort(
       fun({J1, _JList1}, {J2, _JList2}) ->
-        gingko_utils:get_jsn_number(J1) < gingko_utils:get_jsn_number(J2)
+        J1#journal_entry.jsn < J2#journal_entry.jsn
       end, ListOfCommitToUpdateListTuples),
   SortedListOfCommitToUpdateListTuples.
 
@@ -170,7 +170,7 @@ get_latest_valid_snapshot_vts(SortedJournalEntries, CommittedJournalEntries, Dep
         RelevantSortedJournalEntries =
           lists:takewhile(
             fun(J) ->
-              gingko_utils:get_jsn_number(J) < gingko_utils:get_jsn_number(FirstCommitLaterThanMaxVts)
+              J#journal_entry.jsn < FirstCommitLaterThanMaxVts#journal_entry.jsn
             end, SortedJournalEntries),
         gingko_utils:get_latest_vts(RelevantSortedJournalEntries)
     end,

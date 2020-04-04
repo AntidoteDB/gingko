@@ -30,6 +30,7 @@
 %TODO think of default values
 -record(state, {
   dcid :: dcid(),
+  table_name :: atom(),
   key_cache_entry_dict :: cache_dict(), %TODO double dict for optimization later
   max_occupancy = 100 :: non_neg_integer(),
   reset_used_interval_millis = 1000 :: non_neg_integer(),
@@ -37,7 +38,7 @@
   eviction_interval_millis = 1000 :: non_neg_integer(),
   eviction_timer = none :: none | reference(),
   eviction_threshold_in_percent = 90 :: 0..100, %TODO values above 100 are simply 100
-  target_threshold_in_percent = 00 :: 0..100, %TODO think about this one (currently based on the eviction threshold)
+  target_threshold_in_percent = 80 :: 0..100, %TODO think about this one (currently based on the eviction threshold)
   eviction_strategy = interval :: interval | fifo | lru | lfu
   %TODO decide on parameters
 }).
@@ -47,78 +48,21 @@
 %%% API
 %%%===================================================================
 
--spec(start_link({dcid(), [{atom(), term()}]}) ->
+-spec(start_link(map_list()) ->
   {ok, Pid :: pid()} | ignore | {error, Reason :: term()}).
-start_link({DcId, CacheConfig}) ->
-  gen_server:start_link({local, ?SERVER}, ?MODULE, {DcId, CacheConfig}, []).
+start_link(CacheConfig) ->
+  gen_server:start_link(?MODULE, CacheConfig, []).
 
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
 
-%TODO finish with all parameters
--spec apply_cache_config(state(), [{atom(), term()}]) -> state().
-apply_cache_config(State, CacheConfig) ->
-  MaxOccupancy =
-    case lists:keyfind(max_occupancy, 1, CacheConfig) of
-      {max_occupancy, Value1} -> Value1;
-      false -> State#state.max_occupancy
-    end,
-
-  {UpdateResetUsedTimer, UsedResetIntervalMillis} =
-    case lists:keyfind(reset_used_interval_millis, 1, CacheConfig) of
-      {reset_used_interval_millis, Value2} -> {true, Value2};
-      false -> {false, State#state.reset_used_interval_millis}
-    end,
-  {UpdateEvictionTimer, EvictionIntervalMillis} =
-    case lists:keyfind(eviction_interval_millis, 1, CacheConfig) of
-      {eviction_interval_millis, Value4} -> {true, Value4};
-      false -> {false, State#state.eviction_interval_millis}
-    end,
-  EvictionStrategy = case lists:keyfind(eviction_strategy, 1, CacheConfig) of
-                       {eviction_strategy, Value5} -> Value5;
-                       false -> State#state.eviction_strategy
-                     end,
-  NewState = State#state{max_occupancy = MaxOccupancy, reset_used_interval_millis = UsedResetIntervalMillis, eviction_interval_millis = EvictionIntervalMillis, eviction_strategy = EvictionStrategy},
-  update_timers(NewState, UpdateResetUsedTimer, UpdateEvictionTimer).
-
--spec update_timers(state(), boolean(), boolean()) -> state().
-update_timers(State, UpdateResetUsedTimer, UpdateEvictionTimer) ->
-  TimerResetUsed =
-    case State#state.reset_used_timer of
-      none ->
-        erlang:send_after(State#state.reset_used_interval_millis, self(), reset_used_event);
-      Reference1 ->
-        case UpdateResetUsedTimer of
-          true ->
-            erlang:cancel_timer(Reference1),
-            erlang:send_after(State#state.reset_used_interval_millis, self(), reset_used_event);
-          false -> Reference1
-        end
-    end,
-  TimerEviction =
-    case State#state.eviction_timer of
-      none ->
-        erlang:send_after(State#state.eviction_interval_millis, self(), eviction_event);
-      Reference2 ->
-        case UpdateEvictionTimer of
-          true -> erlang:cancel_timer(Reference2),
-            erlang:send_after(State#state.eviction_interval_millis, self(), eviction_event);
-          false -> Reference2
-        end
-    end,
-  State#state{reset_used_timer = TimerResetUsed, eviction_timer = TimerEviction}.
-
-
--spec(init({dcid(), [{atom(), term()}]}) ->
+-spec(init(map_list()) ->
   {ok, State :: state()} | {ok, State :: state(), timeout() | hibernate} |
   {stop, Reason :: term()} | ignore).
-init({DcId, CacheConfig}) ->
-  State = #state{
-    dcid = DcId,
-    key_cache_entry_dict = dict:new()
-  },
-  {ok, apply_cache_config(State, CacheConfig)}.
+init(CacheConfig) ->
+  NewState = apply_cache_config(#state{}, CacheConfig),
+  {ok, NewState#state{key_cache_entry_dict = dict:new()}}.
 
 -spec(handle_call(Request :: term(), From :: {pid(), Tag :: term()},
     State :: state()) ->
@@ -181,6 +125,46 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
+-spec apply_cache_config(state(), map_list()) -> state().
+apply_cache_config(State, GingkoConfig) ->
+  DcId = general_utils:get_or_default_map_list(dcid, GingkoConfig, error),
+  TableName = general_utils:get_or_default_map_list(table_name, GingkoConfig, error),
+  MaxOccupancy = general_utils:get_or_default_map_list(max_occupancy, GingkoConfig, State#state.max_occupancy),
+  EvictionStrategy = general_utils:get_or_default_map_list(eviction_strategy, GingkoConfig, State#state.eviction_strategy),
+  {UpdateResetUsedTimer, UsedResetIntervalMillis} =
+    general_utils:get_or_default_map_list_check(reset_used_interval_millis, GingkoConfig, State#state.reset_used_interval_millis),
+  {UpdateEvictionTimer, EvictionIntervalMillis} =
+    general_utils:get_or_default_map_list_check(eviction_interval_millis, GingkoConfig, State#state.eviction_interval_millis),
+  NewState = State#state{dcid = DcId, table_name = TableName, max_occupancy = MaxOccupancy, reset_used_interval_millis = UsedResetIntervalMillis, eviction_interval_millis = EvictionIntervalMillis, eviction_strategy = EvictionStrategy},
+  update_timers(NewState, UpdateResetUsedTimer, UpdateEvictionTimer).
+
+-spec update_timers(state(), boolean(), boolean()) -> state().
+update_timers(State, UpdateResetUsedTimer, UpdateEvictionTimer) ->
+  TimerResetUsed =
+    case State#state.reset_used_timer of
+      none ->
+        erlang:send_after(State#state.reset_used_interval_millis, self(), reset_used_event);
+      Reference1 ->
+        case UpdateResetUsedTimer of
+          true ->
+            erlang:cancel_timer(Reference1),
+            erlang:send_after(State#state.reset_used_interval_millis, self(), reset_used_event);
+          false -> Reference1
+        end
+    end,
+  TimerEviction =
+    case State#state.eviction_timer of
+      none ->
+        erlang:send_after(State#state.eviction_interval_millis, self(), eviction_event);
+      Reference2 ->
+        case UpdateEvictionTimer of
+          true -> erlang:cancel_timer(Reference2),
+            erlang:send_after(State#state.eviction_interval_millis, self(), eviction_event);
+          false -> Reference2
+        end
+    end,
+  State#state{reset_used_timer = TimerResetUsed, eviction_timer = TimerEviction}.
+
 -spec get(key_struct(), vectorclock(), state()) -> {{ok, snapshot()}, state()} | {{error, reason()}, state()}.
 get(KeyStruct, DependencyVts, State) ->
   Result = get_or_load_cache_entry(KeyStruct, DependencyVts, State, false, false),
@@ -235,7 +219,7 @@ get_or_load_cache_entry(KeyStruct, DependencyVts, State, CacheUpdated, ForceUpda
 
 -spec load_key_into_cache(key_struct(), state(), vectorclock()) -> state().
 load_key_into_cache(KeyStruct, State, DependencyVts) ->
-  SortedJournalEntries = gingko_log:read_all_journal_entries_sorted(),
+  SortedJournalEntries = gingko_log:read_all_journal_entries_sorted(State#state.table_name),
   CheckpointJournalEntries = lists:filter(fun(J) ->
     gingko_utils:is_system_operation(J, checkpoint) end, lists:reverse(SortedJournalEntries)),
   {MostRecentSnapshot, NewState} =
@@ -277,7 +261,7 @@ update_cache_entry_in_state(CacheEntry, State) ->
   CommitVts = CacheEntry#cache_entry.commit_vts,
   ValidVts = CacheEntry#cache_entry.valid_vts,
   CacheDict = State#state.key_cache_entry_dict,
-  CacheEntryList = general_utils:get_or_default(CacheDict, CacheEntry#cache_entry.key_struct, []),
+  CacheEntryList = general_utils:get_or_default_dict(CacheDict, CacheEntry#cache_entry.key_struct, []),
   MatchingEntries = lists:filter(fun(C) -> C#cache_entry.commit_vts == CommitVts end, CacheEntryList),
   UpdateNecessary =
     case MatchingEntries of

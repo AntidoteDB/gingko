@@ -23,13 +23,33 @@ all() ->
 
 init_per_suite(Config) ->
   Priv = ?config(priv_dir, Config),
-  ok = application:load(mnesia),
+  application:load(mnesia),
   application:set_env(mnesia, dir, Priv),
-  ok = application:load(gingko_app),
-  gingko_app:install([node()]),
-  ok = application:start(mnesia),
-  ok = application:start(gingko_app),
-  [{gingko_app_pid, gingko}|Config].
+  application:load(gingko_app),
+  mnesia:create_schema([node()]),
+  application:start(mnesia),
+  case application:start(gingko_app) of
+    ok ->
+      WorkerId1 = gingko1,
+      WorkerId2 = gingko2,
+      DcId = undefined,
+      GingkoConfig =
+        [
+          {checkpoint_interval_millis, 10000},
+          {max_occupancy, 100},
+          {reset_used_interval_millis, 1000},
+          {eviction_interval_millis, 2000},
+          {eviction_threshold_in_percent, 90},
+          {target_threshold_in_percent, 80},
+          {eviction_strategy, interval}
+        ],
+      {ok, Pid1} = gen_server:call(gingko_master, {start_gingko_worker, {WorkerId1, DcId, GingkoConfig}}),
+      {ok, Pid2} = gen_server:call(gingko_master, {start_gingko_worker, {WorkerId2, DcId, GingkoConfig}}),
+      [{gingko_pids, [Pid1, Pid2 | []]}|Config];
+    _ ->
+      {ok, Workers} = gen_server:call(gingko_master, get_gingko_workers),
+      [{gingko_pids, [lists:map(fun({_Id, Pid}) -> Pid end, Workers)]}|Config]
+  end.
 
 end_per_suite(_Config) ->
   ok = application:stop(mnesia).
@@ -38,13 +58,12 @@ end_per_testcase(_, _Config) ->
   ok.
 
 simple_integration_test(Config) ->
-  gingko_log:clear_journal_entries(),
-  Pid = ?config(gingko_app_pid, Config),
+  {atomic, ok} = gingko_log:clear_journal_entries(gingko2_journal_entry),
+  Pid = lists:nth(1, ?config(gingko_pids, Config)),
   CurrentTime = gingko_utils:get_timestamp(),
   TxId1 = #tx_id{local_start_time = CurrentTime, server_pid = self()},
   VC1 = vectorclock:new(),
   VC2 = vectorclock:set(undefined, CurrentTime, VC1),
-
   ok = gen_server:call(Pid, {{begin_txn, VC2}, TxId1}),
   {Key1, Type1, TypeOp1} = {1, antidote_crdt_counter_pn, {increment, 1}},
   ok = gen_server:call(Pid, {{update, {Key1, Type1, TypeOp1}}, TxId1}),
@@ -55,7 +74,7 @@ simple_integration_test(Config) ->
   ok = gen_server:call(Pid, {{commit_txn, VC3}, TxId1}).
 
 two_transactions(Config) ->
-  Pid = ?config(gingko_app_pid, Config),
+  Pid = lists:nth(1, ?config(gingko_pids, Config)),
   CurrentTime1 = gingko_utils:get_timestamp(),
   CurrentTime2 = gingko_utils:get_timestamp() + 1,
   TxId1 = #tx_id{local_start_time = CurrentTime1, server_pid = self()},

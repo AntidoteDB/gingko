@@ -8,9 +8,10 @@
 %%%-------------------------------------------------------------------
 -module(general_utils).
 -author("kevin").
+-include("gingko.hrl").
 
 %% API
--export([group_by/2, add_to_value_list_or_create_single_value_list/3, sorted_insert/3, get_or_default/3]).
+-export([group_by/2, add_to_value_list_or_create_single_value_list/3, sorted_insert/3, get_or_default_dict/3, get_or_default_map_list/3, get_or_default_map_list_check/3, concat_and_make_atom/1, atom_replace/3]).
 
 -spec group_by(fun((ListType :: term()) -> GroupKeyType :: term()), [ListType :: term()]) -> dict:dict(GroupKeyType :: term(), ListType :: term()).
 group_by(Fun, List) ->
@@ -32,9 +33,38 @@ sorted_insert(X, L = [H | T], Comparer) ->
     false -> [H | sorted_insert(X, T, Comparer)]
   end.
 
--spec get_or_default(dict:dict(TypeA :: term(), TypeB :: term()), TypeA :: term(), TypeB :: term()) -> TypeB :: term().
-get_or_default(Dict, Key, Default) ->
+-spec get_or_default_dict(dict:dict(TypeA :: term(), TypeB :: term()), TypeA :: term(), TypeB :: term()) -> TypeB :: term().
+get_or_default_dict(Dict, Key, Default) ->
   case dict:find(Key, Dict) of
     {ok, Value} -> Value;
     error -> Default
   end.
+
+-spec get_or_default_map_list(Key :: term(), MapList :: map_list(), Default :: term()) -> ValueOrDefault :: term().
+get_or_default_map_list(Key, MapList, Default) ->
+  case lists:keyfind(Key, 1, MapList) of
+    {Key, Value} -> Value;
+    false -> Default
+  end.
+
+-spec get_or_default_map_list_check(Key :: term(), MapList :: map_list(), Default :: term()) -> {ValueDifferentToDefault :: boolean(), ValueOrDefault :: term()}.
+get_or_default_map_list_check(Key, MapList, Default) ->
+  Value = get_or_default_map_list(Key, MapList, Default),
+  {Default /= Value, Value}.
+
+-spec concat_and_make_atom([string() | atom()]) -> atom().
+concat_and_make_atom(StringOrAtomList) ->
+  list_to_atom(lists:append(lists:map(fun(Item) ->
+                         case is_atom(Item) of
+                           true -> atom_to_list(Item);
+                           false -> Item
+                         end
+                         end, StringOrAtomList))).
+
+-spec atom_replace(atom(), atom(), string()) -> atom().
+atom_replace(Atom, AtomToReplace, ReplacementString) ->
+  String = atom_to_list(Atom),
+  StringToReplace = atom_to_list(AtomToReplace),
+  list_to_atom(string:replace(String, StringToReplace, ReplacementString)).
+
+

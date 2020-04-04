@@ -10,68 +10,68 @@
 -author("kevin").
 -include("gingko.hrl").
 %% API
--export([add_journal_entry/1, add_or_update_checkpoint_entry/1, read_journal_entry/1, read_checkpoint_entry/2, read_all_journal_entries/0, match_journal_entries/1, read_journal_entries_with_tx_id/1, perform_tx_read/3, persist_journal_entries/0, clear_journal_entries/0, read_all_journal_entries_sorted/0, read_journal_entries_with_tx_id_sorted/1, checkpoint/1]).
+-export([add_journal_entry/2, add_or_update_checkpoint_entry/1, read_journal_entry/2, read_checkpoint_entry/2, read_all_journal_entries/1, match_journal_entries/2, read_journal_entries_with_tx_id/2, perform_tx_read/4, persist_journal_entries/1, clear_journal_entries/1, read_all_journal_entries_sorted/1, read_journal_entries_with_tx_id_sorted/2, checkpoint/2]).
 
--spec persist_journal_entries() -> {atomic, ok} | {aborted, reason()}.
-persist_journal_entries() ->
-  {atomic, ok} = mnesia:dump_tables([journal_entry]).
+-spec persist_journal_entries(atom()) -> {atomic, ok} | {aborted, reason()}.
+persist_journal_entries(TableName) ->
+  {atomic, ok} = mnesia:dump_tables([TableName]).
 
--spec clear_journal_entries() -> {atomic, ok} | {aborted, reason()}.
-clear_journal_entries() ->
-  {atomic, ok} = mnesia:clear_table(journal_entry),
-  persist_journal_entries().
+-spec clear_journal_entries(atom()) -> {atomic, ok} | {aborted, reason()}.
+clear_journal_entries(TableName) ->
+  {atomic, ok} = mnesia:clear_table(TableName),
+  persist_journal_entries(TableName).
 
--spec add_journal_entry(journal_entry()) -> ok | {error, {already_exists, [journal_entry()]}} | 'transaction abort'.
-add_journal_entry(JournalEntry) ->
+-spec add_journal_entry(journal_entry(), atom()) -> ok | {error, {already_exists, [journal_entry()]}} | 'transaction abort'.
+add_journal_entry(JournalEntry, TableName) ->
   F = fun() ->
-    case mnesia:read(journal_entry, JournalEntry#journal_entry.jsn) of
-      [] -> mnesia:write(JournalEntry);
+    case mnesia:read(TableName, JournalEntry#journal_entry.jsn) of
+      [] -> mnesia:write(TableName, JournalEntry, write);
       ExistingJournalEntries -> {error, {already_exists, ExistingJournalEntries}}
     end
       end,
   mnesia:activity(transaction, F).
 
--spec read_journal_entry(jsn()) -> journal_entry().%TODO compiler bug | {error, {"Multiple Journal Entries found", jsn(), [journal_entry()]}} | {error, {"No Journal Entry found", jsn()}} .
-read_journal_entry(Jsn) ->
-  List = mnesia:activity(transaction, fun() -> mnesia:read(journal_entry, Jsn) end),
+-spec read_journal_entry(jsn(), atom()) -> journal_entry().%TODO compiler bug | {error, {"Multiple Journal Entries found", jsn(), [journal_entry()]}} | {error, {"No Journal Entry found", jsn()}} .
+read_journal_entry(Jsn, TableName) ->
+  List = mnesia:activity(transaction, fun() -> mnesia:read(TableName, Jsn) end),
   case List of
     [] -> {error, {"No Journal Entry found", Jsn}};
     [J] -> J;
     Js -> {error, {"Multiple Journal Entries found", Jsn, Js}}
   end.
 
--spec read_all_journal_entries() -> [journal_entry()].
-read_all_journal_entries() ->
+-spec read_all_journal_entries(atom()) -> [journal_entry()].
+read_all_journal_entries(TableName) ->
   mnesia:activity(transaction,
     fun() ->
-      mnesia:foldl(fun(J, Acc) -> [J | Acc] end, [], journal_entry)
+      mnesia:foldl(fun(J, Acc) -> [J | Acc] end, [], TableName)
     end).
 
--spec read_all_journal_entries_sorted() -> [journal_entry()].
-read_all_journal_entries_sorted() ->
+-spec read_all_journal_entries_sorted(atom()) -> [journal_entry()].
+read_all_journal_entries_sorted(TableName) ->
   mnesia:activity(transaction,
     fun() ->
       mnesia:foldl(
         fun(J, Acc) ->
           general_utils:sorted_insert(J, Acc,
             fun(J1, J2) ->
-              gingko_utils:get_jsn_number(J1) =< gingko_utils:get_jsn_number(J2)
+              J1#journal_entry.jsn =< J2#journal_entry.jsn
             end)
-        end, [], journal_entry)
+        end, [], TableName)
     end).
 
--spec read_journal_entries_with_tx_id(txid()) -> [journal_entry()].
-read_journal_entries_with_tx_id(TxId) ->
+-spec read_journal_entries_with_tx_id(txid(), atom()) -> [journal_entry()].
+read_journal_entries_with_tx_id(TxId, TableName) ->
   MatchJournalEntry = #journal_entry{tx_id = TxId, _ = '_'},
-  match_journal_entries(MatchJournalEntry).
+  match_journal_entries(MatchJournalEntry, TableName).
 
--spec read_journal_entries_with_tx_id_sorted(txid()) -> [journal_entry()].
-read_journal_entries_with_tx_id_sorted(TxId) ->
-  gingko_utils:sort_by_jsn_number(read_journal_entries_with_tx_id(TxId)).
+-spec read_journal_entries_with_tx_id_sorted(txid(), atom()) -> [journal_entry()].
+read_journal_entries_with_tx_id_sorted(TxId, TableName) ->
+  gingko_utils:sort_by_jsn_number(read_journal_entries_with_tx_id(TxId, TableName)).
 
--spec match_journal_entries(journal_entry()) -> [journal_entry()].
-match_journal_entries(MatchJournalEntry) ->
-  mnesia:activity(transaction, fun() -> mnesia:match_object(MatchJournalEntry) end).
+-spec match_journal_entries(journal_entry(), atom()) -> [journal_entry()].
+match_journal_entries(MatchJournalEntry, TableName) ->
+  mnesia:activity(transaction, fun() -> mnesia:match_object(TableName, MatchJournalEntry, read) end).
 
 -spec read_all_checkpoint_entry_keys() -> [key_struct()].
 read_all_checkpoint_entry_keys() ->
@@ -135,9 +135,9 @@ add_or_update_checkpoint_entries(Snapshots) ->
     end,
   mnesia:activity(transaction, F).
 
--spec checkpoint(pid()) -> ok.
-checkpoint(CacheServerPid) ->
-  SortedJournalEntries = read_all_journal_entries_sorted(),
+-spec checkpoint(atom(), pid()) -> ok.
+checkpoint(TableName, CacheServerPid) ->
+  SortedJournalEntries = read_all_journal_entries_sorted(TableName),
   RelevantJournalList = lists:reverse(SortedJournalEntries),
   Checkpoints = lists:filter(fun(J) ->
     gingko_utils:is_system_operation(J, checkpoint) end, RelevantJournalList),
@@ -171,9 +171,9 @@ checkpoint(CacheServerPid) ->
   add_or_update_checkpoint_entries(SnapshotsToStore),
   gen_server:call(CacheServerPid, {checkpoint_cache_cleanup, CurrentCheckpointVts}).
 
--spec perform_tx_read(key_struct(), txid(), pid()) -> {ok, snapshot()} | {error, reason()}.
-perform_tx_read(KeyStruct, TxId, CacheServerPid) ->
-  CurrentTxJournalEntries = read_journal_entries_with_tx_id_sorted(TxId),
+-spec perform_tx_read(key_struct(), txid(), atom(), pid()) -> {ok, snapshot()} | {error, reason()}.
+perform_tx_read(KeyStruct, TxId, TableName, CacheServerPid) ->
+  CurrentTxJournalEntries = read_journal_entries_with_tx_id_sorted(TxId, TableName),
   Begin = hd(CurrentTxJournalEntries),
   BeginVts = Begin#journal_entry.operation#system_operation.op_args#begin_txn_args.dependency_vts,
   {ok, SnapshotBeforeTx} = gen_server:call(CacheServerPid, {get, KeyStruct, BeginVts}),

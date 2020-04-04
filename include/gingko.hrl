@@ -29,8 +29,7 @@
 -type clock_time_or_none() :: clock_time() | none.
 -type clock_range() :: {MinClock :: clock_time_or_none(), MaxClock :: clock_time_or_none()}.
 -type reason() :: term().
--type log_names() :: {string(), string()}.
-
+-type map_list() :: [{Key :: term(), Value :: term()}].
 
 -record(cache_usage, {
   used = true :: boolean(),
@@ -108,19 +107,16 @@
 
 -type operation() :: system_operation() | object_operation().
 
+-type jsn() :: non_neg_integer().
+
 -record(journal_entry, {
   jsn :: jsn(),
+  dcid :: dcid(),
   rt_timestamp :: clock_time(),
   tx_id :: txid(),
   operation :: operation()
 }).
 -type journal_entry() :: #journal_entry{}.
-
--record(jsn, {
-  dcid = undefined :: dcid(),
-  number :: non_neg_integer()
-}).
--type jsn() :: #jsn{}.
 
 -record(update_payload, {
   key_struct :: key_struct(),
