@@ -26,7 +26,7 @@
 %% Description and complete License: see LICENSE file.
 %% -------------------------------------------------------------------
 
--module(materializer).
+-module(gingko_materializer).
 -include("gingko.hrl").
 
 -ifdef(TEST).

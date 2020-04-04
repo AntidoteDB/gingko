@@ -13,6 +13,8 @@
 %% API
 -export([group_by/2, add_to_value_list_or_create_single_value_list/3, sorted_insert/3, get_or_default_dict/3, get_or_default_map_list/3, get_or_default_map_list_check/3, concat_and_make_atom/1, atom_replace/3]).
 
+%% @doc Takes function that groups entries form the given list in a dictionary
+%%      For example grouping a list of journal entries by txid to get all journal entries that belong to a certain txid
 -spec group_by(fun((ListType :: term()) -> GroupKeyType :: term()), [ListType :: term()]) -> dict:dict(GroupKeyType :: term(), ListType :: term()).
 group_by(Fun, List) ->
   lists:foldr(
@@ -20,7 +22,9 @@ group_by(Fun, List) ->
       dict:append(Key, Value, Dict)
     end, dict:new(), [{Fun(X), X} || X <- List]).
 
--spec add_to_value_list_or_create_single_value_list(DictionaryTypeAToValueTypeBList :: dict:dict(KeyTypeA :: term(), TypeBList :: [term()]), KeyTypeA :: term(), ValueTypeB :: term()) -> term().
+%% @doc Updates a dictionary that stores lists as values
+%%      If a list exists for the given key then the given value is added to the list otherwise a new list with the given value is added to the dictionary
+-spec add_to_value_list_or_create_single_value_list(DictionaryTypeAToValueTypeBList :: dict:dict(KeyTypeA :: term(), TypeBList :: [term()]), KeyTypeA :: term(), ValueTypeB :: term()) -> dict:dict(KeyTypeA :: term(), TypeBList :: [term()]).
 add_to_value_list_or_create_single_value_list(DictionaryTypeAToValueTypeBList, KeyTypeA, ValueTypeB) ->
   dict:update(KeyTypeA, fun(ValueTypeBList) ->
     [ValueTypeB | ValueTypeBList] end, [ValueTypeB], DictionaryTypeAToValueTypeBList).

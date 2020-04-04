@@ -150,7 +150,7 @@ checkpoint(TableName, CacheServerPid) ->
         {PreviousCheckpoint#journal_entry.operation#system_operation.op_args#checkpoint_args.dependency_vts, CurrentCheckpoint2#journal_entry.operation#system_operation.op_args#checkpoint_args.dependency_vts}
     end,
   %Get all keys from previous checkpoint and their dependency vts
-  CommittedJournalEntries = materializer:get_committed_journal_entries_for_keys(SortedJournalEntries, all_keys),
+  CommittedJournalEntries = gingko_materializer:get_committed_journal_entries_for_keys(SortedJournalEntries, all_keys),
   RelevantKeysInJournal =
     sets:to_list(sets:from_list(
       lists:filtermap(
@@ -182,4 +182,4 @@ perform_tx_read(KeyStruct, TxId, TableName, CacheServerPid) ->
       fun(J) ->
         gingko_utils:is_update_of_keys(J, [KeyStruct])
       end, CurrentTxJournalEntries),
-  materializer:materialize_snapshot_temporarily(SnapshotBeforeTx, UpdatesToBeAdded).
+  gingko_materializer:materialize_snapshot_temporarily(SnapshotBeforeTx, UpdatesToBeAdded).

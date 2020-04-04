@@ -251,7 +251,7 @@ load_key_into_cache(KeyStruct, State, DependencyVts) ->
             end
         end
     end,
-  {ok, Snapshot} = materializer:materialize_snapshot(MostRecentSnapshot, SortedJournalEntries, DependencyVts),
+  {ok, Snapshot} = gingko_materializer:materialize_snapshot(MostRecentSnapshot, SortedJournalEntries, DependencyVts),
   CacheEntry = gingko_utils:create_cache_entry(Snapshot),
   update_cache_entry_in_state(CacheEntry, NewState).
 
