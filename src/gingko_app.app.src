@@ -1,12 +1,12 @@
 {application, gingko_app,
- [{description, "Persistent backend for CRDT objects"},
-  {vsn, "0.1.0"},
-  {registered, [gingko_app]},
-  {applications,
-   [kernel,
-    stdlib,
-    mnesia
-   ]},
-  {licenses, ["Apache 2.0"]},
-  {mod,{gingko_app,[]}}
- ]}.
+    [{description, "Persistent backend for CRDT objects"},
+        {vsn, "0.1.0"},
+        {registered, [gingko_app]},
+        {applications,
+            [kernel,
+                stdlib,
+                mnesia
+            ]},
+        {licenses, ["Apache 2.0"]},
+        {mod, {gingko_app, []}}
+    ]}.

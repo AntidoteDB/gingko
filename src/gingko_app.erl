@@ -1,13 +1,26 @@
-%%%-------------------------------------------------------------------
-%%% @author kevin
-%%% @copyright (C) 2019, <COMPANY>
-%%% @doc
-%%%
-%%% @end
-%%% Created : 12. Dez 2019 11:14
-%%%-------------------------------------------------------------------
+%% -------------------------------------------------------------------
+%%
+%% Copyright 2020, Kevin Bartik <k_bartik12@cs.uni-kl.de>
+%%
+%% This file is provided to you under the Apache License,
+%% Version 2.0 (the "License"); you may not use this file
+%% except in compliance with the License.  You may obtain
+%% a copy of the License at
+%%
+%%   http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing,
+%% software distributed under the License is distributed on an
+%% "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+%% KIND, either expressed or implied.  See the License for the
+%% specific language governing permissions and limitations
+%% under the License.
+%%
+%% Description and complete License: see LICENSE file.
+%% -------------------------------------------------------------------
+
 -module(gingko_app).
--author("kevin").
+-author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
 -include("gingko.hrl").
 
 -behaviour(application).
@@ -16,21 +29,21 @@
 
 -spec(start(StartType :: normal | {takeover, node()} | {failover, node()},
     StartArgs :: term()) ->
-  {ok, pid()} |
-  {ok, pid(), State :: term()} |
-  {error, Reason :: term()}).
+    {ok, pid()} |
+    {ok, pid(), State :: term()} |
+    {error, Reason :: term()}).
 start(_StartType, _StartArgs) ->
-  mnesia:create_table(checkpoint_entry,
-    [{attributes, record_info(fields, checkpoint_entry)},
-      %{index, [#snapshot.key_struct]},TODO find out why index doesn't work here
-      {disc_copies, [node()]}]),
-  ok = mnesia:wait_for_tables([checkpoint_entry], 5000),
-  gingko_master:start_link().
+    {atomic, ok} = mnesia:create_table(checkpoint_entry,
+        [{attributes, record_info(fields, checkpoint_entry)},
+            %{index, [#checkpoint_entry.index]},%TODO find out why index doesn't work here
+            {ram_copies, [node()]}]),
+    ok = mnesia:wait_for_tables([checkpoint_entry], 5000),
+    gingko_master:start_link().
 
 -spec(stop(State :: term()) -> term()).
 stop(_State) ->
-  mnesia:stop(),
-  ok.
+    mnesia:stop(),
+    ok.
 
 
 %%TODO keep this for later when inner dc replication becomes relevant (replicate between different nodes)

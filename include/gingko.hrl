@@ -57,6 +57,7 @@
 -type raw_value() :: term().
 
 -record(checkpoint_entry, {
+    index = 0 :: non_neg_integer(),
   key_struct :: key_struct(),
   value :: snapshot_value()
 }).

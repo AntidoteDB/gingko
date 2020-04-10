@@ -1,13 +1,26 @@
-%%%-------------------------------------------------------------------
-%%% @author kevin
-%%% @copyright (C) 2020, <COMPANY>
-%%% @doc
-%%%
-%%% @end
-%%% Created : 04. Apr 2020 11:12
-%%%-------------------------------------------------------------------
+%% -------------------------------------------------------------------
+%%
+%% Copyright 2020, Kevin Bartik <k_bartik12@cs.uni-kl.de>
+%%
+%% This file is provided to you under the Apache License,
+%% Version 2.0 (the "License"); you may not use this file
+%% except in compliance with the License.  You may obtain
+%% a copy of the License at
+%%
+%%   http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing,
+%% software distributed under the License is distributed on an
+%% "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+%% KIND, either expressed or implied.  See the License for the
+%% specific language governing permissions and limitations
+%% under the License.
+%%
+%% Description and complete License: see LICENSE file.
+%% -------------------------------------------------------------------
+
 -module(gingko_master).
--author("kevin").
+-author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
 
 -behaviour(gen_server).
 
@@ -16,13 +29,13 @@
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
-  code_change/3]).
+    code_change/3]).
 
 -define(SERVER, ?MODULE).
 
 -record(state, {
-  gingko_sup_pid :: pid(),
-  gingko_workers = [] :: [{atom(), pid()}]
+    gingko_sup_pid :: pid(),
+    gingko_workers = [] :: [{atom(), pid()}]
 }).
 -type state() :: #state{}.
 
@@ -32,9 +45,9 @@
 
 %% @doc Spawns the server and registers the local name (unique)
 -spec(start_link() ->
-  {ok, Pid :: pid()} | ignore | {error, Reason :: term()}).
+    {ok, Pid :: pid()} | ignore | {error, Reason :: term()}).
 start_link() ->
-  gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
+    gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -43,48 +56,48 @@ start_link() ->
 %% @private
 %% @doc Initializes the server
 -spec(init(Args :: term()) ->
-  {ok, State :: state()} | {ok, State :: state(), timeout() | hibernate} |
-  {stop, Reason :: term()} | ignore).
+    {ok, State :: state()} | {ok, State :: state(), timeout() | hibernate} |
+    {stop, Reason :: term()} | ignore).
 init([]) ->
-  {ok, GingkoSupPid} = gingko_sup:start_link(),
-  {ok, #state{gingko_sup_pid = GingkoSupPid}}.
+    {ok, GingkoSupPid} = gingko_sup:start_link(),
+    {ok, #state{gingko_sup_pid = GingkoSupPid}}.
 
 %% @private
 %% @doc Handling call messages
 -spec(handle_call(Request :: term(), From :: {pid(), Tag :: term()},
     State :: state()) ->
-  {reply, Reply :: term(), NewState :: state()} |
-  {reply, Reply :: term(), NewState :: state(), timeout() | hibernate} |
-  {noreply, NewState :: state()} |
-  {noreply, NewState :: state(), timeout() | hibernate} |
-  {stop, Reason :: term(), Reply :: term(), NewState :: state()} |
-  {stop, Reason :: term(), NewState :: state()}).
+    {reply, Reply :: term(), NewState :: state()} |
+    {reply, Reply :: term(), NewState :: state(), timeout() | hibernate} |
+    {noreply, NewState :: state()} |
+    {noreply, NewState :: state(), timeout() | hibernate} |
+    {stop, Reason :: term(), Reply :: term(), NewState :: state()} |
+    {stop, Reason :: term(), NewState :: state()}).
 handle_call({start_gingko_worker, {WorkerId, DcId, GingkoConfig}}, _From, State) ->
-  %TODO check for duplicate ids
-  {ok, GingkoPid} = gingko_sup:start_gingko_server(WorkerId, DcId, GingkoConfig),
-  WorkerList = [{WorkerId, GingkoPid}|State#state.gingko_workers],
-  {reply, {ok, GingkoPid}, State#state{gingko_workers = WorkerList}};
+    %TODO check for duplicate ids
+    {ok, GingkoPid} = gingko_sup:start_gingko_server(WorkerId, DcId, GingkoConfig),
+    WorkerList = [{WorkerId, GingkoPid} | State#state.gingko_workers],
+    {reply, {ok, GingkoPid}, State#state{gingko_workers = WorkerList}};
 
 handle_call(get_gingko_workers, _From, State) ->
-  {reply, {ok, State#state.gingko_workers}, State}.
+    {reply, {ok, State#state.gingko_workers}, State}.
 
 %% @private
 %% @doc Handling cast messages
 -spec(handle_cast(Request :: term(), State :: state()) ->
-  {noreply, NewState :: state()} |
-  {noreply, NewState :: state(), timeout() | hibernate} |
-  {stop, Reason :: term(), NewState :: state()}).
+    {noreply, NewState :: state()} |
+    {noreply, NewState :: state(), timeout() | hibernate} |
+    {stop, Reason :: term(), NewState :: state()}).
 handle_cast(_Request, State) ->
-  {noreply, State}.
+    {noreply, State}.
 
 %% @private
 %% @doc Handling all non call/cast messages
 -spec(handle_info(Info :: timeout() | term(), State :: state()) ->
-  {noreply, NewState :: state()} |
-  {noreply, NewState :: state(), timeout() | hibernate} |
-  {stop, Reason :: term(), NewState :: state()}).
+    {noreply, NewState :: state()} |
+    {noreply, NewState :: state(), timeout() | hibernate} |
+    {stop, Reason :: term(), NewState :: state()}).
 handle_info(_Info, State) ->
-  {noreply, State}.
+    {noreply, State}.
 
 %% @private
 %% @doc This function is called by a gen_server when it is about to
@@ -94,15 +107,15 @@ handle_info(_Info, State) ->
 -spec(terminate(Reason :: (normal | shutdown | {shutdown, term()} | term()),
     State :: state()) -> term()).
 terminate(_Reason, _State) ->
-  ok.
+    ok.
 
 %% @private
 %% @doc Convert process state when code is changed
 -spec(code_change(OldVsn :: term() | {down, term()}, State :: state(),
     Extra :: term()) ->
-  {ok, NewState :: state()} | {error, Reason :: term()}).
+    {ok, NewState :: state()} | {error, Reason :: term()}).
 code_change(_OldVsn, State, _Extra) ->
-  {ok, State}.
+    {ok, State}.
 
 %%%===================================================================
 %%% Internal functions
