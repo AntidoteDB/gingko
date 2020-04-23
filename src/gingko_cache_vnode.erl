@@ -1,6 +1,3 @@
-%% -------------------------------------------------------------------
-%%
-%% Copyright 2020, Kevin Bartik <k_bartik12@cs.uni-kl.de>
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -19,32 +16,38 @@
 %% Description and complete License: see LICENSE file.
 %% -------------------------------------------------------------------
 
--module(gingko_cache).
+-module(gingko_cache_vnode).
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
 -include("gingko.hrl").
-
--behaviour(gen_server).
+-include_lib("kernel/include/logger.hrl").
+-behaviour(riak_core_vnode).
 
 %% API
--export([start_link/1]).
-
-%% gen_server callbacks
--export([init/1,
-    handle_call/3,
-    handle_cast/2,
-    handle_info/2,
+-export([start_vnode/1,
+    init/1,
+    handle_command/3,
+    handoff_starting/2,
+    handoff_cancelled/1,
+    handoff_finished/2,
+    handle_handoff_command/3,
+    handle_handoff_data/2,
+    encode_handoff_item/2,
+    is_empty/1,
     terminate/2,
-    code_change/3]).
-
--define(SERVER, ?MODULE).
+    delete/1,
+    handle_info/2,
+    handle_exit/3,
+    handle_coverage/4,
+    handle_overload_command/3,
+    handle_overload_info/2]).
 
 -type cache_dict() :: dict:dict(key_struct(), [cache_entry()]).
 
 %TODO think of default values
 -record(state, {
-    dcid :: dcid(),
+    partition :: partition_id(),
     table_name :: atom(),
-    key_cache_entry_dict :: cache_dict(), %TODO double dict for optimization later
+    key_cache_entry_dict = dict:new() :: cache_dict(), %TODO double dict for optimization later
     max_occupancy = 100 :: non_neg_integer(),
     reset_used_interval_millis = 1000 :: non_neg_integer(),
     reset_used_timer = none :: none | reference(),
@@ -57,90 +60,102 @@
 }).
 -type state() :: #state{}.
 
-%%%===================================================================
-%%% API
-%%%===================================================================
+-spec start_vnode(integer()) -> any().
+start_vnode(I) ->
+    riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
 
--spec(start_link(map_list()) ->
-    {ok, Pid :: pid()} | ignore | {error, Reason :: term()}).
-start_link(CacheConfig) ->
-    gen_server:start_link(?MODULE, CacheConfig, []).
-
-%%%===================================================================
-%%% gen_server callbacks
-%%%===================================================================
-
--spec(init(map_list()) ->
-    {ok, State :: state()} | {ok, State :: state(), timeout() | hibernate} |
-    {stop, Reason :: term()} | ignore).
-init(CacheConfig) ->
-    NewState = apply_cache_config(#state{}, CacheConfig),
+%% @doc Opens the persistent copy of the Log.
+%%      The name of the Log in disk is a combination of the the word
+%%      `log' and the partition identifier.
+init([Partition]) ->
+    logger:debug("init(~nPartition: ~p~n)", [Partition]),
+    TableName = general_utils:concat_and_make_atom([integer_to_list(Partition), '_journal_entry']),
+    CacheConfig = [{partition, Partition}, {table_name, TableName}|gingko_app:get_default_config()],
+    NewState = apply_gingko_config(#state{}, CacheConfig),
     {ok, NewState#state{key_cache_entry_dict = dict:new()}}.
 
--spec(handle_call(Request :: term(), From :: {pid(), Tag :: term()},
-    State :: state()) ->
-    {reply, Reply :: term(), NewState :: state()} |
-    {reply, Reply :: term(), NewState :: state(), timeout() | hibernate} |
-    {noreply, NewState :: state()} |
-    {noreply, NewState :: state(), timeout() | hibernate} |
-    {stop, Reason :: term(), Reply :: term(), NewState :: state()} |
-    {stop, Reason :: term(), NewState :: state()}).
-handle_call({get, KeyStruct, DependencyVts}, _From, State) ->
+handle_command({get, KeyStruct, DependencyVts} = Request, Sender, State) ->
+    logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
     {Reply, NewState} = get(KeyStruct, DependencyVts, State),
     {reply, Reply, NewState};
 
-handle_call({update_cache_config, CacheConfig}, _From, State) ->
-    {Reply, NewState} = {ok, apply_cache_config(State, CacheConfig)},
+handle_command({update_cache_config, CacheConfig} = Request, Sender, State) ->
+    logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
+    {Reply, NewState} = {ok, apply_gingko_config(State, CacheConfig)},
     {reply, Reply, NewState};
 
-handle_call({checkpoint_cache_cleanup, CheckpointVts}, _From, State) ->
+handle_command({checkpoint_cache_cleanup, CheckpointVts} = Request, Sender, State) ->
+    logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
     {Reply, NewState} = {ok, clean_up_cache_after_checkpoint(State, CheckpointVts)},
-    {reply, Reply, NewState}.
+    {reply, Reply, NewState};
 
--spec(handle_cast(Request :: term(), State :: state()) ->
-    {noreply, NewState :: state()} |
-    {noreply, NewState :: state(), timeout() | hibernate} |
-    {stop, Reason :: term(), NewState :: state()}).
-handle_cast(_Request, State) ->
+handle_command(Request, Sender, State) ->
+    logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
     {noreply, State}.
 
--spec(handle_info(Info :: timeout() | term(), State :: state()) ->
-    {noreply, NewState :: state()} |
-    {noreply, NewState :: state(), timeout() | hibernate} |
-    {stop, Reason :: term(), NewState :: state()}).
-handle_info({eviction_event}, State) ->
-    OldTimer = State#state.eviction_timer,
-    erlang:cancel_timer(OldTimer),
-    NewState = start_eviction_process(State),
-    NewTimer = erlang:send_after(NewState#state.eviction_interval_millis, self(), eviction_event),
-    {noreply, NewState#state{eviction_timer = NewTimer}};
-handle_info({reset_used_event}, State) ->
-    OldTimer = State#state.reset_used_timer,
-    erlang:cancel_timer(OldTimer),
-    NewState = reset_used(State),
-    NewTimer = erlang:send_after(NewState#state.reset_used_interval_millis, self(), reset_used_event),
-    {noreply, NewState#state{reset_used_timer = NewTimer}};
-handle_info(_Info, State) ->
+handoff_starting(TargetNode, State) ->
+    logger:debug("handoff_starting(~nTargetNode: ~p~nState: ~p~n)", [TargetNode, State]),
+    {true, State}.
+
+handoff_cancelled(State) ->
+    logger:debug("handoff_cancelled(~nState: ~p~n)", [State]),
+    {ok, State}.
+
+handoff_finished(TargetNode, State) ->
+    logger:debug("handoff_finished(~nTargetNode: ~p~nState: ~p~n)", [TargetNode, State]),
+    {ok, State}.
+
+handle_handoff_command(Request, Sender, State) ->
+    logger:debug("handle_handoff_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
     {noreply, State}.
 
--spec(terminate(Reason :: (normal | shutdown | {shutdown, term()} | term()),
-    State :: state()) -> term()).
-terminate(_Reason, _State) ->
+handle_handoff_data(BinaryData, State) ->
+    logger:debug("handle_handoff_data(~nData: ~p~nState: ~p~n)", [binary_to_term(BinaryData), State]),
+    {reply, ok, State}.
+
+encode_handoff_item(Key, Value) ->
+    logger:debug("encode_handoff_item(~nKey: ~p~nValue: ~p~n)", [Key, Value]),
+    term_to_binary({Key, Value}).
+
+is_empty(State) ->
+    logger:debug("is_empty(~nState: ~p~n)", [State]),
+    {true, State}.
+
+terminate(Reason, State) ->
+    logger:debug("terminate(~nReason: ~p~nState: ~p~n)", [Reason, State]),
     ok.
 
--spec(code_change(OldVsn :: term() | {down, term()}, State :: state(),
-    Extra :: term()) ->
-    {ok, NewState :: state()} | {error, Reason :: term()}).
-code_change(_OldVsn, State, _Extra) ->
+delete(State) ->
+    logger:debug("delete(~nRequest: ~p~n)", [State]),
     {ok, State}.
+
+handle_info(Request, State) ->
+    logger:debug("handle_info(~nRequest: ~p~nState: ~p~n)", [Request, State]),
+    {ok, State}.
+
+handle_exit(Pid, Reason, State) ->
+    logger:debug("handle_exit(~nPid: ~p~nReason: ~p~nState: ~p~n)", [Pid, Reason, State]),
+    {noreply, State}.
+
+handle_coverage(Request, KeySpaces, Sender, State) ->
+    logger:debug("handle_coverage(~nRequest: ~p~nKeySpaces: ~p~nSender: ~p~nState: ~p~n)", [Request, KeySpaces, Sender, State]),
+    {stop, not_implemented, State}.
+
+handle_overload_command(Request, Sender, Partition) ->
+    logger:debug("handle_overload_command(~nRequest: ~p~nSender: ~p~nPartition: ~p~n)", [Request, Sender, Partition]),
+    ok.
+
+handle_overload_info(Request, Partition) ->
+    logger:debug("handle_overload_info(~nRequest: ~p~nPartition: ~p~n)", [Request, Partition]),
+    ok.
 
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
 
--spec apply_cache_config(state(), map_list()) -> state().
-apply_cache_config(State, GingkoConfig) ->
-    DcId = general_utils:get_or_default_map_list(dcid, GingkoConfig, error),
+-spec apply_gingko_config(state(), map_list()) -> state().
+apply_gingko_config(State, GingkoConfig) ->
+    Partition = general_utils:get_or_default_map_list(partition, GingkoConfig, error),
     TableName = general_utils:get_or_default_map_list(table_name, GingkoConfig, error),
     MaxOccupancy = general_utils:get_or_default_map_list(max_occupancy, GingkoConfig, State#state.max_occupancy),
     EvictionStrategy = general_utils:get_or_default_map_list(eviction_strategy, GingkoConfig, State#state.eviction_strategy),
@@ -148,7 +163,7 @@ apply_cache_config(State, GingkoConfig) ->
         general_utils:get_or_default_map_list_check(reset_used_interval_millis, GingkoConfig, State#state.reset_used_interval_millis),
     {UpdateEvictionTimer, EvictionIntervalMillis} =
         general_utils:get_or_default_map_list_check(eviction_interval_millis, GingkoConfig, State#state.eviction_interval_millis),
-    NewState = State#state{dcid = DcId, table_name = TableName, max_occupancy = MaxOccupancy, reset_used_interval_millis = UsedResetIntervalMillis, eviction_interval_millis = EvictionIntervalMillis, eviction_strategy = EvictionStrategy},
+    NewState = State#state{partition = Partition, table_name = TableName, max_occupancy = MaxOccupancy, reset_used_interval_millis = UsedResetIntervalMillis, eviction_interval_millis = EvictionIntervalMillis, eviction_strategy = EvictionStrategy},
     update_timers(NewState, UpdateResetUsedTimer, UpdateEvictionTimer).
 
 -spec update_timers(state(), boolean(), boolean()) -> state().
@@ -232,7 +247,7 @@ get_or_load_cache_entry(KeyStruct, DependencyVts, State, CacheUpdated, ForceUpda
 
 -spec load_key_into_cache(key_struct(), state(), vectorclock()) -> state().
 load_key_into_cache(KeyStruct, State, DependencyVts) ->
-    SortedJournalEntries = gingko_log:read_all_journal_entries_sorted(State#state.table_name),
+    SortedJournalEntries = gingko_log_utils:read_all_journal_entries_sorted(State#state.table_name),
     CheckpointJournalEntries = lists:filter(fun(J) ->
         gingko_utils:is_system_operation(J, checkpoint) end, lists:reverse(SortedJournalEntries)),
     {MostRecentSnapshot, NewState} =
@@ -245,7 +260,7 @@ load_key_into_cache(KeyStruct, State, DependencyVts) ->
                 CheckpointVts = LastCheckpointJournalEntry#journal_entry.operation#system_operation.op_args#checkpoint_args.dependency_vts,
                 case FoundCacheEntries of
                     error ->
-                        CS2 = gingko_log:read_checkpoint_entry(KeyStruct, CheckpointVts),
+                        CS2 = gingko_log_utils:read_checkpoint_entry(KeyStruct, CheckpointVts),
                         {CS2, update_cache_entry_in_state(gingko_utils:create_cache_entry(CS2), State)};
                     {ok, CacheEntries} ->
                         ValidCacheEntries =
@@ -256,7 +271,7 @@ load_key_into_cache(KeyStruct, State, DependencyVts) ->
                                 end, CacheEntries),
                         case ValidCacheEntries of
                             [] ->
-                                CS3 = gingko_log:read_checkpoint_entry(KeyStruct, CheckpointVts),
+                                CS3 = gingko_log_utils:read_checkpoint_entry(KeyStruct, CheckpointVts),
                                 {CS3, update_cache_entry_in_state(gingko_utils:create_cache_entry(CS3), State)};
                             [ValidCacheEntry | _FoundValidCacheEntries] ->
                                 CS4 = gingko_utils:create_snapshot_from_cache_entry(ValidCacheEntry),
@@ -442,4 +457,3 @@ clean_up_cache_after_checkpoint(State, LastCheckpointVts) ->
                 end
             end, dict:new(), CacheDict),
     State#state{key_cache_entry_dict = NewCacheDict}.
-

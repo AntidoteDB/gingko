@@ -5,8 +5,10 @@
         {applications,
             [kernel,
                 stdlib,
-                mnesia
+                riak_core
             ]},
+        {included_applications, [vectorclock,
+            antidote_crdt]},
         {licenses, ["Apache 2.0"]},
         {mod, {gingko_app, []}}
     ]}.

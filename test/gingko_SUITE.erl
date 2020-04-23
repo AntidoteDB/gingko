@@ -33,7 +33,7 @@ all() ->
     [
         simple_integration_test, two_transactions
     ].
-
+%TODO reimplement
 init_per_suite(Config) ->
     Priv = ?config(priv_dir, Config),
     application:load(mnesia),

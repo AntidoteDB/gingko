@@ -24,7 +24,7 @@
 -include("gingko.hrl").
 
 %% API
--export([create_new_snapshot/2, is_in_vts_range/2, get_clock_range/2, is_in_clock_range/2, create_cache_entry/1, create_default_value/1, sort_by_jsn_number/1, is_system_operation/2, is_update_of_keys/2, is_update/1, get_keys_from_updates/1, generate_downstream_op/5, create_snapshot_from_cache_entry/1, get_timestamp/0, contains_system_operation/2, is_update_of_keys_or_commit/2, get_dcid/0, update_cache_usage/2, get_latest_vts/1, get_DCSf_vts/0, get_GCSf_vts/0, create_snapshot_from_checkpoint_entry/2]).
+-export([create_new_snapshot/2, is_in_vts_range/2, get_clock_range/2, is_in_clock_range/2, create_cache_entry/1, create_default_value/1, sort_by_jsn_number/1, is_system_operation/2, is_update_of_keys/2, is_update/1, get_keys_from_updates/1, generate_downstream_op/4, create_snapshot_from_cache_entry/1, get_timestamp/0, contains_system_operation/2, is_update_of_keys_or_commit/2, get_dcid/0, update_cache_usage/2, get_latest_vts/1, get_DCSf_vts/0, get_GCSf_vts/0, create_snapshot_from_checkpoint_entry/2]).
 
 -spec get_timestamp() -> non_neg_integer().
 get_timestamp() ->
@@ -32,7 +32,7 @@ get_timestamp() ->
     (Mega * 1000000 + Sec) * 1000000 + Micro. %TODO check if this is a good solution
 
 -spec get_dcid() -> dcid().
-get_dcid() -> undefined. %TODO implement
+get_dcid() -> antidote_dc_utilities:get_my_dc_id().
 
 -spec get_DCSf_vts() -> vectorclock().
 get_DCSf_vts() -> vectorclock:new(). %TODO implement
@@ -53,9 +53,9 @@ is_in_vts_range(Vts, VtsRange) ->
 get_clock_range(DcId, VtsRange) ->
     case VtsRange of
         {none, none} -> {none, none};
-        {none, MaxVts} -> {none, vectorclock:get_clock_of_dc(DcId, MaxVts)};
-        {MinVts, none} -> {vectorclock:get_clock_of_dc(DcId, MinVts), none};
-        {MinVts, MaxVts} -> {vectorclock:get_clock_of_dc(DcId, MinVts), vectorclock:get_clock_of_dc(DcId, MaxVts)}
+        {none, MaxVts} -> {none, vectorclock:get(DcId, MaxVts)};
+        {MinVts, none} -> {vectorclock:get(DcId, MinVts), none};
+        {MinVts, MaxVts} -> {vectorclock:get(DcId, MinVts), vectorclock:get(DcId, MaxVts)}
     end.
 
 -spec is_in_clock_range(clock_time(), clock_range()) -> boolean().
@@ -173,9 +173,9 @@ get_latest_vts(SortedJournalEntries) ->
     Timestamp = LastJournalEntry#journal_entry.rt_timestamp,
     vectorclock:set(gingko_utils:get_dcid(), Timestamp, LastVts).
 
--spec generate_downstream_op(key_struct(), txid(), type_op(), atom(), pid()) ->
+-spec generate_downstream_op(key_struct(), txid(), type_op(), atom()) ->
     {ok, downstream_op()} | {error, atom()}.
-generate_downstream_op(KeyStruct, TxId, TypeOp, TableName, CacheServerPid) ->
+generate_downstream_op(KeyStruct, TxId, TypeOp, TableName) ->
     %% TODO: Check if read can be omitted for some types as registers
     Type = KeyStruct#key_struct.type,
     NeedState = Type:require_state_downstream(TypeOp),
@@ -183,7 +183,7 @@ generate_downstream_op(KeyStruct, TxId, TypeOp, TableName, CacheServerPid) ->
         %% If state is needed to generate downstream, read it from the partition.
     case NeedState of
         true ->
-            case gingko_log:perform_tx_read(KeyStruct, TxId, TableName, CacheServerPid) of
+            case gingko_log_vnode:perform_tx_read(KeyStruct, TxId, TableName) of
                 {ok, S} ->
                     S;
                 {error, Reason} ->

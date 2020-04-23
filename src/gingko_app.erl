@@ -25,7 +25,7 @@
 
 -behaviour(application).
 
--export([start/2, stop/1]).
+-export([start/2, stop/1, get_default_config/0, initial_startup_nodes/1]).
 
 -spec(start(StartType :: normal | {takeover, node()} | {failover, node()},
     StartArgs :: term()) ->
@@ -33,37 +33,88 @@
     {ok, pid(), State :: term()} |
     {error, Reason :: term()}).
 start(_StartType, _StartArgs) ->
-    {atomic, ok} = mnesia:create_table(checkpoint_entry,
-        [{attributes, record_info(fields, checkpoint_entry)},
-            %{index, [#checkpoint_entry.index]},%TODO find out why index doesn't work here
-            {ram_copies, [node()]}]),
-    ok = mnesia:wait_for_tables([checkpoint_entry], 5000),
-    gingko_master:start_link().
+    case gingko_sup:start_link() of
+        {ok, Pid} ->
+            ok = riak_core:register([{vnode_module, gingko_log_vnode}]),
+            ok = riak_core_node_watcher:service_up(gingko_log, self()),
+            ok = riak_core:register([{vnode_module, gingko_vnode}]),
+            ok = riak_core_node_watcher:service_up(gingko, self()),
+            ok = riak_core:register([{vnode_module, gingko_cache_vnode}]),
+            ok = riak_core_node_watcher:service_up(gingko_cache, self()),
+            {ok, Pid};
+        {error, Reason} ->
+            {error, Reason}
+    end.
 
 -spec(stop(State :: term()) -> term()).
 stop(_State) ->
-    mnesia:stop(),
     ok.
 
+get_default_config() ->
+    [
+        {max_occupancy, 100},
+        {reset_used_interval_millis, 1000},
+        {eviction_interval_millis, 2000},
+        {eviction_threshold_in_percent, 90},
+        {target_threshold_in_percent, 80},
+        {eviction_strategy, interval}
+    ].
+
+add_new_nodes_to_mnesia(ExistingNode, NewNodes) ->
+    rpc:call(ExistingNode, mnesia, change_config, [extra_db_nodes, NewNodes]),
+    lists:foreach(fun(NewNode) -> rpc:call(ExistingNode, mnesia, change_table_copy_type, [schema, NewNode, disc_copies]) end, NewNodes).
+    %[mnesia:add_table_copy(Table, node(), disc_copies) || Table <- mnesia:system_info(tables), Table =/= schema].
 
 %%TODO keep this for later when inner dc replication becomes relevant (replicate between different nodes)
-%% install(Nodes) ->
-%%  case mnesia:create_schema(Nodes) of
-%%    ok ->
-%%      true = false,
-%%      rpc:multicall(Nodes, application, start, [mnesia]),
-%%      {atomic, ok} = mnesia:create_table(journal_entry,
-%%        [{attributes, record_info(fields, journal_entry)},
-%%          %{index, [#journal_entry.jsn]},%TODO find out why index doesn't work here
-%%          {ram_copies, Nodes}
-%%        ]),
-%%      {atomic, ok} = mnesia:create_table(checkpoint_entry,
-%%        [{attributes, record_info(fields, checkpoint_entry)},
-%%          %{index, [#snapshot.key_struct]},TODO find out why index doesn't work here
-%%          {disc_copies, Nodes}]),
-%%      rpc:multicall(Nodes, application, stop, [mnesia]);
-%%    Error ->
-%%      ok
-%%  end.
+initial_startup_nodes([]) -> {error, "At least one node is required!"};
+initial_startup_nodes(Nodes) ->
+    rpc:multicall(Nodes, application, stop, [mnesia]),
+    NodesWithSchema = lists:filter(fun(Node) -> mnesia_schema:ensure_no_schema([Node]) /= ok end, Nodes),
+    case NodesWithSchema of
+        [] ->
+            mnesia:create_schema(Nodes),
+            {atomic, ok} = mnesia:create_table(checkpoint_entry,
+                [{attributes, record_info(fields, checkpoint_entry)},
+                    {disc_copies, Nodes}]),
+            antidote_dc_utilities:bcast_vnode_sync(gingko_log_vnode_master, setup_mnesia_table),
+            ok; %TODO setup fresh
+        _ ->
+            NodesWithoutSchema = sets:to_list(sets:subtract(sets:from_list(Nodes), sets:from_list(NodesWithSchema))),
+            {MnesiaNodesList, BadNodes} = rpc:multicall(NodesWithSchema, mnesia, system_info, [db_nodes]),
+            case BadNodes == [] of
+                false -> {error, {"One or more Nodes don't exist", BadNodes}};
+                true ->
+                    BadRpcCalls = lists:filter(fun(MnesiaNodes) -> is_tuple(MnesiaNodes) end, MnesiaNodesList),
+                    case BadRpcCalls == [] of
+                        false -> {error, {"One or more Nodes did not respond correctly", [BadRpcCalls]}};
+                        true ->
+                            NodesWithSchemaOrdSet = ordsets:from_list(NodesWithSchema),
+                            PerfectlyEqual = lists:all(fun(MnesiaNodes) -> NodesWithSchemaOrdSet == ordsets:from_list(MnesiaNodes) end, MnesiaNodesList),
+                            case PerfectlyEqual of
+                                true ->
+                                    %start mnesia on all nodes
+                                    rpc:multicall(Nodes, application, start, [mnesia]),
+                                    case NodesWithoutSchema of
+                                        [] -> ok;
+                                        _ -> add_new_nodes_to_mnesia(hd(NodesWithSchema), NodesWithoutSchema)
+                                    end,
+
+                                    ok; %TODO checkpoint setup and inform all vnodes
+                                false ->
+                                    PartiallyPerfect = lists:all(fun(MnesiaNodes) -> ordsets:is_subset(MnesiaNodes, NodesWithSchemaOrdSet) end, MnesiaNodesList),
+                                    case PartiallyPerfect of
+                                        true ->
+                                            %TODO fix setup (partially broken mnesia cluster)
+                                            ok;
+                                        false ->
+                                            %TODO fix setup (completely broken mnesia cluster)
+                                            ok
+
+                                    end
+                            end
+                    end
+
+            end
+    end.
 
 

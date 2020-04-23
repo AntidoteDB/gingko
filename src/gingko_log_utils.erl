@@ -1,6 +1,3 @@
-%% -------------------------------------------------------------------
-%%
-%% Copyright 2020, Kevin Bartik <k_bartik12@cs.uni-kl.de>
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -19,11 +16,12 @@
 %% Description and complete License: see LICENSE file.
 %% -------------------------------------------------------------------
 
--module(gingko_log).
+-module(gingko_log_utils).
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
 -include("gingko.hrl").
+
 %% API
--export([add_journal_entry/2, add_or_update_checkpoint_entry/1, read_journal_entry/2, read_checkpoint_entry/2, read_all_journal_entries/1, match_journal_entries/2, read_journal_entries_with_tx_id/2, perform_tx_read/4, persist_journal_entries/1, clear_journal_entries/1, read_all_journal_entries_sorted/1, read_journal_entries_with_tx_id_sorted/2, checkpoint/2]).
+-export([add_journal_entry/2, add_or_update_checkpoint_entry/1, read_journal_entry/2, read_checkpoint_entry/2, read_all_journal_entries/1, match_journal_entries/2, read_journal_entries_with_tx_id/2, persist_journal_entries/1, clear_journal_entries/1, read_all_journal_entries_sorted/1, read_journal_entries_with_tx_id_sorted/2]).
 
 -spec persist_journal_entries(atom()) -> {atomic, ok} | {aborted, reason()}.
 persist_journal_entries(TableName) ->
@@ -147,52 +145,3 @@ add_or_update_checkpoint_entries(Snapshots) ->
                 end, Snapshots)
         end,
     mnesia:activity(transaction, F).
-
--spec checkpoint(atom(), pid()) -> ok.
-checkpoint(TableName, CacheServerPid) ->
-    SortedJournalEntries = read_all_journal_entries_sorted(TableName),
-    RelevantJournalList = lists:reverse(SortedJournalEntries),
-    Checkpoints = lists:filter(fun(J) ->
-        gingko_utils:is_system_operation(J, checkpoint) end, RelevantJournalList),
-    {PreviousCheckpointVts, CurrentCheckpointVts} =
-        case Checkpoints of
-            [] -> {vectorclock:new(), vectorclock:new()}; %Should not happen really
-            [CurrentCheckpoint1] ->
-                {vectorclock:new(), CurrentCheckpoint1#journal_entry.operation#system_operation.op_args#checkpoint_args.dependency_vts};
-            [CurrentCheckpoint2, PreviousCheckpoint | _] ->
-                {PreviousCheckpoint#journal_entry.operation#system_operation.op_args#checkpoint_args.dependency_vts, CurrentCheckpoint2#journal_entry.operation#system_operation.op_args#checkpoint_args.dependency_vts}
-        end,
-    %Get all keys from previous checkpoint and their dependency vts
-    CommittedJournalEntries = gingko_materializer:get_committed_journal_entries_for_keys(SortedJournalEntries, all_keys),
-    RelevantKeysInJournal =
-        sets:to_list(sets:from_list(
-            lists:filtermap(
-                fun({CommitJ, UpdateJList}) ->
-                    CommitVts = CommitJ#journal_entry.operation#system_operation.op_args#commit_txn_args.commit_vts,
-                    case gingko_utils:is_in_vts_range(CommitVts, {PreviousCheckpointVts, CurrentCheckpointVts}) of
-                        true -> {true, lists:map(fun(UpdateJ) ->
-                            UpdateJ#journal_entry.operation#object_operation.key_struct end, UpdateJList)};
-                        false -> false
-                    end
-                end, CommittedJournalEntries))),
-    SnapshotsToStore =
-        lists:map(
-            fun(K) ->
-                {ok, Snapshot} = gen_server:call(CacheServerPid, {get, K, CurrentCheckpointVts}),
-                Snapshot
-            end, RelevantKeysInJournal),
-    add_or_update_checkpoint_entries(SnapshotsToStore),
-    gen_server:call(CacheServerPid, {checkpoint_cache_cleanup, CurrentCheckpointVts}).
-
--spec perform_tx_read(key_struct(), txid(), atom(), pid()) -> {ok, snapshot()} | {error, reason()}.
-perform_tx_read(KeyStruct, TxId, TableName, CacheServerPid) ->
-    CurrentTxJournalEntries = read_journal_entries_with_tx_id_sorted(TxId, TableName),
-    Begin = hd(CurrentTxJournalEntries),
-    BeginVts = Begin#journal_entry.operation#system_operation.op_args#begin_txn_args.dependency_vts,
-    {ok, SnapshotBeforeTx} = gen_server:call(CacheServerPid, {get, KeyStruct, BeginVts}),
-    UpdatesToBeAdded =
-        lists:filter(
-            fun(J) ->
-                gingko_utils:is_update_of_keys(J, [KeyStruct])
-            end, CurrentTxJournalEntries),
-    gingko_materializer:materialize_snapshot_temporarily(SnapshotBeforeTx, UpdatesToBeAdded).

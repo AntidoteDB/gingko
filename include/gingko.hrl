@@ -1,7 +1,8 @@
 
--define(LOGGING_MASTER, gingko_log_server).
-%% Version of log records being used
--define(LOG_RECORD_VERSION, 0).
+%% This can be used for testing, so that transactions start with
+%% old snapshots to avoid clock-skew.
+%% This can break the tests is not set to 0
+-define(OLD_SS_MICROSEC,0).
 
 -type key() :: term().
 -type type() :: atom().
@@ -30,6 +31,10 @@
 -type clock_range() :: {MinClock :: clock_time_or_none(), MaxClock :: clock_time_or_none()}.
 -type reason() :: term().
 -type map_list() :: [{Key :: term(), Value :: term()}].
+-type index_node() :: {partition_id(), node()}.
+-type preflist() :: riak_core_apl:preflist().
+-type partition_id() :: chash:index_as_int().
+-type snapshot_time() :: 'undefined' | vectorclock:vectorclock().
 
 -record(cache_usage, {
   used = true :: boolean(),

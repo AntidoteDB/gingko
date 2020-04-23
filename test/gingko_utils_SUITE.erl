@@ -39,31 +39,9 @@ init_per_suite(Config) ->
     Priv = ?config(priv_dir, Config),
     application:load(mnesia),
     application:set_env(mnesia, dir, Priv),
-    application:load(gingko_app),
     mnesia:create_schema([node()]),
     application:start(mnesia),
-    case application:start(gingko_app) of
-        ok ->
-            WorkerId1 = gingko1,
-            WorkerId2 = gingko2,
-            DcId = undefined,
-            GingkoConfig =
-                [
-                    {checkpoint_interval_millis, 10000},
-                    {max_occupancy, 100},
-                    {reset_used_interval_millis, 1000},
-                    {eviction_interval_millis, 2000},
-                    {eviction_threshold_in_percent, 90},
-                    {target_threshold_in_percent, 80},
-                    {eviction_strategy, interval}
-                ],
-            {ok, Pid1} = gen_server:call(gingko_master, {start_gingko_worker, {WorkerId1, DcId, GingkoConfig}}),
-            {ok, Pid2} = gen_server:call(gingko_master, {start_gingko_worker, {WorkerId2, DcId, GingkoConfig}}),
-            [{gingko_pids, [Pid1, Pid2 | []]} | Config];
-        _ ->
-            {ok, Workers} = gen_server:call(gingko_master, get_gingko_workers),
-            [{gingko_pids, [lists:map(fun({_Id, Pid}) -> Pid end, Workers)]} | Config]
-    end.
+    ok.
 
 end_per_suite(_Config) ->
     ok.
