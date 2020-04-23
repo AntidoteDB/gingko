@@ -28,24 +28,20 @@
 -export([start_link/0]).
 -export([init/1]).
 
+-define(CHILD(I, Type, Args), {I, {I, start_link, Args}, permanent, 5000, Type, [I]}).
+-define(VNODE(I, M), {I, {riak_core_vnode_master, start_link, [M]}, permanent, 5000, worker, [riak_core_vnode_master]}).
+
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 init(_Args) ->
-    GingkoMaster = {gingko_vnode_master,
-        {riak_core_vnode_master, start_link, [gingko_vnode]},
-        permanent, 5000, worker, [riak_core_vnode_master]},
 
-    GingkoSingleServer = {gingko_server, {gingko_server, start_link, []}, permanent, 5000, worker, [gingko_server]},
-
-    GingkoLogMaster = {gingko_log_vnode_master,
-        {riak_core_vnode_master, start_link,
-            [gingko_log_vnode]},
-        permanent, 5000, worker, [riak_core_vnode_master]},
-
-    GingkoCacheMaster = {gingko_cache_vnode_master,
-        {riak_core_vnode_master, start_link, [gingko_cache_vnode]},
-        permanent, 5000, worker, [riak_core_vnode_master]},
-
+    {GingkoMaster, GingkoLogMaster, GingkoCacheMaster} =
+        case ?USE_SINGLE_SERVER of
+            true ->
+                {?CHILD(gingko_server, worker, []), ?CHILD(gingko_log_server, worker, []), ?CHILD(gingko_cache_server, worker, [])};
+            false ->
+                {?VNODE(gingko_vnode_master, gingko_vnode), ?VNODE(gingko_log_vnode_master, gingko_log_vnode), ?VNODE(gingko_cache_vnode_master, gingko_cache_vnode)}
+        end,
     SupFlags = #{strategy => one_for_one, intensity => 1, period => 5},
-    {ok, {SupFlags, [GingkoMaster, GingkoSingleServer, GingkoLogMaster, GingkoCacheMaster]}}.
+    {ok, {SupFlags, [GingkoMaster, GingkoLogMaster, GingkoCacheMaster]}}.

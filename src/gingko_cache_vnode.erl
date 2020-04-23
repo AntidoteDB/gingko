@@ -70,7 +70,7 @@ start_vnode(I) ->
 init([Partition]) ->
     logger:debug("init(~nPartition: ~p~n)", [Partition]),
     TableName = general_utils:concat_and_make_atom([integer_to_list(Partition), '_journal_entry']),
-    CacheConfig = [{partition, Partition}, {table_name, TableName}|gingko_app:get_default_config()],
+    CacheConfig = [{partition, Partition}, {table_name, TableName} | gingko_app:get_default_config()],
     NewState = apply_gingko_config(#state{}, CacheConfig),
     {ok, NewState#state{key_cache_entry_dict = dict:new()}}.
 
@@ -166,31 +166,32 @@ apply_gingko_config(State, GingkoConfig) ->
     NewState = State#state{partition = Partition, table_name = TableName, max_occupancy = MaxOccupancy, reset_used_interval_millis = UsedResetIntervalMillis, eviction_interval_millis = EvictionIntervalMillis, eviction_strategy = EvictionStrategy},
     update_timers(NewState, UpdateResetUsedTimer, UpdateEvictionTimer).
 
+%%TODO implement correctly
 -spec update_timers(state(), boolean(), boolean()) -> state().
 update_timers(State, UpdateResetUsedTimer, UpdateEvictionTimer) ->
     TimerResetUsed =
-        case State#state.reset_used_timer of
-            none ->
-                erlang:send_after(State#state.reset_used_interval_millis, self(), reset_used_event);
-            Reference1 ->
-                case UpdateResetUsedTimer of
-                    true ->
-                        erlang:cancel_timer(Reference1),
-                        erlang:send_after(State#state.reset_used_interval_millis, self(), reset_used_event);
-                    false -> Reference1
-                end
-        end,
-    TimerEviction =
-        case State#state.eviction_timer of
-            none ->
-                erlang:send_after(State#state.eviction_interval_millis, self(), eviction_event);
-            Reference2 ->
-                case UpdateEvictionTimer of
-                    true -> erlang:cancel_timer(Reference2),
-                        erlang:send_after(State#state.eviction_interval_millis, self(), eviction_event);
-                    false -> Reference2
-                end
-        end,
+%%        case State#state.reset_used_timer of
+%%            none ->
+%%                erlang:send_after(State#state.reset_used_interval_millis, self(), reset_used_event);
+%%            Reference1 ->
+%%                case UpdateResetUsedTimer of
+%%                    true ->
+%%                        erlang:cancel_timer(Reference1),
+%%                        erlang:send_after(State#state.reset_used_interval_millis, self(), reset_used_event);
+%%                    false -> Reference1
+%%                end
+%%        end,
+    TimerEviction = none,
+%%        case State#state.eviction_timer of
+%%            none ->
+%%                erlang:send_after(State#state.eviction_interval_millis, self(), eviction_event);
+%%            Reference2 ->
+%%                case UpdateEvictionTimer of
+%%                    true -> erlang:cancel_timer(Reference2),
+%%                        erlang:send_after(State#state.eviction_interval_millis, self(), eviction_event);
+%%                    false -> Reference2
+%%                end
+%%        end,
     State#state{reset_used_timer = TimerResetUsed, eviction_timer = TimerEviction}.
 
 -spec get(key_struct(), vectorclock(), state()) -> {{ok, snapshot()}, state()} | {{error, reason()}, state()}.

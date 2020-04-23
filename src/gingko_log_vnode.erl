@@ -42,6 +42,8 @@
     handle_overload_command/3,
     handle_overload_info/2]).
 
+-export([process_command/4]).
+
 -record(state, {
     partition :: partition_id(),
     table_name :: atom(),
@@ -73,51 +75,11 @@ handle_command(setup_new_mnesia_table = Request, Sender, State) ->
     Result = mnesia:wait_for_tables([TableName], 5000), %TODO error handling
     {reply, Result, initialize_jsn(State)};
 
-handle_command({{Op, Args}, TxId} = Request, Sender, State) ->
+handle_command({{_Op, _Args}, _TxId} = Request, Sender, State) ->
     logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
     {NextJsn, NewState} = next_jsn(State),
     TableName = NewState#state.table_name,
-    case Op of
-        read ->
-            KeyStruct = Args,
-            Operation = create_read_operation(KeyStruct, []),
-            create_and_add_journal_entry(NextJsn, TxId, Operation, TableName),
-            {ok, Snapshot} = perform_tx_read(KeyStruct, TxId, TableName),
-            {reply, {ok, Snapshot#snapshot.value}, NewState};
-        update ->
-            {KeyStruct, TypeOp} = Args,
-            {ok, DownstreamOp} = gingko_utils:generate_downstream_op(KeyStruct, TxId, TypeOp, TableName),%TODO error check
-            Operation = create_update_operation(KeyStruct, DownstreamOp),
-            ok = create_and_add_journal_entry(NextJsn, TxId, Operation, TableName),%TODO error check
-            {reply, ok, NewState};
-        begin_txn ->
-            DependencyVts = Args,
-            Operation = create_begin_operation(DependencyVts),
-            ok = create_and_add_journal_entry(NextJsn, TxId, Operation, TableName),%TODO error check
-            {reply, ok, NewState};
-        prepare_txn ->
-            PrepareTime = Args,
-            Operation = create_prepare_operation(PrepareTime),
-            ok = create_and_add_journal_entry(NextJsn, TxId, Operation, TableName),
-            {atomic, ok} = gingko_log_utils:persist_journal_entries(TableName),%TODO error check
-            {reply, ok, NewState};
-        commit_txn ->
-            CommitTime = Args,
-            Operation = create_commit_operation(CommitTime),
-            ok = create_and_add_journal_entry(NextJsn, TxId, Operation, TableName),%TODO error check
-            {reply, ok, NewState};
-        abort_txn ->
-            Operation = create_abort_operation(),
-            ok = create_and_add_journal_entry(NextJsn, TxId, Operation, TableName),%TODO error check
-            {reply, ok, NewState};
-        checkpoint ->
-            DependencyVts = Args,
-            Operation = create_checkpoint_operation(DependencyVts),
-            ok = create_and_add_journal_entry(NextJsn, TxId, Operation, TableName),%TODO error check
-            {atomic, ok} = gingko_log_utils:persist_journal_entries(TableName),%TODO error check
-            checkpoint(TableName),
-            ok%TODO
-    end;
+    process_command({NextJsn, TableName}, Request, Sender, NewState);
 
 handle_command(Request, Sender, State) ->
     logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
@@ -189,6 +151,45 @@ apply_gingko_config(State, GingkoConfig) ->
     TableName = general_utils:get_or_default_map_list(table_name, GingkoConfig, error),
     State#state{partition = Partition, table_name = TableName}.
 
+process_command({NextJsn, TableName}, {{read, KeyStruct}, TxId}, _Sender, State) ->
+    Operation = create_read_operation(KeyStruct, []),
+    create_and_add_journal_entry(NextJsn, TxId, Operation, TableName),
+    {ok, Snapshot} = perform_tx_read(KeyStruct, TxId, TableName),
+    {reply, {ok, Snapshot#snapshot.value}, State};
+
+process_command({NextJsn, TableName}, {{update, {KeyStruct, TypeOp}}, TxId}, _Sender, State) ->
+    {ok, DownstreamOp} = gingko_utils:generate_downstream_op(KeyStruct, TxId, TypeOp, TableName),%TODO error check
+    Operation = create_update_operation(KeyStruct, DownstreamOp),
+    ok = create_and_add_journal_entry(NextJsn, TxId, Operation, TableName),%TODO error check
+    {reply, ok, State};
+
+process_command({NextJsn, TableName}, {{begin_txn, DependencyVts}, TxId}, _Sender, State) ->
+    Operation = create_begin_operation(DependencyVts),
+    ok = create_and_add_journal_entry(NextJsn, TxId, Operation, TableName),%TODO error check
+    {reply, ok, State};
+
+process_command({NextJsn, TableName}, {{prepare_txn, PrepareTime}, TxId}, _Sender, State) ->
+    Operation = create_prepare_operation(PrepareTime),
+    ok = create_and_add_journal_entry(NextJsn, TxId, Operation, TableName),
+    {atomic, ok} = gingko_log_utils:persist_journal_entries(TableName),%TODO error check
+    {reply, ok, State};
+
+process_command({NextJsn, TableName}, {{commit_txn, CommitTime}, TxId}, _Sender, State) ->
+    Operation = create_commit_operation(CommitTime),
+    ok = create_and_add_journal_entry(NextJsn, TxId, Operation, TableName),%TODO error check
+    {reply, ok, State};
+
+process_command({NextJsn, TableName}, {{abort_txn, _Args}, TxId}, _Sender, State) ->
+    Operation = create_abort_operation(),
+    ok = create_and_add_journal_entry(NextJsn, TxId, Operation, TableName),%TODO error check
+    {reply, ok, State};
+
+process_command({NextJsn, TableName}, {{checkpoint, DependencyVts}, TxId}, _Sender, State) ->
+    Operation = create_checkpoint_operation(DependencyVts),
+    ok = create_and_add_journal_entry(NextJsn, TxId, Operation, TableName),%TODO error check
+    {atomic, ok} = gingko_log_utils:persist_journal_entries(TableName),%TODO error check
+    {reply, checkpoint(TableName), State}.
+
 -spec checkpoint(atom()) -> ok.
 checkpoint(TableName) ->
     SortedJournalEntries = gingko_log_utils:read_all_journal_entries_sorted(TableName),
@@ -219,27 +220,18 @@ checkpoint(TableName) ->
     SnapshotsToStore =
         lists:map(
             fun(K) ->
-                {ok, Snapshot} =
-                    IndexNode = antidote_utilities:get_key_partition(K),
-                    riak_core_vnode_master:sync_command(IndexNode,
-                        {get, K, CurrentCheckpointVts},
-                        gingko_cache_vnode_master,
-                        infinity),
+                {ok, Snapshot} = gingko_utils:call_gingko_sync_with_key(K, ?GINGKO_CACHE, {get, K, CurrentCheckpointVts}),
                 Snapshot
             end, RelevantKeysInJournal),
     gingko_log_utils:add_or_update_checkpoint_entries(SnapshotsToStore).
-    %TODO cache cleanup
+%TODO cache cleanup
 
 -spec perform_tx_read(key_struct(), txid(), atom()) -> {ok, snapshot()} | {error, reason()}.
 perform_tx_read(KeyStruct, TxId, TableName) ->
     CurrentTxJournalEntries = gingko_log_utils:read_journal_entries_with_tx_id_sorted(TxId, TableName),
     Begin = hd(CurrentTxJournalEntries),
     BeginVts = Begin#journal_entry.operation#system_operation.op_args#begin_txn_args.dependency_vts,
-    IndexNode = antidote_utilities:get_key_partition(KeyStruct),
-    {ok, SnapshotBeforeTx} = riak_core_vnode_master:sync_command(IndexNode,
-        {get, KeyStruct, BeginVts},
-        gingko_cache_vnode_master,
-        infinity),
+    {ok, SnapshotBeforeTx} = gingko_utils:call_gingko_sync_with_key(KeyStruct, ?GINGKO_CACHE, {get, KeyStruct, BeginVts}),
     UpdatesToBeAdded =
         lists:filter(
             fun(J) ->
@@ -316,7 +308,6 @@ create_checkpoint_operation(DependencyVts) ->
 
 -spec next_jsn(state()) -> {non_neg_integer(), state()}.
 next_jsn(State) ->
-    %TODO check performance
     Jsn = State#state.next_jsn,
     {Jsn, State#state{next_jsn = Jsn + 1}}.
 

@@ -39,29 +39,23 @@
     get_my_dc_nodes/0,
     call_vnode_sync/3,
     bcast_vnode_sync/2,
-    bcast_my_vnode_sync/2,
     partition_to_indexnode/1,
     call_vnode/3,
-    call_local_vnode/3,
-    call_local_vnode_sync/3,
     get_all_partitions/0,
     get_all_partitions_nodes/0,
     bcast_vnode/2,
     get_my_partitions/0,
     ensure_all_vnodes_running/1,
-    ensure_local_vnodes_running_master/1,
     ensure_all_vnodes_running_master/1,
     get_partitions_num/0,
     check_registered/1,
     check_registered_global/1,
-    now_microsec/0,
-    now_millisec/0,
     call_vnode_with_key/3,
     call_vnode_sync_with_key/3,
     get_key_partition/1,
     get_preflist_from_key/1,
     get_my_node/1
-    ]).
+]).
 
 %% Returns the ID of the current DC.
 -spec get_my_dc_id() -> dcid().
@@ -128,7 +122,7 @@ get_partitions_num() -> length(get_all_partitions()).
 %% Sends the synchronous command to a vnode of a specified type and responsible for a specified partition number.
 -spec call_vnode_sync(partition_id(), atom(), any()) -> any().
 call_vnode_sync(Partition, VMaster, Request) ->
-    riak_core_vnode_master:sync_command(partition_to_indexnode(Partition), Request, VMaster).
+    riak_core_vnode_master:sync_spawn_command(partition_to_indexnode(Partition), Request, VMaster).
 
 %% Sends the asynchronous command to a vnode of a specified type and responsible for a specified partition number.
 -spec call_vnode(partition_id(), atom(), any()) -> ok.
@@ -139,7 +133,7 @@ call_vnode(Partition, VMaster, Request) ->
 -spec call_vnode_sync_with_key(key(), atom(), any()) -> any().
 call_vnode_sync_with_key(Key, VMaster, Request) ->
     IndexNode = antidote_utilities:get_key_partition(Key),
-    riak_core_vnode_master:sync_command(IndexNode, Request, VMaster).
+    riak_core_vnode_master:sync_spawn_command(IndexNode, Request, VMaster).
 
 %% Sends the asynchronous command to a vnode of a specified type and responsible for a specified partition number.
 -spec call_vnode_with_key(key(), atom(), any()) -> ok.
@@ -147,33 +141,16 @@ call_vnode_with_key(Key, VMaster, Request) ->
     IndexNode = antidote_utilities:get_key_partition(Key),
     riak_core_vnode_master:command(IndexNode, Request, VMaster).
 
-%% Sends the asynchronous command to a vnode of a specified type and responsible for a specified partition number,
-%% the partition must be on the same node that the command is run on
--spec call_local_vnode(partition_id(), atom(), any()) -> ok.
-call_local_vnode(Partition, VMaster, Request) ->
-    riak_core_vnode_master:command({Partition, node()}, Request, VMaster).
-
--spec call_local_vnode_sync(partition_id(), atom(), any()) -> any().
-call_local_vnode_sync(Partition, VMaster, Request) ->
-    riak_core_vnode_master:sync_command({Partition, node()}, Request, VMaster).
-
 %% Sends the same (synchronous) command to all vnodes of a given type.
 -spec bcast_vnode_sync(atom(), any()) -> any().
 bcast_vnode_sync(VMaster, Request) ->
     %% TODO: a parallel map function would be nice here
-    lists:map(fun(P) -> {P, call_vnode_sync(P, VMaster, Request)} end, get_all_partitions()).
-
-%% Broadcasts a message to all vnodes of the given type
-%% located on the physical node from which this method is called
--spec bcast_my_vnode_sync(atom(), any()) -> any().
-bcast_my_vnode_sync(VMaster, Request) ->
-    %% TODO: a parallel map function would be nice here
-    lists:map(fun(P) -> {P, call_vnode_sync(P, VMaster, Request)} end, get_my_partitions()).
+    general_utils:pmap(fun(P) -> {P, call_vnode_sync(P, VMaster, Request)} end, get_all_partitions()).
 
 %% Sends the same (asynchronous) command to all vnodes of a given type.
 -spec bcast_vnode(atom(), any()) -> any().
 bcast_vnode(VMaster, Request) ->
-    lists:map(fun(P) -> {P, call_vnode(P, VMaster, Request)} end, get_all_partitions()).
+    general_utils:pmap(fun(P) -> {P, call_vnode(P, VMaster, Request)} end, get_all_partitions()).
 
 %% Checks if all vnodes of a particular type are running.
 %% The method uses riak_core methods to perform the check and was
@@ -196,7 +173,7 @@ ensure_all_vnodes_running(VnodeType) ->
 -spec bcast_vnode_check_up(atom(), {hello}, [partition_id()]) -> ok.
 bcast_vnode_check_up(_VMaster, _Request, []) ->
     ok;
-bcast_vnode_check_up(VMaster, Request, [P|Rest]) ->
+bcast_vnode_check_up(VMaster, Request, [P | Rest]) ->
     Err = try
               case call_vnode_sync(P, VMaster, Request) of
                   ok ->
@@ -213,17 +190,10 @@ bcast_vnode_check_up(VMaster, Request, [P|Rest]) ->
             ?LOG_DEBUG("Vnode not up retrying, ~p, ~p", [VMaster, P]),
             %TODO: Extract into configuration constant
             timer:sleep(1000),
-            bcast_vnode_check_up(VMaster, Request, [P|Rest]);
+            bcast_vnode_check_up(VMaster, Request, [P | Rest]);
         false ->
             bcast_vnode_check_up(VMaster, Request, Rest)
     end.
-
-%% Loops until all vnodes of a given type are running
-%% on the local physical node from which this was funciton called
--spec ensure_local_vnodes_running_master(atom()) -> ok.
-ensure_local_vnodes_running_master(VnodeType) ->
-    check_registered(VnodeType),
-    bcast_vnode_check_up(VnodeType, {hello}, get_my_partitions()).
 
 %% Loops until all vnodes of a given type are running on all
 %% nodes in the cluster
@@ -255,14 +225,6 @@ check_registered_global(Name) ->
             ok
     end.
 
--spec now_microsec() -> non_neg_integer().
-now_microsec() ->
-    erlang:system_time(micro_seconds). % TODO 19 this is not correct, since it is not monotonic (Question: must it be unique as well?)
-
--spec now_millisec() -> non_neg_integer().
-now_millisec() ->
-    now_microsec() div 1000.
-
 %% @doc get_key_partition returns the most probable node where a given
 %%      key's logfile will be located.
 -spec get_key_partition(key()) -> index_node().
@@ -283,7 +245,7 @@ get_preflist_from_key(Key) ->
 %%      Return: The primaries preflist
 %%
 -spec get_primaries_preflist(non_neg_integer()) -> preflist().
-get_primaries_preflist(Key)->
+get_primaries_preflist(Key) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     {NumPartitions, ListOfPartitions} = riak_core_ring:chash(Ring),
     Pos = Key rem NumPartitions + 1,

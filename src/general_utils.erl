@@ -24,7 +24,7 @@
 -include("gingko.hrl").
 
 %% API
--export([group_by/2, add_to_value_list_or_create_single_value_list/3, sorted_insert/3, get_or_default_dict/3, get_or_default_map_list/3, get_or_default_map_list_check/3, concat_and_make_atom/1, atom_replace/3]).
+-export([group_by/2, add_to_value_list_or_create_single_value_list/3, sorted_insert/3, get_or_default_dict/3, get_or_default_map_list/3, get_or_default_map_list_check/3, concat_and_make_atom/1, atom_replace/3, pmap/2]).
 
 %% @doc Takes function that groups entries form the given list in a dictionary
 %%      For example grouping a list of journal entries by txid to get all journal entries that belong to a certain txid
@@ -83,5 +83,21 @@ atom_replace(Atom, AtomToReplace, ReplacementString) ->
     String = atom_to_list(Atom),
     StringToReplace = atom_to_list(AtomToReplace),
     list_to_atom(string:replace(String, StringToReplace, ReplacementString)).
+
+%%Taken from antidote test_utils
+%%TODO test
+-spec pmap(fun(), list()) -> list().
+pmap(F, L) ->
+    Parent = self(),
+    lists:foldl(
+        fun(X, N) ->
+            spawn_link(fun() ->
+                Parent ! {pmap, N, F(X)}
+                       end),
+            N + 1
+        end, 0, L),
+    L2 = [receive {pmap, N, R} -> {N, R} end || _ <- L],
+    {_, L3} = lists:unzip(lists:keysort(1, L2)),
+    L3.
 
 

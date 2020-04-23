@@ -35,12 +35,16 @@
 start(_StartType, _StartArgs) ->
     case gingko_sup:start_link() of
         {ok, Pid} ->
-            ok = riak_core:register([{vnode_module, gingko_log_vnode}]),
-            ok = riak_core_node_watcher:service_up(gingko_log, self()),
-            ok = riak_core:register([{vnode_module, gingko_vnode}]),
-            ok = riak_core_node_watcher:service_up(gingko, self()),
-            ok = riak_core:register([{vnode_module, gingko_cache_vnode}]),
-            ok = riak_core_node_watcher:service_up(gingko_cache, self()),
+            case ?USE_SINGLE_SERVER of
+                true -> ok;
+                false ->
+                    ok = riak_core:register([{vnode_module, gingko_log_vnode}]),
+                    ok = riak_core_node_watcher:service_up(gingko_log, self()),
+                    ok = riak_core:register([{vnode_module, gingko_vnode}]),
+                    ok = riak_core_node_watcher:service_up(gingko, self()),
+                    ok = riak_core:register([{vnode_module, gingko_cache_vnode}]),
+                    ok = riak_core_node_watcher:service_up(gingko_cache, self())
+            end,
             {ok, Pid};
         {error, Reason} ->
             {error, Reason}
@@ -62,8 +66,9 @@ get_default_config() ->
 
 add_new_nodes_to_mnesia(ExistingNode, NewNodes) ->
     rpc:call(ExistingNode, mnesia, change_config, [extra_db_nodes, NewNodes]),
-    lists:foreach(fun(NewNode) -> rpc:call(ExistingNode, mnesia, change_table_copy_type, [schema, NewNode, disc_copies]) end, NewNodes).
-    %[mnesia:add_table_copy(Table, node(), disc_copies) || Table <- mnesia:system_info(tables), Table =/= schema].
+    lists:foreach(fun(NewNode) ->
+        rpc:call(ExistingNode, mnesia, change_table_copy_type, [schema, NewNode, disc_copies]) end, NewNodes).
+%[mnesia:add_table_copy(Table, node(), disc_copies) || Table <- mnesia:system_info(tables), Table =/= schema].
 
 %%TODO keep this for later when inner dc replication becomes relevant (replicate between different nodes)
 initial_startup_nodes([]) -> {error, "At least one node is required!"};
@@ -89,7 +94,8 @@ initial_startup_nodes(Nodes) ->
                         false -> {error, {"One or more Nodes did not respond correctly", [BadRpcCalls]}};
                         true ->
                             NodesWithSchemaOrdSet = ordsets:from_list(NodesWithSchema),
-                            PerfectlyEqual = lists:all(fun(MnesiaNodes) -> NodesWithSchemaOrdSet == ordsets:from_list(MnesiaNodes) end, MnesiaNodesList),
+                            PerfectlyEqual = lists:all(fun(MnesiaNodes) ->
+                                NodesWithSchemaOrdSet == ordsets:from_list(MnesiaNodes) end, MnesiaNodesList),
                             case PerfectlyEqual of
                                 true ->
                                     %start mnesia on all nodes
@@ -101,7 +107,8 @@ initial_startup_nodes(Nodes) ->
 
                                     ok; %TODO checkpoint setup and inform all vnodes
                                 false ->
-                                    PartiallyPerfect = lists:all(fun(MnesiaNodes) -> ordsets:is_subset(MnesiaNodes, NodesWithSchemaOrdSet) end, MnesiaNodesList),
+                                    PartiallyPerfect = lists:all(fun(MnesiaNodes) ->
+                                        ordsets:is_subset(MnesiaNodes, NodesWithSchemaOrdSet) end, MnesiaNodesList),
                                     case PartiallyPerfect of
                                         true ->
                                             %TODO fix setup (partially broken mnesia cluster)

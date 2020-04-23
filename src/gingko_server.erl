@@ -26,41 +26,27 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
     code_change/3]).
 
--define(SERVER, ?MODULE).
-
--record(state, {
-    running_txid_to_partitions = dict:new() :: dict:dict(txid(), [partition_id()]),
-    running_txid_to_ops = dict:new() :: dict:dict(txid(), list())
-}).
--type state() :: #state{}.
-
 %%%===================================================================
 %%% Spawning and gen_server implementation
 %%%===================================================================
 
 start_link() ->
-    gen_server:start_link({global, ?SERVER}, ?MODULE, [], []).
+    gen_server:start_link({global, ?MODULE}, ?MODULE, [], []).
 
 init([]) ->
-    {ok, #state{}}.
-
-handle_call({{Op, Args}, TxId} = Request, Sender, State) ->
-    logger:debug("handle_call(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
-    gingko_vnode:process_command(Request, Sender, State);
+    gingko_vnode:init([0]).
 
 handle_call(Request, Sender, State) ->
-    logger:debug("handle_call(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
-    {reply, error, State}.
+    gingko_vnode:handle_command(Request, Sender, State).
 
 handle_cast(Request, State) ->
-    logger:debug("handle_cast(~nRequest: ~p~nState: ~p~n)", [Request, State]),
-    {noreply, State}.
+    gingko_vnode:handle_command(Request, self(), State).
 
 handle_info(Request, State) ->
-    logger:debug("handle_info(~nRequest: ~p~nState: ~p~n)", [Request, State]),
-    {noreply, State}.
+    gingko_vnode:handle_info(Request, State).
 
-terminate(_Reason, _State) ->
+terminate(Reason, State) ->
+    logger:debug("terminate(~nReason: ~p~nState: ~p~n)", [Reason, State]),
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
