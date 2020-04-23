@@ -23,3 +23,5 @@ doc/**/*
 !doc/**/
 !doc/ext/*
 !doc/overview.edoc
+rebar.lock
+tmp/
