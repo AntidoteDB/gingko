@@ -26,7 +26,8 @@ handle_call(Request, From, State) ->
     gingko_cache_vnode:handle_command(Request, From, State).
 
 handle_cast(Request, State) ->
-    gingko_cache_vnode:handle_command(Request, self(), State).
+    {reply, _Result, NewState} = gingko_cache_vnode:handle_command(Request, self(), State),
+    {noreply, NewState}.
 
 handle_info(Request, State) ->
     gingko_cache_vnode:handle_info(Request, State).

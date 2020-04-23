@@ -168,7 +168,7 @@ process_command({NextJsn, TableName}, {{begin_txn, DependencyVts}, TxId}, _Sende
     ok = create_and_add_journal_entry(NextJsn, TxId, Operation, TableName),%TODO error check
     {reply, ok, State};
 
-process_command({NextJsn, TableName}, {{prepare_txn, PrepareTime}, TxId}, _Sender, State) ->
+process_command({NextJsn, TableName}, {{{prepare_txn, PrepareTime}, TxId}, Ops}, _Sender, State) ->
     Operation = create_prepare_operation(PrepareTime),
     ok = create_and_add_journal_entry(NextJsn, TxId, Operation, TableName),
     {atomic, ok} = gingko_log_utils:persist_journal_entries(TableName),%TODO error check
@@ -246,7 +246,7 @@ create_and_add_journal_entry(Jsn, TxId, Operation, TableName) ->
 
 -spec create_journal_entry(jsn(), txid(), operation()) -> journal_entry().
 create_journal_entry(Jsn, TxId, Operation) ->
-    DcId = antidote_utilities:get_my_dc_id(),
+    DcId = gingko_utils:get_dcid(),
     #journal_entry{
         jsn = Jsn,
         dcid = DcId,

@@ -122,14 +122,14 @@ handle_overload_info(Request, Partition) ->
 
 -spec process_command({{Op :: atom(), Args :: term()}, txid()}, Sender :: atom() | pid(), state()) -> {reply, term(), state()}.
 process_command({{read, KeyStruct}, TxId} = Request, _Sender, State) ->
-    {PartitionId, _Node} = antidote_utilities:get_key_partition(KeyStruct),
+    {PartitionId, _Node} = gingko_utils:get_key_partition(KeyStruct),
     UpdatedDict1 = general_utils:add_to_value_list_or_create_single_value_list(State#state.running_txid_to_partitions, TxId, PartitionId),
     UpdatedDict2 = general_utils:add_to_value_list_or_create_single_value_list(State#state.running_txid_to_ops, TxId, Request),
     Result = gingko_utils:call_gingko_sync_with_key(KeyStruct, ?GINGKO_LOG, Request),
     {reply, Result, State#state{running_txid_to_partitions = UpdatedDict1, running_txid_to_ops = UpdatedDict2}};
 
 process_command({{update, {KeyStruct, _TypeOp}}, TxId} = Request, _Sender, State) ->
-    {PartitionId, _Node} = antidote_utilities:get_key_partition(KeyStruct),
+    {PartitionId, _Node} = gingko_utils:get_key_partition(KeyStruct),
     UpdatedDict1 = general_utils:add_to_value_list_or_create_single_value_list(State#state.running_txid_to_partitions, TxId, PartitionId),
     UpdatedDict2 = general_utils:add_to_value_list_or_create_single_value_list(State#state.running_txid_to_ops, TxId, Request),
     Result = gingko_utils:call_gingko_sync_with_key(KeyStruct, ?GINGKO_LOG, Request),

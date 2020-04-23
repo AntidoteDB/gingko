@@ -4,8 +4,8 @@
         {registered, [gingko_app]},
         {applications,
             [kernel,
-                stdlib,
-                riak_core
+                stdlib%,
+                %riak_core
             ]},
         {included_applications, [vectorclock,
             antidote_crdt]},

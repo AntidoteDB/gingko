@@ -31,7 +31,7 @@
 %%%===================================================================
 
 start_link() ->
-    gen_server:start_link({global, ?MODULE}, ?MODULE, [], []).
+    gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 init([]) ->
     gingko_vnode:init([0]).
@@ -40,7 +40,8 @@ handle_call(Request, Sender, State) ->
     gingko_vnode:handle_command(Request, Sender, State).
 
 handle_cast(Request, State) ->
-    gingko_vnode:handle_command(Request, self(), State).
+    {reply, _Result, NewState} = gingko_vnode:handle_command(Request, self(), State),
+    {noreply, NewState}.
 
 handle_info(Request, State) ->
     gingko_vnode:handle_info(Request, State).

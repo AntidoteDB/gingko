@@ -28,7 +28,8 @@
 %% API functions
 %%====================================================================
 
--spec read(key_struct(), txid()) -> {ok, snapshot_value()} | {error, reason()}.
+-spec read({key(), type()} | key_struct(), txid()) -> {ok, snapshot_value()} | {error, reason()}.
+read({Key, Type}, TxId) -> read(#key_struct{key = Key, type = Type}, TxId);
 read(KeyStruct, TxId) ->
     Read = {{read, KeyStruct}, TxId},
     gingko_utils:call_gingko_sync_with_key(TxId, ?GINGKO_SERVER, Read).
@@ -39,7 +40,9 @@ read_multiple(KeyStructs, TxId) ->
     ok. %TODO implement
 
 
--spec update(key_struct(), type_op(), txid()) -> ok.
+-spec update({key(), type()} | key_struct(), type_op(), txid()) -> ok.
+update({Key, Type}, TypeOp, TxId) ->
+    update(#key_struct{key = Key, type = Type}, TypeOp, TxId);
 update(KeyStruct, TypeOp, TxId) ->
     Update = {{update, {KeyStruct, TypeOp}}, TxId},
     gingko_utils:call_gingko_async_with_key(TxId, ?GINGKO_SERVER, Update).

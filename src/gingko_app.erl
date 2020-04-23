@@ -71,17 +71,19 @@ add_new_nodes_to_mnesia(ExistingNode, NewNodes) ->
 %[mnesia:add_table_copy(Table, node(), disc_copies) || Table <- mnesia:system_info(tables), Table =/= schema].
 
 %%TODO keep this for later when inner dc replication becomes relevant (replicate between different nodes)
+-spec initial_startup_nodes([node()]) -> ok | {error, reason()}.
 initial_startup_nodes([]) -> {error, "At least one node is required!"};
 initial_startup_nodes(Nodes) ->
     rpc:multicall(Nodes, application, stop, [mnesia]),
     NodesWithSchema = lists:filter(fun(Node) -> mnesia_schema:ensure_no_schema([Node]) /= ok end, Nodes),
     case NodesWithSchema of
         [] ->
-            mnesia:create_schema(Nodes),
+            ok = mnesia:create_schema(Nodes),
+            rpc:multicall(Nodes, application, start, [mnesia]),
             {atomic, ok} = mnesia:create_table(checkpoint_entry,
                 [{attributes, record_info(fields, checkpoint_entry)},
                     {disc_copies, Nodes}]),
-            antidote_utilities:bcast_vnode_sync(gingko_log_vnode_master, setup_mnesia_table),
+            gingko_utils:bcast_gingko_sync(?GINGKO_LOG, setup_new_mnesia_table),
             ok; %TODO setup fresh
         _ ->
             NodesWithoutSchema = sets:to_list(sets:subtract(sets:from_list(Nodes), sets:from_list(NodesWithSchema))),

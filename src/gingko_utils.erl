@@ -24,7 +24,7 @@
 -include("gingko.hrl").
 
 %% API
--export([create_new_snapshot/2, is_in_vts_range/2, get_clock_range/2, is_in_clock_range/2, create_cache_entry/1, create_default_value/1, sort_by_jsn_number/1, is_system_operation/2, is_update_of_keys/2, is_update/1, get_keys_from_updates/1, generate_downstream_op/4, create_snapshot_from_cache_entry/1, get_timestamp/0, contains_system_operation/2, is_update_of_keys_or_commit/2, get_dcid/0, update_cache_usage/2, get_latest_vts/1, get_DCSf_vts/0, get_GCSf_vts/0, create_snapshot_from_checkpoint_entry/2, call_gingko_async_with_key/3, call_gingko_sync_with_key/3, bcast_gingko_async/2, bcast_gingko_sync/2, call_gingko_sync/3, call_gingko_async/3]).
+-export([create_new_snapshot/2, is_in_vts_range/2, get_clock_range/2, is_in_clock_range/2, create_cache_entry/1, create_default_value/1, sort_by_jsn_number/1, is_system_operation/2, is_update_of_keys/2, is_update/1, get_keys_from_updates/1, generate_downstream_op/4, create_snapshot_from_cache_entry/1, get_timestamp/0, contains_system_operation/2, is_update_of_keys_or_commit/2, get_dcid/0, update_cache_usage/2, get_latest_vts/1, get_DCSf_vts/0, get_GCSf_vts/0, create_snapshot_from_checkpoint_entry/2, call_gingko_async_with_key/3, call_gingko_sync_with_key/3, bcast_gingko_async/2, bcast_gingko_sync/2, call_gingko_sync/3, call_gingko_async/3, get_key_partition/1]).
 
 -spec get_timestamp() -> non_neg_integer().
 get_timestamp() ->
@@ -32,7 +32,11 @@ get_timestamp() ->
     (Mega * 1000000 + Sec) * 1000000 + Micro. %TODO check if this is a good solution
 
 -spec get_dcid() -> dcid().
-get_dcid() -> antidote_utilities:get_my_dc_id().
+get_dcid() ->
+    case ?USE_SINGLE_SERVER of
+        true -> undefined;
+        false -> antidote_utilities:get_my_dc_id()
+    end.
 
 -spec get_DCSf_vts() -> vectorclock().
 get_DCSf_vts() -> vectorclock:new(). %TODO implement
@@ -173,14 +177,14 @@ get_latest_vts(SortedJournalEntries) ->
     Timestamp = LastJournalEntry#journal_entry.rt_timestamp,
     vectorclock:set(gingko_utils:get_dcid(), Timestamp, LastVts).
 
--spec call_gingko_async_with_key(key(), {atom(), atom()}, any()) -> ok.
+-spec call_gingko_async(partition_id(), {atom(), atom()}, any()) -> ok.
 call_gingko_async(Partition, {ServerName, VMaster}, Request) ->
     case ?USE_SINGLE_SERVER of
         true -> gen_server:cast(ServerName, Request);
         false -> antidote_utilities:call_vnode(Partition, VMaster, Request)
     end.
 
--spec call_gingko_sync_with_key(key(), {atom(), atom()}, any()) -> ok.
+-spec call_gingko_sync(partition_id(), {atom(), atom()}, any()) -> ok.
 call_gingko_sync(Partition, {ServerName, VMaster}, Request) ->
     case ?USE_SINGLE_SERVER of
         true -> gen_server:call(ServerName, Request);
@@ -215,6 +219,13 @@ bcast_gingko_sync({ServerName, VMaster}, Request) ->
     case ?USE_SINGLE_SERVER of
         true -> gen_server:call(ServerName, Request);
         false -> antidote_utilities:bcast_vnode_sync(VMaster, Request)
+    end.
+
+-spec get_key_partition(term()) -> {partition_id(), node()}.
+get_key_partition(Key) ->
+    case ?USE_SINGLE_SERVER of
+        true -> {0, node()};
+        false -> antidote_utilities:get_key_partition(Key)
     end.
 
 -spec generate_downstream_op(key_struct(), txid(), type_op(), atom()) ->
