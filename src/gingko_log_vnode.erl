@@ -220,7 +220,7 @@ checkpoint(TableName) ->
         lists:map(
             fun(K) ->
                 {ok, Snapshot} =
-                    IndexNode = antidote_log_utilities:get_key_partition(K),
+                    IndexNode = antidote_utilities:get_key_partition(K),
                     riak_core_vnode_master:sync_command(IndexNode,
                         {get, K, CurrentCheckpointVts},
                         gingko_cache_vnode_master,
@@ -235,7 +235,7 @@ perform_tx_read(KeyStruct, TxId, TableName) ->
     CurrentTxJournalEntries = gingko_log_utils:read_journal_entries_with_tx_id_sorted(TxId, TableName),
     Begin = hd(CurrentTxJournalEntries),
     BeginVts = Begin#journal_entry.operation#system_operation.op_args#begin_txn_args.dependency_vts,
-    IndexNode = antidote_log_utilities:get_key_partition(KeyStruct),
+    IndexNode = antidote_utilities:get_key_partition(KeyStruct),
     {ok, SnapshotBeforeTx} = riak_core_vnode_master:sync_command(IndexNode,
         {get, KeyStruct, BeginVts},
         gingko_cache_vnode_master,
@@ -254,7 +254,7 @@ create_and_add_journal_entry(Jsn, TxId, Operation, TableName) ->
 
 -spec create_journal_entry(jsn(), txid(), operation()) -> journal_entry().
 create_journal_entry(Jsn, TxId, Operation) ->
-    DcId = antidote_dc_utilities:get_my_dc_id(),
+    DcId = antidote_utilities:get_my_dc_id(),
     #journal_entry{
         jsn = Jsn,
         dcid = DcId,

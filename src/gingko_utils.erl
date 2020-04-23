@@ -32,7 +32,7 @@ get_timestamp() ->
     (Mega * 1000000 + Sec) * 1000000 + Micro. %TODO check if this is a good solution
 
 -spec get_dcid() -> dcid().
-get_dcid() -> antidote_dc_utilities:get_my_dc_id().
+get_dcid() -> antidote_utilities:get_my_dc_id().
 
 -spec get_DCSf_vts() -> vectorclock().
 get_DCSf_vts() -> vectorclock:new(). %TODO implement

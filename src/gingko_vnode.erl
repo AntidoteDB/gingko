@@ -122,21 +122,21 @@ handle_overload_info(Request, Partition) ->
     ok.
 
 process_command({{read, KeyStruct}, TxId}  = Request, _Sender, State) ->
-    {PartitionId, _Node} = antidote_log_utilities:get_key_partition(KeyStruct),
+    {PartitionId, _Node} = antidote_utilities:get_key_partition(KeyStruct),
     UpdatedDict1 = general_utils:add_to_value_list_or_create_single_value_list(State#state.running_txid_to_partitions, TxId, PartitionId),
     UpdatedDict2 = general_utils:add_to_value_list_or_create_single_value_list(State#state.running_txid_to_ops, TxId, Request),
-    Result = antidote_dc_utilities:call_vnode_sync_with_key(KeyStruct, gingko_log_vnode_master, Request),
+    Result = antidote_utilities:call_vnode_sync_with_key(KeyStruct, gingko_log_vnode_master, Request),
     {reply, Result, State#state{running_txid_to_partitions = UpdatedDict1, running_txid_to_ops = UpdatedDict2}};
 
 process_command({{update, KeyStruct, _TypeOp}, TxId} = Request, _Sender, State) ->
-    {PartitionId, _Node} = antidote_log_utilities:get_key_partition(KeyStruct),
+    {PartitionId, _Node} = antidote_utilities:get_key_partition(KeyStruct),
     UpdatedDict1 = general_utils:add_to_value_list_or_create_single_value_list(State#state.running_txid_to_partitions, TxId, PartitionId),
     UpdatedDict2 = general_utils:add_to_value_list_or_create_single_value_list(State#state.running_txid_to_ops, TxId, Request),
-    Result = antidote_dc_utilities:call_vnode_sync_with_key(KeyStruct, gingko_log_vnode_master, Request),
+    Result = antidote_utilities:call_vnode_sync_with_key(KeyStruct, gingko_log_vnode_master, Request),
     {reply, Result, State#state{running_txid_to_partitions = UpdatedDict1, running_txid_to_ops = UpdatedDict2}};
 
 process_command({{begin_txn, _DependencyVts}, _TxId} = Request, _Sender, State) ->
-    {reply, antidote_dc_utilities:bcast_vnode(gingko_log_vnode_master, Request), State};
+    {reply, antidote_utilities:bcast_vnode(gingko_log_vnode_master, Request), State};
 
 process_command({{prepare_txn, _Args}, TxId} = Request, _Sender, State) ->
     UpdatedPartitionsResult = dict:find(TxId, State#state.running_txid_to_partitions),
@@ -147,7 +147,7 @@ process_command({{prepare_txn, _Args}, TxId} = Request, _Sender, State) ->
         {{ok, _}, error} -> {reply, {error, "Bad State"}, State};
         {{ok, UpdatedPartitions}, {ok, Ops}} ->
             PrepareResults = lists:map(fun(Partition) ->
-                antidote_dc_utilities:call_vnode_sync(Partition, gingko_log_vnode_master, {Request, Ops}) end, UpdatedPartitions),
+                antidote_utilities:call_vnode_sync(Partition, gingko_log_vnode_master, {Request, Ops}) end, UpdatedPartitions),
             AllOk = sets:size(sets:del_element(ok, sets:from_list(PrepareResults))) == 0,
             case AllOk of
                 true -> {reply, ok, State};
@@ -158,9 +158,9 @@ process_command({{prepare_txn, _Args}, TxId} = Request, _Sender, State) ->
 process_command({{commit_txn, _Args}, TxId} = Request, _Sender, State) ->
     UpdatedDict1 = dict:erase(TxId, State#state.running_txid_to_partitions),
     UpdatedDict2 = dict:erase(TxId, State#state.running_txid_to_ops),
-    {reply, antidote_dc_utilities:bcast_vnode(gingko_log_vnode_master, Request), State#state{running_txid_to_partitions = UpdatedDict1, running_txid_to_ops = UpdatedDict2}};
+    {reply, antidote_utilities:bcast_vnode(gingko_log_vnode_master, Request), State#state{running_txid_to_partitions = UpdatedDict1, running_txid_to_ops = UpdatedDict2}};
 
 process_command({{abort_txn, _Args}, TxId} = Request, _Sender, State) ->
     UpdatedDict1 = dict:erase(TxId, State#state.running_txid_to_partitions),
     UpdatedDict2 = dict:erase(TxId, State#state.running_txid_to_ops),
-    {reply, antidote_dc_utilities:bcast_vnode(gingko_log_vnode_master, Request), State#state{running_txid_to_partitions = UpdatedDict1, running_txid_to_ops = UpdatedDict2}}.
+    {reply, antidote_utilities:bcast_vnode(gingko_log_vnode_master, Request), State#state{running_txid_to_partitions = UpdatedDict1, running_txid_to_ops = UpdatedDict2}}.

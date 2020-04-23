@@ -26,7 +26,10 @@
 %% Description and complete License: see LICENSE file.
 %% -------------------------------------------------------------------
 
--module(antidote_dc_utilities).
+%% This file is combination of the dc_utilities and log_utilities
+%% files from the antidote project https://github.com/AntidoteDB/antidote
+
+-module(antidote_utilities).
 
 -include("gingko.hrl").
 -include_lib("kernel/include/logger.hrl").
@@ -54,9 +57,11 @@
     now_microsec/0,
     now_millisec/0,
     call_vnode_with_key/3,
-    call_vnode_sync_with_key/3
+    call_vnode_sync_with_key/3,
+    get_key_partition/1,
+    get_preflist_from_key/1,
+    get_my_node/1
     ]).
-
 
 %% Returns the ID of the current DC.
 -spec get_my_dc_id() -> dcid().
@@ -133,13 +138,13 @@ call_vnode(Partition, VMaster, Request) ->
 %% Sends the synchronous command to a vnode of a specified type and responsible for a specified partition number.
 -spec call_vnode_sync_with_key(key(), atom(), any()) -> any().
 call_vnode_sync_with_key(Key, VMaster, Request) ->
-    IndexNode = antidote_log_utilities:get_key_partition(Key),
+    IndexNode = antidote_utilities:get_key_partition(Key),
     riak_core_vnode_master:sync_command(IndexNode, Request, VMaster).
 
 %% Sends the asynchronous command to a vnode of a specified type and responsible for a specified partition number.
 -spec call_vnode_with_key(key(), atom(), any()) -> ok.
 call_vnode_with_key(Key, VMaster, Request) ->
-    IndexNode = antidote_log_utilities:get_key_partition(Key),
+    IndexNode = antidote_utilities:get_key_partition(Key),
     riak_core_vnode_master:command(IndexNode, Request, VMaster).
 
 %% Sends the asynchronous command to a vnode of a specified type and responsible for a specified partition number,
@@ -250,8 +255,6 @@ check_registered_global(Name) ->
             ok
     end.
 
-
-
 -spec now_microsec() -> non_neg_integer().
 now_microsec() ->
     erlang:system_time(micro_seconds). % TODO 19 this is not correct, since it is not monotonic (Question: must it be unique as well?)
@@ -259,3 +262,59 @@ now_microsec() ->
 -spec now_millisec() -> non_neg_integer().
 now_millisec() ->
     now_microsec() div 1000.
+
+%% @doc get_key_partition returns the most probable node where a given
+%%      key's logfile will be located.
+-spec get_key_partition(key()) -> index_node().
+get_key_partition(Key) ->
+    IndexNode = hd(get_preflist_from_key(Key)),
+    IndexNode.
+
+%% @doc get_preflist_from_key returns a preference list where a given
+%%      key's logfile will be located.
+-spec get_preflist_from_key(key()) -> preflist().
+get_preflist_from_key(Key) ->
+    ConvertedKey = convert_key(Key),
+    get_primaries_preflist(ConvertedKey).
+
+%% @doc get_primaries_preflist returns the preflist with the primary
+%%      vnodes. No matter they are up or down.
+%%      Input:  A hashed key
+%%      Return: The primaries preflist
+%%
+-spec get_primaries_preflist(non_neg_integer()) -> preflist().
+get_primaries_preflist(Key)->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    {NumPartitions, ListOfPartitions} = riak_core_ring:chash(Ring),
+    Pos = Key rem NumPartitions + 1,
+    {Index, Node} = lists:nth(Pos, ListOfPartitions),
+    [{Index, Node}].
+
+-spec get_my_node(partition_id()) -> node().
+get_my_node(Partition) ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    riak_core_ring:index_owner(Ring, Partition).
+
+%% @doc Convert key. If the key is integer(or integer in form of binary),
+%% directly use it to get the partition. If it is not integer, convert it
+%% to integer using hash.
+-spec convert_key(key()) -> non_neg_integer().
+convert_key(Key) ->
+    case is_binary(Key) of
+        true ->
+            KeyInt = (catch list_to_integer(binary_to_list(Key))),
+            case is_integer(KeyInt) of
+                true -> abs(KeyInt);
+                false ->
+                    HashedKey = riak_core_util:chash_key({?BUCKET, Key}),
+                    abs(crypto:bytes_to_integer(HashedKey))
+            end;
+        false ->
+            case is_integer(Key) of
+                true ->
+                    abs(Key);
+                false ->
+                    HashedKey = riak_core_util:chash_key({?BUCKET, term_to_binary(Key)}),
+                    abs(crypto:bytes_to_integer(HashedKey))
+            end
+    end.

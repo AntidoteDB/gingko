@@ -76,7 +76,7 @@ initial_startup_nodes(Nodes) ->
             {atomic, ok} = mnesia:create_table(checkpoint_entry,
                 [{attributes, record_info(fields, checkpoint_entry)},
                     {disc_copies, Nodes}]),
-            antidote_dc_utilities:bcast_vnode_sync(gingko_log_vnode_master, setup_mnesia_table),
+            antidote_utilities:bcast_vnode_sync(gingko_log_vnode_master, setup_mnesia_table),
             ok; %TODO setup fresh
         _ ->
             NodesWithoutSchema = sets:to_list(sets:subtract(sets:from_list(Nodes), sets:from_list(NodesWithSchema))),

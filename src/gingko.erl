@@ -35,7 +35,7 @@ read(KeyStruct, TxId) ->
         true ->
             gen_server:call(gingko_server, Read);
         false ->
-            antidote_dc_utilities:call_vnode_sync_with_key(TxId, gingko_vnode_master, Read)
+            antidote_utilities:call_vnode_sync_with_key(TxId, gingko_vnode_master, Read)
     end.
 
 %TODO reconsider return type
@@ -51,7 +51,7 @@ update(KeyStruct, TypeOp, TxId) ->
         true ->
             gen_server:cast(gingko_server, Update);
         false ->
-            antidote_dc_utilities:call_vnode_with_key(TxId, gingko_vnode_master, Update)
+            antidote_utilities:call_vnode_with_key(TxId, gingko_vnode_master, Update)
     end.
 
 -spec update_multiple([{key_struct(), type_op()}], txid()) -> ok.
@@ -65,7 +65,7 @@ begin_txn(DependencyVts, TxId) ->
         true ->
             gen_server:cast(gingko_server, BeginTxn);
         false ->
-            antidote_dc_utilities:call_vnode_with_key(TxId, gingko_vnode_master, BeginTxn)
+            antidote_utilities:call_vnode_with_key(TxId, gingko_vnode_master, BeginTxn)
     end.
 
 -spec prepare_txn(non_neg_integer(), txid()) -> ok.
@@ -75,7 +75,7 @@ prepare_txn(PrepareTime, TxId) ->
         true ->
             gen_server:call(gingko_server, PrepareTxn);
         false ->
-            antidote_dc_utilities:call_vnode_sync_with_key(TxId, gingko_vnode_master, PrepareTxn)
+            antidote_utilities:call_vnode_sync_with_key(TxId, gingko_vnode_master, PrepareTxn)
     end.
 
 -spec commit_txn(vectorclock(), txid()) -> ok.
@@ -85,7 +85,7 @@ commit_txn(CommitVts, TxId) ->
         true ->
             gen_server:cast(gingko_server, CommitTxn);
         false ->
-            antidote_dc_utilities:call_vnode_with_key(TxId, gingko_vnode_master, CommitTxn)
+            antidote_utilities:call_vnode_with_key(TxId, gingko_vnode_master, CommitTxn)
     end.
 
 -spec abort_txn(term(), txid()) -> ok.
@@ -95,7 +95,7 @@ abort_txn(AbortArgs, TxId) ->
         true ->
             gen_server:cast(gingko_server, AbortTxn);
         false ->
-            antidote_dc_utilities:call_vnode_with_key(TxId, gingko_vnode_master, AbortTxn)
+            antidote_utilities:call_vnode_with_key(TxId, gingko_vnode_master, AbortTxn)
     end.
 
 -spec checkpoint() -> ok.
