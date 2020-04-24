@@ -63,17 +63,60 @@ init([Partition]) ->
     NewState = apply_gingko_config(#state{}, GingkoConfig),
     {ok, NewState}.
 
-handle_command(setup_new_mnesia_table = Request, Sender, State) ->
+handle_command(get_journal_mnesia_table_name = Request, Sender, State) ->
+    logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
+    {reply, State#state.table_name, State};
+
+%%TODO consider timing issues during start-up with large tables
+%%TODO failure testing required
+%%TODO maybe consider migration for later
+handle_command(setup_journal_mnesia_table = Request, Sender, State) ->
     logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
     TableName = State#state.table_name,
-    mnesia:create_table(TableName,
-        [{attributes, record_info(fields, journal_entry)},
-            %{index, [#journal_entry.jsn]},%TODO find out why index doesn't work here
-            {ram_copies, [node()]},
-            {record_name, journal_entry}
-        ]),
-    Result = mnesia:wait_for_tables([TableName], 5000), %TODO error handling
-    {reply, Result, initialize_jsn(State)};
+    Tables = mnesia:system_info(tables),
+    case lists:member(TableName, Tables) of
+        true ->
+            NodesWhereThisTableExists = mnesia:table_info(TableName, where_to_write),
+            %%TODO we will make sure that if this table exists then it will only run on our node after this call
+            case NodesWhereThisTableExists of
+                [] ->
+                    {atomic, ok} = mnesia:create_table(TableName,
+                        [{attributes, record_info(fields, journal_entry)},
+                            %{index, [#journal_entry.jsn]},%TODO find out why index doesn't work here
+                            {ram_copies, [node()]},
+                            {record_name, journal_entry}
+                        ]);
+                Nodes ->
+                    %%TODO make sure we have ram copies and delete tables on other nodes
+                    case lists:member(node(), Nodes) of
+                        true ->
+                            RamCopiesNodes = mnesia:table_info(TableName, ram_copies),
+                            case lists:member(node(), RamCopiesNodes) of
+                                true -> ok;
+                                false ->
+                                    {atomic, ok} = mnesia:change_table_copy_type(TableName, node(), ram_copies)
+                            end;
+
+                        false ->
+                            {atomic, ok} = mnesia:add_table_copy(TableName, node(), ram_copies)
+                    end,
+                    lists:foreach(
+                        fun(Node) ->
+                            case Node /= node() of
+                                true -> {atomic, ok} = mnesia:del_table_copy(TableName, Node);
+                                false -> ok
+                            end
+                        end, Nodes)
+            end;
+        false ->
+            {atomic, ok} = mnesia:create_table(TableName,
+                [{attributes, record_info(fields, journal_entry)},
+                    %{index, [#journal_entry.jsn]},%TODO find out why index doesn't work here
+                    {ram_copies, [node()]},
+                    {record_name, journal_entry}
+                ])
+    end,
+    {reply, ok, initialize_jsn(State)};
 
 handle_command({{_Op, _Args}, _TxId} = Request, Sender, State) ->
     logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),

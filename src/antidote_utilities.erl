@@ -40,17 +40,17 @@
     call_vnode_sync/3,
     bcast_vnode_sync/2,
     partition_to_indexnode/1,
-    call_vnode/3,
+    call_vnode_async/3,
     get_all_partitions/0,
     get_all_partitions_nodes/0,
-    bcast_vnode/2,
+    bcast_vnode_async/2,
     get_my_partitions/0,
     ensure_all_vnodes_running/1,
     ensure_all_vnodes_running_master/1,
     get_partitions_num/0,
     check_registered/1,
     check_registered_global/1,
-    call_vnode_with_key/3,
+    call_vnode_async_with_key/3,
     call_vnode_sync_with_key/3,
     get_key_partition/1,
     get_preflist_from_key/1,
@@ -125,8 +125,8 @@ call_vnode_sync(Partition, VMaster, Request) ->
     riak_core_vnode_master:sync_spawn_command(partition_to_indexnode(Partition), Request, VMaster).
 
 %% Sends the asynchronous command to a vnode of a specified type and responsible for a specified partition number.
--spec call_vnode(partition_id(), atom(), any()) -> ok.
-call_vnode(Partition, VMaster, Request) ->
+-spec call_vnode_async(partition_id(), atom(), any()) -> ok.
+call_vnode_async(Partition, VMaster, Request) ->
     riak_core_vnode_master:command(partition_to_indexnode(Partition), Request, VMaster).
 
 %% Sends the synchronous command to a vnode of a specified type and responsible for a specified partition number.
@@ -136,21 +136,21 @@ call_vnode_sync_with_key(Key, VMaster, Request) ->
     riak_core_vnode_master:sync_spawn_command(IndexNode, Request, VMaster).
 
 %% Sends the asynchronous command to a vnode of a specified type and responsible for a specified partition number.
--spec call_vnode_with_key(key(), atom(), any()) -> ok.
-call_vnode_with_key(Key, VMaster, Request) ->
+-spec call_vnode_async_with_key(key(), atom(), any()) -> ok.
+call_vnode_async_with_key(Key, VMaster, Request) ->
     IndexNode = antidote_utilities:get_key_partition(Key),
     riak_core_vnode_master:command(IndexNode, Request, VMaster).
 
 %% Sends the same (synchronous) command to all vnodes of a given type.
--spec bcast_vnode_sync(atom(), any()) -> any().
+-spec bcast_vnode_sync(atom(), any()) -> [term()].
 bcast_vnode_sync(VMaster, Request) ->
-    %% TODO: a parallel map function would be nice here
-    general_utils:pmap(fun(P) -> {P, call_vnode_sync(P, VMaster, Request)} end, get_all_partitions()).
+    %% TODO: check if pmap works like intended
+    general_utils:parallel_map(fun(P) -> {P, call_vnode_sync(P, VMaster, Request)} end, get_all_partitions()).
 
 %% Sends the same (asynchronous) command to all vnodes of a given type.
--spec bcast_vnode(atom(), any()) -> any().
-bcast_vnode(VMaster, Request) ->
-    general_utils:pmap(fun(P) -> {P, call_vnode(P, VMaster, Request)} end, get_all_partitions()).
+-spec bcast_vnode_async(atom(), any()) -> ok.
+bcast_vnode_async(VMaster, Request) ->
+    general_utils:parallel_foreach(fun(P) -> {P, call_vnode_async(P, VMaster, Request)} end, get_all_partitions()).
 
 %% Checks if all vnodes of a particular type are running.
 %% The method uses riak_core methods to perform the check and was

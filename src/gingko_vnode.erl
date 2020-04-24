@@ -146,7 +146,7 @@ process_command({{prepare_txn, _Args}, TxId} = Request, _Sender, State) ->
         {error, {ok, _}} -> {reply, {error, "Bad State"}, State}; %TODO
         {{ok, _}, error} -> {reply, {error, "Bad State"}, State};
         {{ok, UpdatedPartitions}, {ok, Ops}} ->
-            PrepareResults = general_utils:pmap(fun(Partition) ->
+            PrepareResults = general_utils:parallel_map(fun(Partition) ->
                 gingko_utils:call_gingko_sync(Partition, ?GINGKO_LOG, {Request, Ops}) end, UpdatedPartitions),
             AllOk = sets:size(sets:del_element(ok, sets:from_list(PrepareResults))) == 0,
             case AllOk of

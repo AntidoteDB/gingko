@@ -181,10 +181,10 @@ get_latest_vts(SortedJournalEntries) ->
 call_gingko_async(Partition, {ServerName, VMaster}, Request) ->
     case ?USE_SINGLE_SERVER of
         true -> gen_server:cast(ServerName, Request);
-        false -> antidote_utilities:call_vnode(Partition, VMaster, Request)
+        false -> antidote_utilities:call_vnode_async(Partition, VMaster, Request)
     end.
 
--spec call_gingko_sync(partition_id(), {atom(), atom()}, any()) -> ok.
+-spec call_gingko_sync(partition_id(), {atom(), atom()}, any()) -> any().
 call_gingko_sync(Partition, {ServerName, VMaster}, Request) ->
     case ?USE_SINGLE_SERVER of
         true -> gen_server:call(ServerName, Request);
@@ -195,10 +195,10 @@ call_gingko_sync(Partition, {ServerName, VMaster}, Request) ->
 call_gingko_async_with_key(Key, {ServerName, VMaster}, Request) ->
     case ?USE_SINGLE_SERVER of
         true -> gen_server:cast(ServerName, Request);
-        false -> antidote_utilities:call_vnode_with_key(Key, VMaster, Request)
+        false -> antidote_utilities:call_vnode_async_with_key(Key, VMaster, Request)
     end.
 
--spec call_gingko_sync_with_key(key(), {atom(), atom()}, any()) -> ok.
+-spec call_gingko_sync_with_key(key(), {atom(), atom()}, any()) -> any().
 call_gingko_sync_with_key(Key, {ServerName, VMaster}, Request) ->
     case ?USE_SINGLE_SERVER of
         true -> gen_server:call(ServerName, Request);
@@ -206,18 +206,18 @@ call_gingko_sync_with_key(Key, {ServerName, VMaster}, Request) ->
     end.
 
 %% Sends the same (asynchronous) command to all vnodes of a given type.
--spec bcast_gingko_async({atom(), atom()}, any()) -> any().
+-spec bcast_gingko_async({atom(), atom()}, any()) -> ok.
 bcast_gingko_async({ServerName, VMaster}, Request) ->
     case ?USE_SINGLE_SERVER of
         true -> gen_server:cast(ServerName, Request);
-        false -> antidote_utilities:bcast_vnode(VMaster, Request)
+        false -> antidote_utilities:bcast_vnode_async(VMaster, Request)
     end.
 
 %% Sends the same (synchronous) command to all vnodes of a given type.
--spec bcast_gingko_sync({atom(), atom()}, any()) -> any().
+-spec bcast_gingko_sync({atom(), atom()}, any()) -> [term()].
 bcast_gingko_sync({ServerName, VMaster}, Request) ->
     case ?USE_SINGLE_SERVER of
-        true -> gen_server:call(ServerName, Request);
+        true -> [gen_server:call(ServerName, Request)];
         false -> antidote_utilities:bcast_vnode_sync(VMaster, Request)
     end.
 
