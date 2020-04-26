@@ -56,6 +56,9 @@ init([Partition]) ->
     logger:debug("init(~nPartition: ~p~n)", [Partition]),
     {ok, #state{partition = Partition}}.
 
+handle_command({hello}, _Sender, State) ->
+    {reply, ok, State};
+
 handle_command({{_Op, _Args}, _TxId} = Request, Sender, State) ->
     logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
     process_command(Request, Sender, State);

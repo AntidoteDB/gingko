@@ -42,15 +42,28 @@
     handle_overload_command/3,
     handle_overload_info/2]).
 
--export([process_command/4]).
+-export([process_command/4, perform_tx_read/3]).
 
 -record(state, {
     partition :: partition_id(),
     table_name :: atom(),
+    latest_vts = vectorclock:new() :: vectorclock(),
     next_jsn = 0 :: non_neg_integer(),
-    initialized = false :: boolean()
+    dc_to_next_jsn_dict = dict:new() :: dict:dict(dcid(), non_neg_integer()), %%TODO uninitialized jsn is problematic because we cannot know if it is the first message received from a DC
+    initialized = false :: boolean(),
+    first_message_since_startup = true :: boolean()
 }).
 -type state() :: #state{}.
+
+-record(jsn_helper, {
+    next_jsn :: jsn(),
+    next_dc_jsn :: jsn(),
+    first_message_since_startup :: boolean(),
+    rt_timestamp :: clock_time()
+}).
+-type jsn_helper() :: #jsn_helper{}.
+
+%%TODO prevent usage before initialized
 
 -spec start_vnode(integer()) -> any().
 start_vnode(I) ->
@@ -63,9 +76,17 @@ init([Partition]) ->
     NewState = apply_gingko_config(#state{}, GingkoConfig),
     {ok, NewState}.
 
+handle_command({hello}, _Sender, State) ->
+    {reply, ok, State};
+
 handle_command(get_journal_mnesia_table_name = Request, Sender, State) ->
     logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
     {reply, State#state.table_name, State};
+
+handle_command(get_current_dependency_vts = Request, Sender, State) ->
+    logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
+    DependencyVts = vectorclock:set(gingko_utils:get_dcid(), gingko_utils:get_timestamp(), State#state.latest_vts),
+    {reply, DependencyVts, State};
 
 %%TODO consider timing issues during start-up with large tables
 %%TODO failure testing required
@@ -118,11 +139,13 @@ handle_command(setup_journal_mnesia_table = Request, Sender, State) ->
     end,
     {reply, ok, initialize_jsn(State)};
 
+
+
 handle_command({{_Op, _Args}, _TxId} = Request, Sender, State) ->
     logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
-    {NextJsn, NewState} = next_jsn(State),
+    {JsnHelper, NewState} = next_jsn(State),
     TableName = NewState#state.table_name,
-    process_command({NextJsn, TableName}, Request, Sender, NewState);
+    process_command({JsnHelper, TableName}, Request, Sender, NewState);
 
 handle_command(Request, Sender, State) ->
     logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
@@ -194,42 +217,44 @@ apply_gingko_config(State, GingkoConfig) ->
     TableName = general_utils:get_or_default_map_list(table_name, GingkoConfig, error),
     State#state{partition = Partition, table_name = TableName}.
 
-process_command({NextJsn, TableName}, {{read, KeyStruct}, TxId}, _Sender, State) ->
+-spec process_command({JsnHelper :: jsn_helper(), TableName :: atom()}, Request :: term(), pid() | atom(), state()) -> {reply, term(), state()}.
+process_command({JsnHelper, TableName}, {{read, KeyStruct}, TxId}, _Sender, State) ->
     Operation = create_read_operation(KeyStruct, []),
-    create_and_add_journal_entry(NextJsn, TxId, Operation, TableName),
+    create_and_add_journal_entry(JsnHelper, TxId, Operation, TableName),
     {ok, Snapshot} = perform_tx_read(KeyStruct, TxId, TableName),
     {reply, {ok, Snapshot#snapshot.value}, State};
 
-process_command({NextJsn, TableName}, {{update, {KeyStruct, TypeOp}}, TxId}, _Sender, State) ->
+process_command({JsnHelper, TableName}, {{update, {KeyStruct, TypeOp}}, TxId}, _Sender, State) ->
     {ok, DownstreamOp} = gingko_utils:generate_downstream_op(KeyStruct, TxId, TypeOp, TableName),%TODO error check
     Operation = create_update_operation(KeyStruct, DownstreamOp),
-    ok = create_and_add_journal_entry(NextJsn, TxId, Operation, TableName),%TODO error check
+    ok = create_and_add_journal_entry(JsnHelper, TxId, Operation, TableName),%TODO error check
     {reply, ok, State};
 
-process_command({NextJsn, TableName}, {{begin_txn, DependencyVts}, TxId}, _Sender, State) ->
+process_command({JsnHelper, TableName}, {{begin_txn, DependencyVts}, TxId}, _Sender, State) ->
     Operation = create_begin_operation(DependencyVts),
-    ok = create_and_add_journal_entry(NextJsn, TxId, Operation, TableName),%TODO error check
+    ok = create_and_add_journal_entry(JsnHelper, TxId, Operation, TableName),%TODO error check
     {reply, ok, State};
 
-process_command({NextJsn, TableName}, {{{prepare_txn, PrepareTime}, TxId}, Ops}, _Sender, State) ->
+process_command({JsnHelper, TableName}, {{{prepare_txn, PrepareTime}, TxId}, Ops}, _Sender, State) ->
     Operation = create_prepare_operation(PrepareTime),
-    ok = create_and_add_journal_entry(NextJsn, TxId, Operation, TableName),
+    ok = create_and_add_journal_entry(JsnHelper, TxId, Operation, TableName),
     {atomic, ok} = gingko_log_utils:persist_journal_entries(TableName),%TODO error check
+    %%TODO check that all ops are in the journal
     {reply, ok, State};
 
-process_command({NextJsn, TableName}, {{commit_txn, CommitTime}, TxId}, _Sender, State) ->
+process_command({JsnHelper, TableName}, {{commit_txn, CommitTime}, TxId}, _Sender, State) ->
     Operation = create_commit_operation(CommitTime),
-    ok = create_and_add_journal_entry(NextJsn, TxId, Operation, TableName),%TODO error check
+    ok = create_and_add_journal_entry(JsnHelper, TxId, Operation, TableName),%TODO error check
     {reply, ok, State};
 
-process_command({NextJsn, TableName}, {{abort_txn, _Args}, TxId}, _Sender, State) ->
+process_command({JsnHelper, TableName}, {{abort_txn, _Args}, TxId}, _Sender, State) ->
     Operation = create_abort_operation(),
-    ok = create_and_add_journal_entry(NextJsn, TxId, Operation, TableName),%TODO error check
+    ok = create_and_add_journal_entry(JsnHelper, TxId, Operation, TableName),%TODO error check
     {reply, ok, State};
 
-process_command({NextJsn, TableName}, {{checkpoint, DependencyVts}, TxId}, _Sender, State) ->
+process_command({JsnHelper, TableName}, {{checkpoint, DependencyVts}, TxId}, _Sender, State) ->
     Operation = create_checkpoint_operation(DependencyVts),
-    ok = create_and_add_journal_entry(NextJsn, TxId, Operation, TableName),%TODO error check
+    ok = create_and_add_journal_entry(JsnHelper, TxId, Operation, TableName),%TODO error check
     {atomic, ok} = gingko_log_utils:persist_journal_entries(TableName),%TODO error check
     {reply, checkpoint(TableName), State}.
 
@@ -282,18 +307,42 @@ perform_tx_read(KeyStruct, TxId, TableName) ->
             end, CurrentTxJournalEntries),
     gingko_materializer:materialize_snapshot_temporarily(SnapshotBeforeTx, UpdatesToBeAdded).
 
--spec create_and_add_journal_entry(jsn(), txid(), operation(), atom()) -> ok.
-create_and_add_journal_entry(Jsn, TxId, Operation, TableName) ->
-    JournalEntry = create_journal_entry(Jsn, TxId, Operation),
+-spec create_and_add_journal_entry(jsn_helper(), txid(), operation(), atom()) -> ok.
+create_and_add_journal_entry(JsnHelper, TxId, Operation, TableName) ->
+    JournalEntry = create_journal_entry(JsnHelper, TxId, Operation),
     gingko_log_utils:add_journal_entry(JournalEntry, TableName).
 
--spec create_journal_entry(jsn(), txid(), operation()) -> journal_entry().
-create_journal_entry(Jsn, TxId, Operation) ->
+-spec add_remote_journal_entry(journal_entry(), state()) -> {ok, state()} | {error, {previous_journal_entry_missing, Info :: term()}}.
+add_remote_journal_entry(JournalEntry, State) ->
+    NextJsn = State#state.next_jsn,
+    TableName = State#state.table_name,
+    DcToNextJsnDict = State#state.dc_to_next_jsn_dict,
+    DcId = JournalEntry#journal_entry.dc_info#dc_info.dcid,
+    DcJsn = JournalEntry#journal_entry.dc_info#dc_info.jsn,
+    DcRtTimestamp = JournalEntry#journal_entry.dc_info#dc_info.rt_timestamp,
+    %%TODO special case if its the first received
+    NextDcJsn = general_utils:get_or_default_dict(DcToNextJsnDict, DcId, 1),
+    FirstMessage = JournalEntry#journal_entry.dc_info#dc_info.first_message_since_startup,
+
+    case DcJsn == NextDcJsn orelse (FirstMessage andalso NextDcJsn == 1) of
+        true ->
+            gingko_log_utils:add_journal_entry(JournalEntry#journal_entry{jsn = NextJsn}, TableName),
+            VC = vectorclock:set(DcId, DcRtTimestamp, State#state.latest_vts),
+            NewState = State#state{latest_vts = VC, next_jsn = NextJsn + 1, dc_to_next_jsn_dict = dict:store(DcId, DcJsn + 1, DcToNextJsnDict)},
+            {ok, NewState};%%TODO hidden special case
+        false ->
+            {error, {previous_journal_entry_missing, {JournalEntry, State}}}
+    end.
+
+-spec create_journal_entry(jsn_helper(), txid(), operation()) -> journal_entry().
+create_journal_entry(JsnHelper, TxId, Operation) ->
+    Jsn = JsnHelper#jsn_helper.next_jsn,
+    DcJsn = JsnHelper#jsn_helper.next_dc_jsn,
+    FirstMessage = JsnHelper#jsn_helper.first_message_since_startup,
     DcId = gingko_utils:get_dcid(),
     #journal_entry{
         jsn = Jsn,
-        dcid = DcId,
-        rt_timestamp = gingko_utils:get_timestamp(),
+        dc_info = #dc_info{dcid = DcId, rt_timestamp = gingko_utils:get_timestamp(), jsn = DcJsn, first_message_since_startup = FirstMessage},
         tx_id = TxId,
         operation = Operation
     }.
@@ -349,11 +398,41 @@ create_checkpoint_operation(DependencyVts) ->
         op_args = #checkpoint_args{dependency_vts = DependencyVts}
     }.
 
--spec next_jsn(state()) -> {non_neg_integer(), state()}.
+-spec next_jsn(state()) -> {jsn_helper(), state()}.
 next_jsn(State) ->
-    Jsn = State#state.next_jsn,
-    {Jsn, State#state{next_jsn = Jsn + 1}}.
+    NextJsn = State#state.next_jsn,
+    Dict = State#state.dc_to_next_jsn_dict,
+    DcId = gingko_utils:get_dcid(),
+    NextDcJsn = general_utils:get_or_default_dict(Dict, DcId, 1),
+    UpdatedDict = dict:store(DcId, NextDcJsn + 1, Dict),
+    RtTimestamp = gingko_utils:get_timestamp(),
+    LatestVts = vectorclock:set(DcId, RtTimestamp, State#state.latest_vts),
+    JsnHelper = #jsn_helper{next_jsn = NextJsn, next_dc_jsn = NextDcJsn, first_message_since_startup = State#state.first_message_since_startup, rt_timestamp = RtTimestamp},
+    {JsnHelper, State#state{latest_vts = LatestVts, next_jsn = NextJsn + 1, dc_to_next_jsn_dict = UpdatedDict, first_message_since_startup = false}}.
 
 -spec initialize_jsn(state()) -> state().
 initialize_jsn(State) ->
-    State#state{next_jsn = mnesia:table_info(State#state.table_name, size) + 1, initialized = true}.
+    SortedJournalEntries = gingko_log_utils:read_all_journal_entries_sorted(State#state.table_name),
+    LastJournalEntry = lists:last(SortedJournalEntries),
+    NextJsn = LastJournalEntry#journal_entry.jsn + 1,
+    DcIdToJournalEntries = general_utils:group_by(fun(J) ->
+        J#journal_entry.dc_info#dc_info.dcid end, SortedJournalEntries),
+    %%TODO maybe simplify a little
+    %%Guarantued: jsn1 < jsn2 => rt_timestamp1 < rt_timestamp2
+    DcIdToLatestJournalEntryDict = dict:fold(
+        fun(DcId, JournalEntries, AccIn) ->
+            JournalEntryHighestJsn = general_utils:max_by(fun(J) ->
+                J#journal_entry.dc_info#dc_info.jsn end, JournalEntries),
+            dict:store(DcId, JournalEntryHighestJsn, AccIn)
+        end, dict:new(), DcIdToJournalEntries),
+    DcIdToNextJsnDict = dict:map(
+        fun(_DcId, JournalEntry) ->
+            JournalEntry#journal_entry.dc_info#dc_info.jsn + 1
+        end, DcIdToLatestJournalEntryDict),
+    VectorclockDict = dict:map(
+        fun(_DcId, JournalEntry) ->
+            JournalEntry#journal_entry.dc_info#dc_info.rt_timestamp
+        end, DcIdToLatestJournalEntryDict),
+    VC = vectorclock:from_list(dict:to_list(VectorclockDict)),
+
+    State#state{latest_vts = VC, next_jsn = NextJsn, dc_to_next_jsn_dict = DcIdToNextJsnDict, initialized = true}.

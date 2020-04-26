@@ -74,6 +74,9 @@ init([Partition]) ->
     NewState = apply_gingko_config(#state{}, CacheConfig),
     {ok, NewState#state{key_cache_entry_dict = dict:new()}}.
 
+handle_command({hello}, _Sender, State) ->
+    {reply, ok, State};
+
 handle_command({get, KeyStruct, DependencyVts} = Request, Sender, State) ->
     logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
     {Reply, NewState} = get(KeyStruct, DependencyVts, State),

@@ -27,7 +27,10 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
--export([materialize_snapshot/3, materialize_snapshot_temporarily/2, materialize_multiple_snapshots/3, get_committed_journal_entries_for_keys/2]).
+-export([get_committed_journal_entries_for_keys/2,
+    materialize_snapshot/3,
+    materialize_multiple_snapshots/3,
+    materialize_snapshot_temporarily/2]).
 
 
 -spec separate_commit_from_update_journal_entries([journal_entry()]) -> {journal_entry(), [journal_entry()]}.
@@ -118,13 +121,19 @@ materialize_multiple_snapshots(Snapshots, SortedJournalEntries, DependencyVts) -
             RelevantCommittedJournalEntries =
                 lists:filter(
                     fun({CommitJ, UpdateJList}) ->
-                        KeysInUpdates = sets:from_list(lists:map(fun(UpdateJ) ->
-                            UpdateJ#journal_entry.operation#object_operation.key_struct end, UpdateJList)),
-                        SnapshotVtsToCheck = lists:map(fun(K) ->
-                            dict:fetch(K, KeyStructsToSnapshots) end, KeysInUpdates),
+                        KeysInUpdates = sets:from_list(lists:map(
+                            fun(UpdateJ) ->
+                                UpdateJ#journal_entry.operation#object_operation.key_struct
+                            end, UpdateJList)),
+                        SnapshotVtsToCheck = lists:map(
+                            fun(K) ->
+                                dict:fetch(K, KeyStructsToSnapshots)
+                            end, KeysInUpdates),
                         CommitVts1 = CommitJ#journal_entry.operation#system_operation.op_args#commit_txn_args.commit_vts,
-                        lists:all(fun(SnapshotVts) ->
-                            gingko_utils:is_in_vts_range(CommitVts1, {SnapshotVts, DependencyVts}) end, SnapshotVtsToCheck)
+                        lists:all(
+                            fun(SnapshotVts) ->
+                                gingko_utils:is_in_vts_range(CommitVts1, {SnapshotVts, DependencyVts})
+                            end, SnapshotVtsToCheck)
                     end, CommittedJournalEntries),
             UpdatePayloads =
                 lists:map(

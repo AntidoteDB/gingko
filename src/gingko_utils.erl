@@ -24,7 +24,43 @@
 -include("gingko.hrl").
 
 %% API
--export([create_new_snapshot/2, is_in_vts_range/2, get_clock_range/2, is_in_clock_range/2, create_cache_entry/1, create_default_value/1, sort_by_jsn_number/1, is_system_operation/2, is_update_of_keys/2, is_update/1, get_keys_from_updates/1, generate_downstream_op/4, create_snapshot_from_cache_entry/1, get_timestamp/0, contains_system_operation/2, is_update_of_keys_or_commit/2, get_dcid/0, update_cache_usage/2, get_latest_vts/1, get_DCSf_vts/0, get_GCSf_vts/0, create_snapshot_from_checkpoint_entry/2, call_gingko_async_with_key/3, call_gingko_sync_with_key/3, bcast_gingko_async/2, bcast_gingko_sync/2, call_gingko_sync/3, call_gingko_async/3, get_key_partition/1]).
+-export([get_timestamp/0,
+    get_dcid/0,
+    get_DCSf_vts/0,
+    get_GCSf_vts/0,
+
+    is_in_vts_range/2,
+    get_clock_range/2,
+    is_in_clock_range/2,
+
+    create_new_snapshot/2,
+    create_cache_entry/1,
+    update_cache_usage/2,
+
+    create_snapshot_from_cache_entry/1,
+    create_snapshot_from_checkpoint_entry/2,
+
+    create_default_value/1,
+    is_system_operation/2,
+    contains_system_operation/2,
+
+    is_update_of_keys/2,
+    is_update_of_keys_or_commit/2,
+    is_update/1,
+
+    get_keys_from_updates/1,
+    sort_by_jsn_number/1,
+
+    get_latest_vts/1,
+    generate_downstream_op/4,
+
+    call_gingko_async/3,
+    call_gingko_sync/3,
+    call_gingko_async_with_key/3,
+    call_gingko_sync_with_key/3,
+    bcast_gingko_async/2,
+    bcast_gingko_sync/2,
+    get_key_partition/1]).
 
 -spec get_timestamp() -> non_neg_integer().
 get_timestamp() ->
@@ -39,10 +75,13 @@ get_dcid() ->
     end.
 
 -spec get_DCSf_vts() -> vectorclock().
-get_DCSf_vts() -> vectorclock:new(). %TODO implement
+get_DCSf_vts() ->
+    Vectorclocks = bcast_gingko_sync(?GINGKO_LOG, get_current_dependency_vts),
+    vectorclock:min(Vectorclocks).
 
 -spec get_GCSf_vts() -> vectorclock().
-get_GCSf_vts() -> vectorclock:new(). %TODO implement
+get_GCSf_vts() ->
+    get_DCSf_vts(). %TODO implement (works only for one DC now)
 
 -spec is_in_vts_range(vectorclock(), vts_range()) -> boolean().
 is_in_vts_range(Vts, VtsRange) ->
@@ -157,11 +196,12 @@ get_keys_from_updates(JournalEntries) ->
 sort_by_jsn_number(JournalEntries) ->
     lists:sort(fun(J1, J2) -> J1#journal_entry.jsn < J2#journal_entry.jsn end, JournalEntries).
 
+%%TODO reimplement since this is invalid for outside journal entries
 -spec get_latest_vts([journal_entry()]) -> vectorclock().
 get_latest_vts(SortedJournalEntries) ->
     %TODO error when list is empty (check if relevant)
     ReversedSortedJournalEntries = lists:reverse(SortedJournalEntries),
-    LastJournalEntry = hd(ReversedSortedJournalEntries),
+    %LastJournalEntry = hd(ReversedSortedJournalEntries),
     LastJournalEntryWithVts = hd(
         lists:filter(
             fun(J) ->
@@ -174,8 +214,40 @@ get_latest_vts(SortedJournalEntries) ->
             false ->
                 LastJournalEntryWithVts#journal_entry.operation#system_operation.op_args#commit_txn_args.commit_vts
         end,
-    Timestamp = LastJournalEntry#journal_entry.rt_timestamp,
-    vectorclock:set(gingko_utils:get_dcid(), Timestamp, LastVts).
+    LastVts.
+
+-spec generate_downstream_op(key_struct(), txid(), type_op(), atom()) ->
+    {ok, downstream_op()} | {error, atom()}.
+generate_downstream_op(KeyStruct, TxId, TypeOp, TableName) ->
+    %% TODO: Check if read can be omitted for some types as registers
+    Type = KeyStruct#key_struct.type,
+    NeedState = Type:require_state_downstream(TypeOp),
+    Result =
+        %% If state is needed to generate downstream, read it from the partition.
+    case NeedState of
+        true ->
+            case gingko_log_vnode:perform_tx_read(KeyStruct, TxId, TableName) of
+                {ok, S} ->
+                    S;
+                {error, Reason} ->
+                    {error, {gen_downstream_read_failed, Reason}}
+            end;
+        false ->
+            {ok, ignore} %Use a dummy value
+    end,
+    case Result of
+        {error, R} ->
+            {error, R}; %% {error, Reason} is returned here.
+        Snapshot ->
+            case Type of
+                antidote_crdt_counter_b ->
+                    %% bcounter data-type. %%TODO bcounter!
+                    %%bcounter_mgr:generate_downstream(Key, TypeOp, Snapshot);
+                    {error, "BCounter not supported for now!"};
+                _ ->
+                    Type:downstream(TypeOp, Snapshot)
+            end
+    end.
 
 -spec call_gingko_async(partition_id(), {atom(), atom()}, any()) -> ok.
 call_gingko_async(Partition, {ServerName, VMaster}, Request) ->
@@ -228,35 +300,4 @@ get_key_partition(Key) ->
         false -> antidote_utilities:get_key_partition(Key)
     end.
 
--spec generate_downstream_op(key_struct(), txid(), type_op(), atom()) ->
-    {ok, downstream_op()} | {error, atom()}.
-generate_downstream_op(KeyStruct, TxId, TypeOp, TableName) ->
-    %% TODO: Check if read can be omitted for some types as registers
-    Type = KeyStruct#key_struct.type,
-    NeedState = Type:require_state_downstream(TypeOp),
-    Result =
-        %% If state is needed to generate downstream, read it from the partition.
-    case NeedState of
-        true ->
-            case gingko_log_vnode:perform_tx_read(KeyStruct, TxId, TableName) of
-                {ok, S} ->
-                    S;
-                {error, Reason} ->
-                    {error, {gen_downstream_read_failed, Reason}}
-            end;
-        false ->
-            {ok, ignore} %Use a dummy value
-    end,
-    case Result of
-        {error, R} ->
-            {error, R}; %% {error, Reason} is returned here.
-        Snapshot ->
-            case Type of
-                antidote_crdt_counter_b ->
-                    %% bcounter data-type. %%TODO bcounter!
-                    %%bcounter_mgr:generate_downstream(Key, TypeOp, Snapshot);
-                    {error, "BCounter not supported for now!"};
-                _ ->
-                    Type:downstream(TypeOp, Snapshot)
-            end
-    end.
+

@@ -54,7 +54,8 @@
     call_vnode_sync_with_key/3,
     get_key_partition/1,
     get_preflist_from_key/1,
-    get_my_node/1
+    get_my_node/1,
+    is_ring_ready/1
 ]).
 
 %% Returns the ID of the current DC.
@@ -279,4 +280,12 @@ convert_key(Key) ->
                     HashedKey = riak_core_util:chash_key({?BUCKET, term_to_binary(Key)}),
                     abs(crypto:bytes_to_integer(HashedKey))
             end
+    end.
+
+%% @doc Calls the riak core ring manager to check if the ring of the given node is ready
+-spec is_ring_ready(node()) -> boolean().
+is_ring_ready(Node) ->
+    case rpc:call(Node, riak_core_ring_manager, get_raw_ring, []) of
+        {ok, Ring} -> riak_core_ring:ring_ready(Ring);
+        _ -> false
     end.

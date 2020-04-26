@@ -3,10 +3,14 @@
 %% old snapshots to avoid clock-skew.
 %% This can break the tests is not set to 0
 -define(OLD_SS_MICROSEC, 0).
--define(USE_SINGLE_SERVER, true).
--define(GINGKO_SERVER, {gingko_server, gingko_vnode_master}).
--define(GINGKO_LOG, {gingko_log_server, gingko_log_vnode_master}).
--define(GINGKO_CACHE, {gingko_cache_server, gingko_cache_vnode_master}).
+-define(USE_SINGLE_SERVER, false).
+-define(GINGKO_APP_NAME, gingko_app).
+-define(GINGKO_VNODE_MASTER, gingko_vnode_master).
+-define(GINGKO_LOG_VNODE_MASTER, gingko_log_vnode_master).
+-define(GINGKO_CACHE_VNODE_MASTER, gingko_cache_vnode_master).
+-define(GINGKO_SERVER, {gingko_server, ?GINGKO_VNODE_MASTER}).
+-define(GINGKO_LOG, {gingko_log_server, ?GINGKO_LOG_VNODE_MASTER}).
+-define(GINGKO_CACHE, {gingko_cache_server, ?GINGKO_CACHE_VNODE_MASTER}).
 -type key() :: term().
 -type type() :: atom().
 -type txn_properties() :: [{update_clock, boolean()} | {certify, use_default | certify | dont_certify}].
@@ -17,27 +21,23 @@
 }).
 -type txid() :: #tx_id{}.
 
--define(BUCKET, "antidote").
+-define(BUCKET, <<"antidote">>).
 
 -type crdt() :: term().
 -type type_op() :: {Op :: atom(), OpArgs :: term()} | atom() | term(). %downstream(type_op, crdt())
 -type downstream_op() :: term(). %update(downstream_op, crdt())
 
--type dcid() :: undefined | term().%%TODO riak_core_ring:riak_core_ring().
+-type dcid() :: undefined | {term(), term()}.
 
--type dc_and_commit_time() :: {dcid(), clock_time()}.
 -type vectorclock() :: vectorclock:vectorclock().
--type vectorclock_or_none() :: vectorclock() | none.
--type vts_range() :: {MinVts :: vectorclock_or_none(), MaxVts :: vectorclock_or_none()}.
+-type vts_range() :: {MinVts :: vectorclock() | none, MaxVts :: vectorclock() | none}.
 -type clock_time() :: non_neg_integer().
--type clock_time_or_none() :: clock_time() | none.
--type clock_range() :: {MinClock :: clock_time_or_none(), MaxClock :: clock_time_or_none()}.
+-type clock_range() :: {MinClock :: clock_time() | none, MaxClock :: clock_time() | none}.
 -type reason() :: term().
 -type map_list() :: [{Key :: term(), Value :: term()}].
 -type index_node() :: {partition_id(), node()}.
 -type preflist() :: riak_core_apl:preflist().
 -type partition_id() :: chash:index_as_int().
--type snapshot_time() :: 'undefined' | vectorclock:vectorclock().
 
 -record(cache_usage, {
     used = true :: boolean(),
@@ -117,11 +117,17 @@
 -type operation() :: system_operation() | object_operation().
 
 -type jsn() :: non_neg_integer().
+-record(dc_info, {
+    dcid :: dcid(),
+    rt_timestamp :: clock_time(),
+    jsn :: jsn(),
+    first_message_since_startup = false :: boolean()
+}).
+-type dc_info() :: dc_info().
 
 -record(journal_entry, {
     jsn :: jsn(),
-    dcid :: dcid(),
-    rt_timestamp :: clock_time(),
+    dc_info :: dc_info(),
     tx_id :: txid(),
     operation :: operation()
 }).

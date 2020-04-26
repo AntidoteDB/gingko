@@ -41,7 +41,7 @@ init(_Args) ->
             true ->
                 {?CHILD(gingko_server, worker, []), ?CHILD(gingko_log_server, worker, []), ?CHILD(gingko_cache_server, worker, [])};
             false ->
-                {?VNODE(gingko_vnode_master, gingko_vnode), ?VNODE(gingko_log_vnode_master, gingko_log_vnode), ?VNODE(gingko_cache_vnode_master, gingko_cache_vnode)}
+                {?VNODE(?GINGKO_VNODE_MASTER, gingko_vnode), ?VNODE(?GINGKO_LOG_VNODE_MASTER, gingko_log_vnode), ?VNODE(?GINGKO_CACHE_VNODE_MASTER, gingko_cache_vnode)}
         end,
     SupFlags = #{strategy => one_for_one, intensity => 1, period => 5},
     {ok, {SupFlags, [GingkoMaster, GingkoLogMaster, GingkoCacheMaster]}}.

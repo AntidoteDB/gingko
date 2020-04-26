@@ -44,7 +44,8 @@ handle_cast(Request, State) ->
     {noreply, NewState}.
 
 handle_info(Request, State) ->
-    gingko_vnode:handle_info(Request, State).
+    gingko_vnode:handle_info(Request, State),
+    {noreply, ok}.
 
 terminate(Reason, State) ->
     logger:debug("terminate(~nReason: ~p~nState: ~p~n)", [Reason, State]),

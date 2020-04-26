@@ -43,7 +43,10 @@ start(_StartType, _StartArgs) ->
                     ok = riak_core:register([{vnode_module, gingko_vnode}]),
                     ok = riak_core_node_watcher:service_up(gingko, self()),
                     ok = riak_core:register([{vnode_module, gingko_cache_vnode}]),
-                    ok = riak_core_node_watcher:service_up(gingko_cache, self())
+                    ok = riak_core_node_watcher:service_up(gingko_cache, self()),
+                    ok = antidote_utilities:ensure_all_vnodes_running_master(?GINGKO_VNODE_MASTER),
+                    ok = antidote_utilities:ensure_all_vnodes_running_master(?GINGKO_LOG_VNODE_MASTER),
+                    ok = antidote_utilities:ensure_all_vnodes_running_master(?GINGKO_CACHE_VNODE_MASTER)
             end,
             {ok, Pid};
         {error, Reason} ->

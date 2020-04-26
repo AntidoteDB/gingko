@@ -22,11 +22,26 @@
 -include_lib("kernel/include/logger.hrl").
 
 %% API
--export([read/2, read_multiple/2, update/3, update_multiple/2, begin_txn/2, prepare_txn/2, commit_txn/2, abort_txn/2, checkpoint/1]).
+-export([get_new_tx_id/0,
+    read/2,
+    read_multiple/2,
+    update/3,
+    update_multiple/2,
+    begin_txn/0,
+    begin_txn/2,
+    prepare_txn/2,
+    commit_txn/2,
+    abort_txn/2,
+    checkpoint/1]).
 
 %%====================================================================
 %% API functions
 %%====================================================================
+
+-spec get_new_tx_id() -> txid().
+get_new_tx_id() ->
+    CurrentTime = gingko_utils:get_timestamp(),
+    #tx_id{local_start_time = CurrentTime, server_pid = self()}.
 
 -spec read({key(), type()} | key_struct(), txid()) -> {ok, snapshot_value()} | {error, reason()}.
 read({Key, Type}, TxId) -> read(#key_struct{key = Key, type = Type}, TxId);
@@ -51,7 +66,14 @@ update(KeyStruct, TypeOp, TxId) ->
 update_multiple(KeyStructTypeOpTuples, TxId) ->
     ok. %TODO implement
 
--spec begin_txn(vectorclock(), txid()) -> list().
+-spec begin_txn() -> txid().
+begin_txn() ->
+    TxId = get_new_tx_id(),
+    DependencyVts = gingko_utils:get_DCSf_vts(),
+    begin_txn(DependencyVts, TxId),
+    TxId.
+
+-spec begin_txn(vectorclock(), txid()) -> ok.
 begin_txn(DependencyVts, TxId) ->
     BeginTxn = {{begin_txn, DependencyVts}, TxId},
     gingko_utils:call_gingko_async_with_key(TxId, ?GINGKO_SERVER, BeginTxn).

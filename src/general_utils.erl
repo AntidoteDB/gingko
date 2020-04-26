@@ -24,7 +24,24 @@
 -include("gingko.hrl").
 
 %% API
--export([group_by/2, add_to_value_list_or_create_single_value_list/3, sorted_insert/3, get_or_default_dict/3, get_or_default_map_list/3, get_or_default_map_list_check/3, concat_and_make_atom/1, atom_replace/3, parallel_map/2, parallel_foreach/2]).
+-export([max_by/2,
+    group_by/2,
+    add_to_value_list_or_create_single_value_list/3,
+    sorted_insert/3,
+    get_or_default_dict/3,
+    get_or_default_map_list/3,
+    get_or_default_map_list_check/3,
+    concat_and_make_atom/1,
+    atom_replace/3,
+    parallel_map/2,
+    parallel_foreach/2]).
+
+-spec max_by(fun((ListElem :: term()) -> integer()), list()) -> MaxListElem :: term().
+max_by(Fun, List) ->
+    hd(lists:sort(
+        fun(ListElem1, ListElem2) ->
+            Fun(ListElem1) > Fun(ListElem2)
+        end, List)).
 
 %% @doc Takes function that groups entries form the given list in a dictionary
 %%      For example grouping a list of journal entries by txid to get all journal entries that belong to a certain txid
