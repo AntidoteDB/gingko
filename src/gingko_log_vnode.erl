@@ -413,8 +413,12 @@ next_jsn(State) ->
 -spec initialize_jsn(state()) -> state().
 initialize_jsn(State) ->
     SortedJournalEntries = gingko_log_utils:read_all_journal_entries_sorted(State#state.table_name),
-    LastJournalEntry = lists:last(SortedJournalEntries),
-    NextJsn = LastJournalEntry#journal_entry.jsn + 1,
+    NextJsn = case SortedJournalEntries of
+                  [] -> 1;
+                  _ ->
+                      LastJournalEntry = lists:last(SortedJournalEntries),
+                      LastJournalEntry#journal_entry.jsn + 1
+              end,
     DcIdToJournalEntries = general_utils:group_by(fun(J) ->
         J#journal_entry.dc_info#dc_info.dcid end, SortedJournalEntries),
     %%TODO maybe simplify a little

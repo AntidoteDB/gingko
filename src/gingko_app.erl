@@ -91,8 +91,8 @@ initial_startup_nodes(Nodes) ->
                     ok = mnesia:create_schema(Nodes),
                     rpc:multicall(Nodes, application, start, [mnesia]),
                     ok = make_sure_checkpoint_store_is_running(Nodes),
-                    gingko_utils:bcast_gingko_sync(?GINGKO_LOG, setup_journal_mnesia_table),
-                    TableNames = gingko_utils:bcast_gingko_sync(?GINGKO_LOG, get_journal_mnesia_table_name),
+                    [] = sets:to_list(sets:del_element(ok, sets:from_list(general_utils:get_values(gingko_utils:bcast_gingko_sync(?GINGKO_LOG, setup_journal_mnesia_table))))),
+                    TableNames = general_utils:get_values(gingko_utils:bcast_gingko_sync(?GINGKO_LOG, get_journal_mnesia_table_name)),
                     ok = mnesia:wait_for_tables([checkpoint_entry | TableNames], 5000), %TODO error handling
                     ok; %TODO setup fresh
                 _ ->

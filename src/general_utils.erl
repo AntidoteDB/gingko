@@ -24,7 +24,8 @@
 -include("gingko.hrl").
 
 %% API
--export([max_by/2,
+-export([get_values/1,
+    max_by/2,
     group_by/2,
     add_to_value_list_or_create_single_value_list/3,
     sorted_insert/3,
@@ -35,6 +36,10 @@
     atom_replace/3,
     parallel_map/2,
     parallel_foreach/2]).
+
+-spec get_values([{Key :: term(), Value :: term()}]) -> ValueList :: [Value :: term()].
+get_values(TupleList) ->
+    lists:map(fun({_Key, Value}) -> Value end, TupleList).
 
 -spec max_by(fun((ListElem :: term()) -> integer()), list()) -> MaxListElem :: term().
 max_by(Fun, List) ->

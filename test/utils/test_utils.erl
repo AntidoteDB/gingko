@@ -102,7 +102,7 @@ start_node(Name, Config) ->
     {ok, Cwd} = file:get_cwd(),
     GingkoFolder = filename:dirname(filename:dirname(Cwd)),
     CodePath = lists:filter(fun filelib:is_dir/1, code:get_path()),
-    ct:log("Starting node ~p", [Name]),
+    ct:pal("Starting node ~p", [Name]),
 
 
     PrivDir = proplists:get_value(priv_dir, Config),
@@ -155,7 +155,7 @@ start_node(Name, Config) ->
             %% reduce number of actual log files created to 4, reduces start-up time of node
             ok = rpc:call(Node, application, set_env, [riak_core, ring_creation_size, 4]),
             {ok, _} = rpc:call(Node, application, ensure_all_started, [?GINGKO_APP_NAME]),
-            gingko_app:initial_startup_nodes([Node]),
+            ok = rpc:call(Node, gingko_app, initial_startup_nodes, [[Node]]),
             ct:pal("Node ~p started", [Node]),
 
             {connect, Node};

@@ -286,10 +286,10 @@ bcast_gingko_async({ServerName, VMaster}, Request) ->
     end.
 
 %% Sends the same (synchronous) command to all vnodes of a given type.
--spec bcast_gingko_sync({atom(), atom()}, any()) -> [term()].
+-spec bcast_gingko_sync({atom(), atom()}, any()) -> [{partition_id(), term()}].
 bcast_gingko_sync({ServerName, VMaster}, Request) ->
     case ?USE_SINGLE_SERVER of
-        true -> [gen_server:call(ServerName, Request)];
+        true -> [{0, gen_server:call(ServerName, Request)}];
         false -> antidote_utilities:bcast_vnode_sync(VMaster, Request)
     end.
 
