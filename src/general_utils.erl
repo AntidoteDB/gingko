@@ -20,7 +20,9 @@
 %% -------------------------------------------------------------------
 
 -module(general_utils).
+
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
+
 -include("gingko.hrl").
 
 %% API
@@ -32,6 +34,7 @@
     get_or_default_dict/3,
     get_or_default_map_list/3,
     get_or_default_map_list_check/3,
+    values_from_dict/1,
     concat_and_make_atom/1,
     atom_replace/3,
     parallel_map/2,
@@ -59,8 +62,8 @@ group_by(Fun, List) ->
 
 %% @doc Updates a dictionary that stores lists as values
 %%      If a list exists for the given key then the given value is added to the list otherwise a new list with the given value is added to the dictionary
--spec add_to_value_list_or_create_single_value_list(DictionaryTypeAToValueTypeBList :: dict:dict(KeyTypeA :: term(), TypeBList :: [term()]), KeyTypeA :: term(), ValueTypeB :: term()) -> dict:dict(KeyTypeA :: term(), TypeBList :: [term()]).
-add_to_value_list_or_create_single_value_list(DictionaryTypeAToValueTypeBList, KeyTypeA, ValueTypeB) ->
+-spec add_to_value_list_or_create_single_value_list(KeyTypeA :: term(), ValueTypeB :: term(), DictionaryTypeAToValueTypeBList :: dict:dict(KeyTypeA :: term(), TypeBList :: [term()])) -> dict:dict(KeyTypeA :: term(), TypeBList :: [term()]).
+add_to_value_list_or_create_single_value_list(KeyTypeA, ValueTypeB, DictionaryTypeAToValueTypeBList) ->
     dict:update(KeyTypeA, fun(ValueTypeBList) ->
         [ValueTypeB | ValueTypeBList] end, [ValueTypeB], DictionaryTypeAToValueTypeBList).
 
@@ -90,6 +93,10 @@ get_or_default_map_list(Key, MapList, Default) ->
 get_or_default_map_list_check(Key, MapList, Default) ->
     Value = get_or_default_map_list(Key, MapList, Default),
     {Default /= Value, Value}.
+
+-spec values_from_dict(dict:dict(KeyType :: term(), ValueType :: term())) -> [ValueType :: term()].
+values_from_dict(Dict) ->
+    dict:fold(fun(_Key, Value, ValueListAcc) -> [Value | ValueListAcc] end, [], Dict).
 
 -spec concat_and_make_atom([string() | atom()]) -> atom().
 concat_and_make_atom(StringOrAtomList) ->

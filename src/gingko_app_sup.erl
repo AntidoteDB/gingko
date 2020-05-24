@@ -19,7 +19,7 @@
 %% Description and complete License: see LICENSE file.
 %% -------------------------------------------------------------------
 
--module(gingko_sup).
+-module(gingko_app_sup).
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
 -behaviour(supervisor).
 
@@ -35,13 +35,30 @@ start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 init(_Args) ->
-
-    {GingkoMaster, GingkoLogMaster, GingkoCacheMaster} =
+    GingkoMaster = ?CHILD(gingko_server, worker, []),
+    {GingkoLogMaster, GingkoCacheMaster} =
         case ?USE_SINGLE_SERVER of
             true ->
-                {?CHILD(gingko_server, worker, []), ?CHILD(gingko_log_server, worker, []), ?CHILD(gingko_cache_server, worker, [])};
+                {?CHILD(gingko_log_server, worker, []), ?CHILD(gingko_cache_server, worker, [])};
             false ->
-                {?VNODE(?GINGKO_VNODE_MASTER, gingko_vnode), ?VNODE(?GINGKO_LOG_VNODE_MASTER, gingko_log_vnode), ?VNODE(?GINGKO_CACHE_VNODE_MASTER, gingko_cache_vnode)}
+                {?VNODE(?GINGKO_LOG_VNODE_MASTER, gingko_log_vnode), ?VNODE(?GINGKO_CACHE_VNODE_MASTER, gingko_cache_vnode)}
         end,
-    SupFlags = #{strategy => one_for_one, intensity => 1, period => 5},
-    {ok, {SupFlags, [GingkoMaster, GingkoLogMaster, GingkoCacheMaster]}}.
+    BCounterManager = ?CHILD(bcounter_manager, worker, []),
+
+    ZMQContextManager = ?CHILD(zmq_context, worker, []),
+    InterDcJournalSender = ?CHILD(inter_dc_journal_sender, worker, []),
+    InterDcJournalReceiver = ?CHILD(inter_dc_journal_receiver, worker, []),
+    InterDcRequestSender = ?CHILD(inter_dc_request_sender, worker, []),
+    InterDcRequestResponder = ?CHILD(inter_dc_request_responder, worker, []),
+
+    SupFlags = #{strategy => one_for_one, intensity => 5, period => 10},
+    {ok, {SupFlags, [
+        GingkoMaster,
+        GingkoLogMaster,
+        GingkoCacheMaster,
+        ZMQContextManager,
+        InterDcJournalSender,
+        InterDcJournalReceiver,
+        InterDcRequestSender,
+        InterDcRequestResponder,
+        BCounterManager]}}.

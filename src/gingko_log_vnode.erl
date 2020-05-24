@@ -20,10 +20,8 @@
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
 -include("gingko.hrl").
 -include_lib("riak_core/include/riak_core_vnode.hrl").
--include_lib("kernel/include/logger.hrl").
 -behaviour(riak_core_vnode).
 
-%% API
 -export([start_vnode/1,
     init/1,
     handle_command/3,
@@ -42,7 +40,8 @@
     handle_overload_command/3,
     handle_overload_info/2]).
 
--export([process_command/4, perform_tx_read/3]).
+-export([process_command/4,
+    perform_tx_read/3]).
 
 -record(state, {
     partition :: partition_id(),
@@ -63,36 +62,44 @@
 }).
 -type jsn_helper() :: #jsn_helper{}.
 
+%%%===================================================================
+%%% Public API
+%%%===================================================================
+
 %%TODO prevent usage before initialized
+%%%===================================================================
+%%% Spawning and vnode implementation
+%%%===================================================================
 
 -spec start_vnode(integer()) -> any().
 start_vnode(I) ->
     riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
 
 init([Partition]) ->
-    logger:debug("init(~nPartition: ~p~n)", [Partition]),
+    default_vnode_behaviour:init(?MODULE, [Partition]),
     TableName = general_utils:concat_and_make_atom([integer_to_list(Partition), '_journal_entry']),
     GingkoConfig = [{partition, Partition}, {table_name, TableName} | gingko_app:get_default_config()],
     NewState = apply_gingko_config(#state{}, GingkoConfig),
     {ok, NewState}.
 
-handle_command({hello}, _Sender, State) ->
+handle_command(Request = hello, Sender, State) ->
+    default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
     {reply, ok, State};
 
-handle_command(get_journal_mnesia_table_name = Request, Sender, State) ->
-    logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
+handle_command(Request = get_journal_mnesia_table_name, Sender, State) ->
+    default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
     {reply, State#state.table_name, State};
 
-handle_command(get_current_dependency_vts = Request, Sender, State) ->
-    logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
-    DependencyVts = vectorclock:set(gingko_utils:get_dcid(), gingko_utils:get_timestamp(), State#state.latest_vts),
+handle_command(Request = get_current_dependency_vts, Sender, State) ->
+    default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
+    DependencyVts = vectorclock:set(gingko_utils:get_my_dcid(), gingko_utils:get_timestamp(), State#state.latest_vts),
     {reply, DependencyVts, State};
 
 %%TODO consider timing issues during start-up with large tables
 %%TODO failure testing required
 %%TODO maybe consider migration for later
-handle_command(setup_journal_mnesia_table = Request, Sender, State) ->
-    logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
+handle_command(Request = setup_journal_mnesia_table, Sender, State) ->
+    default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
     TableName = State#state.table_name,
     Tables = mnesia:system_info(tables),
     case lists:member(TableName, Tables) of
@@ -101,12 +108,7 @@ handle_command(setup_journal_mnesia_table = Request, Sender, State) ->
             %%TODO we will make sure that if this table exists then it will only run on our node after this call
             case NodesWhereThisTableExists of
                 [] ->
-                    {atomic, ok} = mnesia:create_table(TableName,
-                        [{attributes, record_info(fields, journal_entry)},
-                            %{index, [#journal_entry.jsn]},%TODO find out why index doesn't work here
-                            {ram_copies, [node()]},
-                            {record_name, journal_entry}
-                        ]);
+                    {atomic, ok} = create_journal_mnesia_table(TableName);
                 Nodes ->
                     %%TODO make sure we have ram copies and delete tables on other nodes
                     case lists:member(node(), Nodes) of
@@ -121,6 +123,7 @@ handle_command(setup_journal_mnesia_table = Request, Sender, State) ->
                         false ->
                             {atomic, ok} = mnesia:add_table_copy(TableName, node(), ram_copies)
                     end,
+                    %TODO maybe this will cause problems during handoff
                     lists:foreach(
                         fun(Node) ->
                             case Node /= node() of
@@ -130,86 +133,66 @@ handle_command(setup_journal_mnesia_table = Request, Sender, State) ->
                         end, Nodes)
             end;
         false ->
-            {atomic, ok} = mnesia:create_table(TableName,
-                [{attributes, record_info(fields, journal_entry)},
-                    %{index, [#journal_entry.jsn]},%TODO find out why index doesn't work here
-                    {ram_copies, [node()]},
-                    {record_name, journal_entry}
-                ])
+            {atomic, ok} = create_journal_mnesia_table(TableName)
     end,
     {reply, ok, initialize_jsn(State)};
 
+handle_command(Request = {get_journal_entries, DcIdOrAll, FilterFuncOrNone}, Sender, State = #state{table_name = TableName}) ->
+    default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
+    SortedJournalEntries = gingko_log_utils:read_all_journal_entries_sorted(TableName),
+    case DcIdOrAll of
+        all -> {reply, {ok, SortedJournalEntries}, State};
+        DcId ->
+            Result = lists:filter(
+                fun(JournalEntry = #journal_entry{dc_info = #dc_info{dcid = DCID}}) ->
+                    DcId == DCID andalso
+                        case FilterFuncOrNone of
+                            none -> true;
+                            FilterFunc -> FilterFunc(JournalEntry)
+                        end
+                end, SortedJournalEntries),
+            {reply, {ok, Result}, State}
+    end;
 
+handle_command(Request = {add_remote_journal_entry, JournalEntry}, Sender, State) ->
+    default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
+    Result = add_remote_journal_entry(JournalEntry, State),
+    {reply, Result, State};
 
-handle_command({{_Op, _Args}, _TxId} = Request, Sender, State) ->
-    logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
+handle_command(Request = {{_Op, _Args}, _TxId}, Sender, State) ->
+    default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
     {JsnHelper, NewState} = next_jsn(State),
     TableName = NewState#state.table_name,
     process_command({JsnHelper, TableName}, Request, Sender, NewState);
 
-handle_command(Request, Sender, State) ->
-    logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
-    {noreply, State}.
+handle_command(Request, Sender, State) -> default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State).
+handoff_starting(TargetNode, State) -> default_vnode_behaviour:handoff_starting(?MODULE, TargetNode, State).
+handoff_cancelled(State) -> default_vnode_behaviour:handoff_cancelled(?MODULE, State).
+handoff_finished(TargetNode, State) -> default_vnode_behaviour:handoff_finished(?MODULE, TargetNode, State).
 
-handoff_starting(TargetNode, State) ->
-    logger:debug("handoff_starting(~nTargetNode: ~p~nState: ~p~n)", [TargetNode, State]),
-    {true, State}.
-
-handoff_cancelled(State) ->
-    logger:debug("handoff_cancelled(~nState: ~p~n)", [State]),
-    {ok, State}.
-
-handoff_finished(TargetNode, State) ->
-    logger:debug("handoff_finished(~nTargetNode: ~p~nState: ~p~n)", [TargetNode, State]),
-    {ok, State}.
-
-handle_handoff_command(?FOLD_REQ{foldfun = VisitFun, acc0 = Acc0} = Request, Sender, State) ->
-    logger:debug("handle_handoff_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
-    {reply, ok, State}; %TODO
+handle_handoff_command(Request = #riak_core_fold_req_v2{foldfun = VisitFun, acc0 = Acc0}, Sender, State) ->
+    %%TODO
+    default_vnode_behaviour:handle_handoff_command(?MODULE, Request, Sender, State),
+    {reply, ok, State};
 
 handle_handoff_command(Request, Sender, State) ->
-    logger:debug("handle_handoff_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
-    {noreply, State}.
-
-handle_handoff_data(BinaryData, State) ->
-    logger:debug("handle_handoff_data(~nData: ~p~nState: ~p~n)", [binary_to_term(BinaryData), State]),
-    {reply, ok, State}.
-
-encode_handoff_item(Key, Value) ->
-    logger:debug("encode_handoff_item(~nKey: ~p~nValue: ~p~n)", [Key, Value]),
-    term_to_binary({Key, Value}).
-
-is_empty(State) ->
-    logger:debug("is_empty(~nState: ~p~n)", [State]),
-    {true, State}.
-
-terminate(Reason, State) ->
-    logger:debug("terminate(~nReason: ~p~nState: ~p~n)", [Reason, State]),
-    ok.
-
-delete(State) ->
-    logger:debug("delete(~nRequest: ~p~n)", [State]),
-    {ok, State}.
-
-handle_info(Request, State) ->
-    logger:debug("handle_info(~nRequest: ~p~nState: ~p~n)", [Request, State]),
-    {ok, State}.
-
-handle_exit(Pid, Reason, State) ->
-    logger:debug("handle_exit(~nPid: ~p~nReason: ~p~nState: ~p~n)", [Pid, Reason, State]),
-    {noreply, State}.
-
+    default_vnode_behaviour:handle_handoff_command(?MODULE, Request, Sender, State).
+handle_handoff_data(BinaryData, State) -> default_vnode_behaviour:handle_handoff_data(?MODULE, BinaryData, State).
+encode_handoff_item(Key, Value) -> default_vnode_behaviour:encode_handoff_item(?MODULE, Key, Value).
+is_empty(State) -> default_vnode_behaviour:is_empty(?MODULE, State).
+terminate(Reason, State) -> default_vnode_behaviour:terminate(?MODULE, Reason, State).
+delete(State) -> default_vnode_behaviour:delete(?MODULE, State).
+handle_info(Request, State) -> default_vnode_behaviour:handle_info(?MODULE, Request, State).
+handle_exit(Pid, Reason, State) -> default_vnode_behaviour:handle_exit(?MODULE, Pid, Reason, State).
 handle_coverage(Request, KeySpaces, Sender, State) ->
-    logger:debug("handle_coverage(~nRequest: ~p~nKeySpaces: ~p~nSender: ~p~nState: ~p~n)", [Request, KeySpaces, Sender, State]),
-    {stop, not_implemented, State}.
-
+    default_vnode_behaviour:handle_coverage(?MODULE, Request, KeySpaces, Sender, State).
 handle_overload_command(Request, Sender, Partition) ->
-    logger:debug("handle_overload_command(~nRequest: ~p~nSender: ~p~nPartition: ~p~n)", [Request, Sender, Partition]),
-    ok.
+    default_vnode_behaviour:handle_overload_command(?MODULE, Request, Sender, Partition).
+handle_overload_info(Request, Partition) -> default_vnode_behaviour:handle_overload_info(?MODULE, Request, Partition).
 
-handle_overload_info(Request, Partition) ->
-    logger:debug("handle_overload_info(~nRequest: ~p~nPartition: ~p~n)", [Request, Partition]),
-    ok.
+%%%===================================================================
+%%% Internal functions
+%%%===================================================================
 
 -spec apply_gingko_config(state(), [{atom(), term()}]) -> state().
 apply_gingko_config(State, GingkoConfig) ->
@@ -217,44 +200,53 @@ apply_gingko_config(State, GingkoConfig) ->
     TableName = general_utils:get_or_default_map_list(table_name, GingkoConfig, error),
     State#state{partition = Partition, table_name = TableName}.
 
+-spec create_journal_mnesia_table(atom()) -> {atomic, ok} | {aborted, reason()}.
+create_journal_mnesia_table(TableName) ->
+    mnesia:create_table(TableName,
+        [{attributes, record_info(fields, journal_entry)},
+            %{index, [#journal_entry.jsn]},%TODO find out why index doesn't work here
+            {ram_copies, [node()]},
+            {record_name, journal_entry}
+        ]).
+
 -spec process_command({JsnHelper :: jsn_helper(), TableName :: atom()}, Request :: term(), pid() | atom(), state()) -> {reply, term(), state()}.
 process_command({JsnHelper, TableName}, {{read, KeyStruct}, TxId}, _Sender, State) ->
     Operation = create_read_operation(KeyStruct, []),
-    create_and_add_journal_entry(JsnHelper, TxId, Operation, TableName),
+    create_and_add_journal_entry(JsnHelper, TxId, Operation, TableName, State),
     {ok, Snapshot} = perform_tx_read(KeyStruct, TxId, TableName),
     {reply, {ok, Snapshot#snapshot.value}, State};
 
 process_command({JsnHelper, TableName}, {{update, {KeyStruct, TypeOp}}, TxId}, _Sender, State) ->
     {ok, DownstreamOp} = gingko_utils:generate_downstream_op(KeyStruct, TxId, TypeOp, TableName),%TODO error check
     Operation = create_update_operation(KeyStruct, DownstreamOp),
-    ok = create_and_add_journal_entry(JsnHelper, TxId, Operation, TableName),%TODO error check
+    ok = create_and_add_journal_entry(JsnHelper, TxId, Operation, TableName, State),%TODO error check
     {reply, ok, State};
 
 process_command({JsnHelper, TableName}, {{begin_txn, DependencyVts}, TxId}, _Sender, State) ->
     Operation = create_begin_operation(DependencyVts),
-    ok = create_and_add_journal_entry(JsnHelper, TxId, Operation, TableName),%TODO error check
+    ok = create_and_add_journal_entry(JsnHelper, TxId, Operation, TableName, State),%TODO error check
     {reply, ok, State};
 
 process_command({JsnHelper, TableName}, {{{prepare_txn, PrepareTime}, TxId}, Ops}, _Sender, State) ->
     Operation = create_prepare_operation(PrepareTime),
-    ok = create_and_add_journal_entry(JsnHelper, TxId, Operation, TableName),
+    ok = create_and_add_journal_entry(JsnHelper, TxId, Operation, TableName, State),
     {atomic, ok} = gingko_log_utils:persist_journal_entries(TableName),%TODO error check
     %%TODO check that all ops are in the journal
     {reply, ok, State};
 
 process_command({JsnHelper, TableName}, {{commit_txn, CommitTime}, TxId}, _Sender, State) ->
     Operation = create_commit_operation(CommitTime),
-    ok = create_and_add_journal_entry(JsnHelper, TxId, Operation, TableName),%TODO error check
+    ok = create_and_add_journal_entry(JsnHelper, TxId, Operation, TableName, State),%TODO error check
     {reply, ok, State};
 
 process_command({JsnHelper, TableName}, {{abort_txn, _Args}, TxId}, _Sender, State) ->
     Operation = create_abort_operation(),
-    ok = create_and_add_journal_entry(JsnHelper, TxId, Operation, TableName),%TODO error check
+    ok = create_and_add_journal_entry(JsnHelper, TxId, Operation, TableName, State),%TODO error check
     {reply, ok, State};
 
 process_command({JsnHelper, TableName}, {{checkpoint, DependencyVts}, TxId}, _Sender, State) ->
     Operation = create_checkpoint_operation(DependencyVts),
-    ok = create_and_add_journal_entry(JsnHelper, TxId, Operation, TableName),%TODO error check
+    ok = create_and_add_journal_entry(JsnHelper, TxId, Operation, TableName, State),%TODO error check
     {atomic, ok} = gingko_log_utils:persist_journal_entries(TableName),%TODO error check
     {reply, checkpoint(TableName), State}.
 
@@ -307,10 +299,11 @@ perform_tx_read(KeyStruct, TxId, TableName) ->
             end, CurrentTxJournalEntries),
     gingko_materializer:materialize_snapshot_temporarily(SnapshotBeforeTx, UpdatesToBeAdded).
 
--spec create_and_add_journal_entry(jsn_helper(), txid(), operation(), atom()) -> ok.
-create_and_add_journal_entry(JsnHelper, TxId, Operation, TableName) ->
+-spec create_and_add_journal_entry(jsn_helper(), txid(), operation(), atom(), state()) -> ok.
+create_and_add_journal_entry(JsnHelper, TxId, Operation, TableName, #state{partition = Partition}) ->
     JournalEntry = create_journal_entry(JsnHelper, TxId, Operation),
-    gingko_log_utils:add_journal_entry(JournalEntry, TableName).
+    gingko_log_utils:add_journal_entry(JournalEntry, TableName),
+    inter_dc_txn_manager:buffer_journal_entry(JournalEntry, Partition).
 
 -spec add_remote_journal_entry(journal_entry(), state()) -> {ok, state()} | {error, {previous_journal_entry_missing, Info :: term()}}.
 add_remote_journal_entry(JournalEntry, State) ->
@@ -339,7 +332,7 @@ create_journal_entry(JsnHelper, TxId, Operation) ->
     Jsn = JsnHelper#jsn_helper.next_jsn,
     DcJsn = JsnHelper#jsn_helper.next_dc_jsn,
     FirstMessage = JsnHelper#jsn_helper.first_message_since_startup,
-    DcId = gingko_utils:get_dcid(),
+    DcId = gingko_utils:get_my_dcid(),
     #journal_entry{
         jsn = Jsn,
         dc_info = #dc_info{dcid = DcId, rt_timestamp = gingko_utils:get_timestamp(), jsn = DcJsn, first_message_since_startup = FirstMessage},
@@ -402,7 +395,7 @@ create_checkpoint_operation(DependencyVts) ->
 next_jsn(State) ->
     NextJsn = State#state.next_jsn,
     Dict = State#state.dc_to_next_jsn_dict,
-    DcId = gingko_utils:get_dcid(),
+    DcId = gingko_utils:get_my_dcid(),
     NextDcJsn = general_utils:get_or_default_dict(Dict, DcId, 1),
     UpdatedDict = dict:store(DcId, NextDcJsn + 1, Dict),
     RtTimestamp = gingko_utils:get_timestamp(),

@@ -35,30 +35,38 @@ all() ->
     ].
 %TODO reimplement
 init_per_suite(Config) ->
-    test_utils:init_single_dc(?MODULE, Config).
+    NewConfig = test_utils:init_single_dc(?MODULE, Config),
+    [Nodes | _] = proplists:get_value(clusters, NewConfig),
+    ok = rpc:call(hd(Nodes), gingko_app, initial_startup_nodes, [Nodes]),
+    NewConfig.
 
 end_per_suite(Config) ->
     Config.
 
 init_per_testcase(Name, Config) ->
-    ct:print("[ STARTING ] ~p", [Name]),
+    ct:pal("[ STARTING ] ~p", [Name]),
     Config.
 
 
 end_per_testcase(Name, _) ->
-    ct:print("[ OK ] ~p", [Name]),
+    ct:pal("[ OK ] ~p", [Name]),
     ok.
 
 simple_integration_test(Config) ->
-    Node = proplists:get_value(node, Config),
+    [Cluster | _] = proplists:get_value(clusters, Config),
+    Node = lists:nth(2, Cluster),
+    ct:pal("Node: ~p", [Node]),
     CurrentTime = gingko_utils:get_timestamp(),
     TxId1 = #tx_id{local_start_time = CurrentTime, server_pid = self()},
     VC1 = vectorclock:new(),
     VC2 = vectorclock:set(undefined, CurrentTime, VC1),
     ok = rpc:call(Node, gingko, begin_txn, [VC2, TxId1]),
-    {Key1, Type1, TypeOp1} = {1, antidote_crdt_counter_pn, {increment, 1}},
+    {Key1, Type1, TypeOp1} = {"Hello", antidote_crdt_counter_pn, {increment, 1}},
+    {Key2, Type2, TypeOp2} = {"There2314124refdssss", antidote_crdt_counter_pn, {increment, 1}},
     ok = rpc:call(Node, gingko, update, [{Key1, Type1}, TypeOp1, TxId1]),
+    ok = rpc:call(Node, gingko, update, [{Key2, Type2}, TypeOp2, TxId1]),
     {ok, 1} = rpc:call(Node, gingko, read, [{Key1, Type1}, TxId1]),
+    {ok, 1} = rpc:call(Node, gingko, read, [{Key2, Type2}, TxId1]),
     ok = rpc:call(Node, gingko, prepare_txn, [100, TxId1]),
     CommitTime = gingko_utils:get_timestamp() + 2,
     VC3 = vectorclock:set(undefined, CommitTime, VC2),
@@ -76,9 +84,9 @@ two_transactions(Config) ->
     ok = rpc:call(Node, gingko, begin_txn, [VC2, TxId1]),
     ok = rpc:call(Node, gingko, begin_txn, [VC3, TxId2]),
 
-    {Key1, Type1, TypeOp1} = {1, antidote_crdt_counter_pn, {increment, 1}},
+    {Key1, Type1, TypeOp1} = {"Hello", antidote_crdt_counter_pn, {increment, 1}},
     ok = rpc:call(Node, gingko, update, [{Key1, Type1}, TypeOp1, TxId1]),
-    {Key2, Type2, TypeOp2} = {1, antidote_crdt_counter_pn, {increment, 2}},
+    {Key2, Type2, TypeOp2} = {"Hello", antidote_crdt_counter_pn, {increment, 2}},
     ok = rpc:call(Node, gingko, update, [{Key2, Type2}, TypeOp2, TxId2]),
 
     {ok, 2} = rpc:call(Node, gingko, read, [{Key1, Type1}, TxId1]),

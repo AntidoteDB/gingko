@@ -32,7 +32,6 @@
     materialize_multiple_snapshots/3,
     materialize_snapshot_temporarily/2]).
 
-
 -spec separate_commit_from_update_journal_entries([journal_entry()]) -> {journal_entry(), [journal_entry()]}.
 separate_commit_from_update_journal_entries(JList) ->
     separate_commit_from_update_journal_entries(JList, []).
@@ -183,20 +182,20 @@ get_latest_valid_snapshot_vts(SortedJournalEntries, CommittedJournalEntries, Dep
     ValidSnapshotVts.
 
 -spec update_snapshot(snapshot(), downstream_op() | fun((Value :: term()) -> UpdatedValue :: term()), vectorclock(), vectorclock()) -> {ok, snapshot()} | {error, reason()}.
-update_snapshot(Snapshot, Op, CommitVts, SnapshotVts) ->
+update_snapshot(Snapshot, DownstreamOp, CommitVts, SnapshotVts) ->
     SnapshotValue = Snapshot#snapshot.value,
     Type = Snapshot#snapshot.key_struct#key_struct.type,
     IsCrdt = antidote_crdt:is_type(Type),
     case IsCrdt of
         true ->
-            {ok, Value} = Type:update(Op, SnapshotValue),
+            {ok, Value} = Type:update(DownstreamOp, SnapshotValue),
             {ok, Snapshot#snapshot{commit_vts = CommitVts, snapshot_vts = SnapshotVts, value = Value}};
         false ->
             try
-                {ok, Snapshot#snapshot{commit_vts = CommitVts, snapshot_vts = SnapshotVts, value = Op(SnapshotValue)}}
+                {ok, Snapshot#snapshot{commit_vts = CommitVts, snapshot_vts = SnapshotVts, value = DownstreamOp(SnapshotValue)}}
             catch
                 _:_ ->
-                    {error, {"Invalid Operation on Value", Snapshot, Op, CommitVts, SnapshotVts}}
+                    {error, {"Invalid Operation on Value", Snapshot, DownstreamOp, CommitVts, SnapshotVts}}
             end
     end.
 

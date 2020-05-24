@@ -20,12 +20,21 @@
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
 -include("gingko.hrl").
 
-%% API
--export([add_journal_entry/2, add_or_update_checkpoint_entry/1, read_journal_entry/2, read_checkpoint_entry/2, read_all_journal_entries/1, match_journal_entries/2, read_journal_entries_with_tx_id/2, persist_journal_entries/1, clear_journal_entries/1, read_all_journal_entries_sorted/1, read_journal_entries_with_tx_id_sorted/2]).
+-export([add_journal_entry/2,
+    add_or_update_checkpoint_entry/1,
+    read_journal_entry/2,
+    read_checkpoint_entry/2,
+    read_all_journal_entries/1,
+    match_journal_entries/2,
+    read_journal_entries_with_tx_id/2,
+    persist_journal_entries/1,
+    clear_journal_entries/1,
+    read_all_journal_entries_sorted/1,
+    read_journal_entries_with_tx_id_sorted/2]).
 
 -spec persist_journal_entries(atom()) -> {atomic, ok} | {aborted, reason()}.
 persist_journal_entries(TableName) ->
-    {atomic, ok} = mnesia:dump_tables([TableName]).
+    mnesia:dump_tables([TableName]).
 
 -spec clear_journal_entries(atom()) -> {atomic, ok} | {aborted, reason()}.
 clear_journal_entries(TableName) ->

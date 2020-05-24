@@ -43,7 +43,7 @@
     restart_nodes/2,
     partition_cluster/2,
     heal_cluster/2,
-    set_up_clusters_common/1,
+    set_up_clusters_common/2,
     unpack/1
 ]).
 
@@ -62,31 +62,28 @@
 %% Common Test Initialization
 %% ===========================================
 
+-spec init_single_dc(atom(), ct_config()) -> ct_config().
 init_single_dc(Suite, Config) ->
-    ct:pal("[~p]", [Suite]),
+    ct:pal("Initializing [~p] (Single-DC)", [Suite]),
     at_init_testsuite(),
-
-    StartDCs = fun(Nodes) ->
-        general_utils:parallel_map(fun(N) -> {_Status, Node} = start_node(N, Config), Node end, Nodes)
-               end,
-    [Nodes] = general_utils:parallel_map( fun(N) -> StartDCs(N) end, [[dev1]] ),
-    [Node] = Nodes,
-
-    [{clusters, [Nodes]} | [{nodes, Nodes} | [{node, Node} | Config]]].
-
-
-init_multi_dc(Suite, Config) ->
-    ct:pal("[~p]", [Suite]),
-
-    at_init_testsuite(),
-    Clusters = set_up_clusters_common([{suite_name, ?MODULE} | Config]),
+    ClusterConfiguration = [[dev1, dev2]],%, dev3, dev4, dev5, dev6, dev7, dev8]],
+    Clusters = set_up_clusters_common([{suite_name, ?MODULE} | Config], ClusterConfiguration),
     Nodes = hd(Clusters),
-    [{clusters, Clusters} | [{nodes, Nodes} | Config]].
+    [{clusters, [Nodes]} | [{nodes, Nodes} | [{node, hd(Nodes)} | Config]]].
+
+-spec init_multi_dc(atom(), ct_config()) -> ct_config().
+init_multi_dc(Suite, Config) ->
+    ct:pal("Initializing [~p] (Multi-DC)", [Suite]),
+    at_init_testsuite(),
+    ClusterConfiguration = [[dev1, dev2, dev3, dev4, dev5, dev6, dev7, dev8], [dev9, dev10, dev11, dev12, dev13, dev14, dev15], [dev16, dev17, dev18, dev19, dev20]],
+    Clusters = set_up_clusters_common([{suite_name, ?MODULE} | Config], ClusterConfiguration),
+    Nodes = hd(Clusters),
+    [{clusters, Clusters} | [{nodes, Nodes} | [{node, hd(Nodes)} | Config]]].
 
 
 at_init_testsuite() ->
     {ok, Hostname} = inet:gethostname(),
-    case net_kernel:start([list_to_atom("runner@"++Hostname), shortnames]) of
+    case net_kernel:start([list_to_atom("runner@" ++ Hostname), shortnames]) of
         {ok, _} -> ok;
         {error, {already_started, _}} -> ok;
         {error, {{already_started, _}, _}} -> ok
@@ -97,6 +94,7 @@ at_init_testsuite() ->
 %% Node utilities
 %% ===========================================
 
+-spec start_node(atom(), ct_config()) -> {connect | ready, node()}.
 start_node(Name, Config) ->
     %% code path for compiled dependencies (ebin folders)
     {ok, Cwd} = file:get_cwd(),
@@ -115,7 +113,7 @@ start_node(Name, Config) ->
         {monitor_master, true},
 
         %% set code path for dependencies
-        {startup_functions, [ {code, set_path, [CodePath]} ]}],
+        {startup_functions, [{code, set_path, [CodePath]}]}],
     case ct_slave:start(Name, NodeConfig) of
         {ok, Node} ->
             % load application to allow for configuring the environment before starting
@@ -155,12 +153,11 @@ start_node(Name, Config) ->
             %% reduce number of actual log files created to 4, reduces start-up time of node
             ok = rpc:call(Node, application, set_env, [riak_core, ring_creation_size, 4]),
             {ok, _} = rpc:call(Node, application, ensure_all_started, [?GINGKO_APP_NAME]),
-            ok = rpc:call(Node, gingko_app, initial_startup_nodes, [[Node]]),
             ct:pal("Node ~p started", [Node]),
 
             {connect, Node};
         {error, already_started, Node} ->
-            ct:log("Node ~p already started, reusing node", [Node]),
+            ct:pal("Node ~p already started, reusing node", [Node]),
             {ready, Node};
         {error, Reason, Node} ->
             ct:pal("Error starting node ~w, reason ~w, will retry", [Node, Reason]),
@@ -187,34 +184,31 @@ kill_nodes(NodeList) ->
 -spec brutal_kill_nodes([node()]) -> [node()].
 brutal_kill_nodes(NodeList) ->
     lists:map(fun(Node) ->
-                  ct:pal("Killing node ~p", [Node]),
-                  OSPidToKill = rpc:call(Node, os, getpid, []),
-                  %% try a normal kill first, but set a timer to
-                  %% kill -9 after X seconds just in case
+        ct:pal("Killing node ~p", [Node]),
+        OSPidToKill = rpc:call(Node, os, getpid, []),
+        %% try a normal kill first, but set a timer to
+        %% kill -9 after X seconds just in case
 %%                  rpc:cast(Node, timer, apply_after,
 %%                      [?FORCE_KILL_TIMER, os, cmd, [io_lib:format("kill -9 ~s", [OSPidToKill])]]),
-                  ct_slave:stop(get_node_name(Node)),
-                  rpc:cast(Node, os, cmd, [io_lib:format("kill -15 ~s", [OSPidToKill])]),
-                  Node
+        ct_slave:stop(get_node_name(Node)),
+        rpc:cast(Node, os, cmd, [io_lib:format("kill -15 ~s", [OSPidToKill])]),
+        Node
               end, NodeList).
 
 
 %% @doc Restart nodes with given configuration
--spec restart_nodes([node()], [tuple()]) -> [node()].
+-spec restart_nodes([node()], ct_config()) -> [node()].
 restart_nodes(NodeList, Config) ->
-    general_utils:parallel_map(fun(Node) ->
-        ct:pal("Restarting node ~p", [Node]),
+    general_utils:parallel_map(
+        fun(Node) ->
+            ct:pal("Restarting node ~p", [Node]),
 
-        ct:log("Starting and waiting until vnodes are restarted at node ~w", [Node]),
-        start_node(get_node_name(Node), Config),
+            ct:log("Starting and waiting until vnodes are restarted at node ~w", [Node]),
+            start_node(get_node_name(Node), Config),
 
-        ct:log("Waiting until ring converged @ ~p", [Node]),
-        riak_utils:wait_until_ring_converged([Node]),
-
-        ct:log("Waiting until ready @ ~p", [Node]),
-        time_utils:wait_until(Node, fun wait_init:check_ready/1),
-        Node
-         end, NodeList).
+            ct:log("Waiting until ring converged @ ~p", [Node]),
+            riak_utils:wait_until_ring_converged([Node])
+        end, NodeList).
 
 
 %% @doc Convert node to node atom
@@ -224,72 +218,84 @@ get_node_name(NodeAtom) ->
     {match, [{Pos, _Len}]} = re:run(Node, "@"),
     list_to_atom(string:substr(Node, 1, Pos)).
 
+-spec partition_cluster([node()], [node()]) -> ok.
 partition_cluster(ANodes, BNodes) ->
     general_utils:parallel_map(fun({Node1, Node2}) ->
-                true = rpc:call(Node1, erlang, set_cookie, [Node2, canttouchthis]),
-                true = rpc:call(Node1, erlang, disconnect_node, [Node2]),
-                ok = time_utils:wait_until_disconnected(Node1, Node2)
-        end,
-         [{Node1, Node2} || Node1 <- ANodes, Node2 <- BNodes]),
+        true = rpc:call(Node1, erlang, set_cookie, [Node2, canttouchthis]),
+        true = rpc:call(Node1, erlang, disconnect_node, [Node2]),
+        ok = time_utils:wait_until_disconnected(Node1, Node2)
+                               end,
+        [{Node1, Node2} || Node1 <- ANodes, Node2 <- BNodes]),
     ok.
 
-
+-spec heal_cluster([node()], [node()]) -> ok.
 heal_cluster(ANodes, BNodes) ->
     GoodCookie = erlang:get_cookie(),
     general_utils:parallel_map(fun({Node1, Node2}) ->
-                true = rpc:call(Node1, erlang, set_cookie, [Node2, GoodCookie]),
-                ok = time_utils:wait_until_connected(Node1, Node2)
-        end,
-         [{Node1, Node2} || Node1 <- ANodes, Node2 <- BNodes]),
+        true = rpc:call(Node1, erlang, set_cookie, [Node2, GoodCookie]),
+        ok = time_utils:wait_until_connected(Node1, Node2)
+                               end,
+        [{Node1, Node2} || Node1 <- ANodes, Node2 <- BNodes]),
     ok.
 
 
 %% Build clusters for all test suites.
-set_up_clusters_common(Config) ->
-    ClusterAndDcConfiguration = [[dev1, dev2], [dev3], [dev4]],
+-spec set_up_clusters_common(ct_config(), ClusterConfiguration :: [[atom()]]) -> [[node()]].
+set_up_clusters_common(Config, ClusterConfiguration) ->
+    StartClusterFunc =
+        fun(Nodes) ->
+            %% start each node
+            Cluster = general_utils:parallel_map(
+                fun(Node) ->
+                    start_node(Node, Config)
+                end,
+                Nodes),
+            [{Status, Claimant} | OtherNodes] = Cluster,
 
-    StartDCs = fun(Nodes) ->
-        %% start each node
-        Cl = general_utils:parallel_map(fun(N) ->
-            start_node(N, Config)
-                  end,
-            Nodes),
-        [{Status, Claimant} | OtherNodes] = Cl,
-
-        %% check if node was reused or not
-        case Status of
-            ready -> ok;
-            connect ->
-                ct:pal("Creating a ring for claimant ~p and other nodes ~p", [Claimant, unpack(OtherNodes)]),
-                ok = rpc:call(Claimant, antidote_dc_manager, add_nodes_to_dc, [unpack(Cl)])
+            %% check if node was reused or not
+            case Status of
+                ready -> ok;
+                connect ->
+                    ct:pal("Creating a ring for claimant ~p and other nodes ~p", [Claimant, unpack(OtherNodes)]),
+                    ok = rpc:call(Claimant, inter_dc_manager, add_nodes_to_dc, [unpack(Cluster)])
+            end,
+            Cluster
         end,
-        Cl
-               end,
 
-    Clusters = general_utils:parallel_map(fun(Cluster) ->
-        StartDCs(Cluster)
-                    end, ClusterAndDcConfiguration),
+    Clusters =
+        general_utils:parallel_map(
+            fun(Cluster) ->
+                StartClusterFunc(Cluster)
+            end, ClusterConfiguration),
+    case Clusters of
+        [] -> ct:pal("No Cluster", []);
+        [SingleCluster] -> ct:pal("Single Cluster ~p", [SingleCluster]);
+        _ ->
+            %%TODO implement for gingko
+            %% DCs started, but not connected yet
+            general_utils:parallel_map(
+                fun(CurrentCluster = [{Status, MainNode} | _]) ->
+                    case Status of
+                        ready -> ok;
+                        connect ->
+                            ct:pal("~p of ~p subscribing to other external DCs", [MainNode, unpack(CurrentCluster)]),
 
-    %% DCs started, but not connected yet
-    general_utils:parallel_map(fun([{Status, MainNode} | _] = CurrentCluster) ->
-        case Status of
-            ready -> ok;
-            connect ->
-                ct:pal("~p of ~p subscribing to other external DCs", [MainNode, unpack(CurrentCluster)]),
+                            Descriptors =
+                                lists:map(
+                                    fun([{_Status, FirstNode} | _]) ->
+                                        {ok, Descriptor} = rpc:call(FirstNode, inter_dc_manager, get_connection_descriptor, []),
+                                        Descriptor
+                                    end, Clusters),
 
-                Descriptors = lists:map(fun([{_Status, FirstNode} | _]) ->
-                    {ok, Descriptor} = rpc:call(FirstNode, antidote_dc_manager, get_connection_descriptor, []),
-                    Descriptor
-                                        end, Clusters),
-
-                %% subscribe to descriptors of other dcs
-                ok = rpc:call(MainNode, antidote_dc_manager, subscribe_updates_from, [Descriptors])
-        end
-         end, Clusters),
+                            %% subscribe to descriptors of other dcs
+                            ok = rpc:call(MainNode, inter_dc_manager, subscribe_updates_from, [Descriptors])
+                    end
+                end, Clusters)
+    end,
 
 
-    ct:log("Clusters joined and data centers connected connected: ~p", [ClusterAndDcConfiguration]),
-    [unpack(DC) || DC <- Clusters].
+    ct:pal("Clusters joined and data centers connected connected: ~p", [ClusterConfiguration]),
+    [unpack(Cluster) || Cluster <- Clusters].
 
 
 bucket(BucketBaseAtom) ->

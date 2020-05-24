@@ -32,31 +32,34 @@
 -module(antidote_utilities).
 
 -include("gingko.hrl").
--include_lib("kernel/include/logger.hrl").
 
--export([
-    get_my_dc_id/0,
+-export([get_my_dc_id/0,
     get_my_dc_nodes/0,
-    call_vnode_sync/3,
-    bcast_vnode_sync/2,
+
     partition_to_indexnode/1,
-    call_vnode_async/3,
     get_all_partitions/0,
     get_all_partitions_nodes/0,
-    bcast_vnode_async/2,
     get_my_partitions/0,
-    ensure_all_vnodes_running/1,
-    ensure_all_vnodes_running_master/1,
     get_partitions_num/0,
-    check_registered/1,
-    check_registered_global/1,
+
+    call_vnode_async/3,
+    call_vnode_sync/3,
+    call_local_vnode_async/3,
+    call_local_vnode_sync/3,
     call_vnode_async_with_key/3,
     call_vnode_sync_with_key/3,
+    bcast_local_vnode_async/2,
+    bcast_vnode_async/2,
+    bcast_vnode_sync/2,
+
     get_key_partition/1,
     get_preflist_from_key/1,
     get_my_node/1,
-    is_ring_ready/1
-]).
+
+    check_registered/1,
+    check_registered_global/1,
+
+    is_ring_ready/1]).
 
 %% Returns the ID of the current DC.
 -spec get_my_dc_id() -> dcid().
@@ -71,11 +74,14 @@ get_my_dc_nodes() ->
     riak_core_ring:all_members(Ring).
 
 %% Returns the IndexNode tuple used by riak_core_vnode_master:command functions.
--spec partition_to_indexnode(partition_id()) -> {partition_id(), any()}.
+-spec partition_to_indexnode(partition_id()) -> {partition_id(), node()}.
 partition_to_indexnode(Partition) ->
+    {Partition, get_node_of_partition(Partition)}.
+
+-spec get_node_of_partition(partition_id()) -> node().
+get_node_of_partition(Partition) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-    Node = riak_core_ring:index_owner(Ring, Partition),
-    {Partition, Node}.
+    riak_core_ring:index_owner(Ring, Partition).
 
 %% Returns a list of all partition indices in the cluster.
 %% The partitions indices are 160-bit numbers that equally division the keyspace.
@@ -92,7 +98,7 @@ get_all_partitions() ->
         [I || {I, _} <- Nodes]
     catch
         _Ex:Res ->
-            ?LOG_DEBUG("Error loading partition names: ~p, will retry", [Res]),
+            logger:debug("Error loading partition names: ~p, will retry", [Res]),
             get_all_partitions()
     end.
 
@@ -106,7 +112,7 @@ get_all_partitions_nodes() ->
         chash:nodes(CHash)
     catch
         _Ex:Res ->
-            ?LOG_DEBUG("Error loading partition-node names ~p, will retry", [Res]),
+            logger:debug("Error loading partition-node names ~p, will retry", [Res]),
             get_all_partitions_nodes()
     end.
 
@@ -120,10 +126,6 @@ get_my_partitions() ->
 -spec get_partitions_num() -> non_neg_integer().
 get_partitions_num() -> length(get_all_partitions()).
 
-%% Sends the synchronous command to a vnode of a specified type and responsible for a specified partition number.
--spec call_vnode_sync(partition_id(), atom(), any()) -> any().
-call_vnode_sync(Partition, VMaster, Request) ->
-    riak_core_vnode_master:sync_spawn_command(partition_to_indexnode(Partition), Request, VMaster).
 
 %% Sends the asynchronous command to a vnode of a specified type and responsible for a specified partition number.
 -spec call_vnode_async(partition_id(), atom(), any()) -> ok.
@@ -131,84 +133,52 @@ call_vnode_async(Partition, VMaster, Request) ->
     riak_core_vnode_master:command(partition_to_indexnode(Partition), Request, VMaster).
 
 %% Sends the synchronous command to a vnode of a specified type and responsible for a specified partition number.
--spec call_vnode_sync_with_key(key(), atom(), any()) -> any().
-call_vnode_sync_with_key(Key, VMaster, Request) ->
-    IndexNode = antidote_utilities:get_key_partition(Key),
-    riak_core_vnode_master:sync_spawn_command(IndexNode, Request, VMaster).
+-spec call_vnode_sync(partition_id(), atom(), any()) -> any().
+call_vnode_sync(Partition, VMaster, Request) ->
+    riak_core_vnode_master:sync_spawn_command(partition_to_indexnode(Partition), Request, VMaster).
+
+%% Sends the asynchronous command to a vnode of a specified type and responsible for a specified partition number,
+%% the partition must be on the same node that the command is run on
+-spec call_local_vnode_async(partition_id(), atom(), any()) -> ok.
+call_local_vnode_async(Partition, VMaster, Request) ->
+    riak_core_vnode_master:command({Partition, node()}, Request, VMaster).
+
+-spec call_local_vnode_sync(partition_id(), atom(), any()) -> any().
+call_local_vnode_sync(Partition, VMaster, Request) ->
+    riak_core_vnode_master:sync_spawn_command({Partition, node()}, Request, VMaster).
 
 %% Sends the asynchronous command to a vnode of a specified type and responsible for a specified partition number.
 -spec call_vnode_async_with_key(key(), atom(), any()) -> ok.
 call_vnode_async_with_key(Key, VMaster, Request) ->
-    IndexNode = antidote_utilities:get_key_partition(Key),
+    IndexNode = get_key_partition(Key),
     riak_core_vnode_master:command(IndexNode, Request, VMaster).
+
+%% Sends the synchronous command to a vnode of a specified type and responsible for a specified partition number.
+-spec call_vnode_sync_with_key(key(), atom(), any()) -> any().
+call_vnode_sync_with_key(Key, VMaster, Request) ->
+    IndexNode = get_key_partition(Key),
+    riak_core_vnode_master:sync_spawn_command(IndexNode, Request, VMaster).
 
 %% Sends the same (synchronous) command to all vnodes of a given type.
 -spec bcast_vnode_sync(atom(), any()) -> [{partition_id(), term()}].
 bcast_vnode_sync(VMaster, Request) ->
-    %% TODO: check if pmap works like intended
     general_utils:parallel_map(fun(P) -> {P, call_vnode_sync(P, VMaster, Request)} end, get_all_partitions()).
+
+-spec bcast_local_vnode_async(atom(), any()) -> ok.
+bcast_local_vnode_async(VMaster, Request) ->
+    general_utils:parallel_foreach(fun(P) -> call_vnode_async(P, VMaster, Request) end, get_my_partitions()).
 
 %% Sends the same (asynchronous) command to all vnodes of a given type.
 -spec bcast_vnode_async(atom(), any()) -> ok.
 bcast_vnode_async(VMaster, Request) ->
     general_utils:parallel_foreach(fun(P) -> call_vnode_async(P, VMaster, Request) end, get_all_partitions()).
 
-%% Checks if all vnodes of a particular type are running.
-%% The method uses riak_core methods to perform the check and was
-%% shown to be unreliable in some very specific circumstances.
-%% Use with caution.
--spec ensure_all_vnodes_running(atom()) -> ok.
-ensure_all_vnodes_running(VnodeType) ->
-    Partitions = get_partitions_num(),
-    Running = length(riak_core_vnode_manager:all_vnodes(VnodeType)),
-    case Partitions == Running of
-        true -> ok;
-        false ->
-            ?LOG_DEBUG("Waiting for vnode ~p: required ~p, spawned ~p", [VnodeType, Partitions, Running]),
-            %TODO: Extract into configuration constant
-            timer:sleep(250),
-            ensure_all_vnodes_running(VnodeType)
-    end.
-
-%% Internal function that loops until a given vnode type is running
--spec bcast_vnode_check_up(atom(), {hello}, [partition_id()]) -> ok.
-bcast_vnode_check_up(_VMaster, _Request, []) ->
-    ok;
-bcast_vnode_check_up(VMaster, Request, [P | Rest]) ->
-    Err = try
-              case call_vnode_sync(P, VMaster, Request) of
-                  ok ->
-                      false;
-                  _Msg ->
-                      true
-              end
-          catch
-              _Ex:_Res ->
-                  true
-          end,
-    case Err of
-        true ->
-            ?LOG_DEBUG("Vnode not up retrying, ~p, ~p", [VMaster, P]),
-            %TODO: Extract into configuration constant
-            timer:sleep(1000),
-            bcast_vnode_check_up(VMaster, Request, [P | Rest]);
-        false ->
-            bcast_vnode_check_up(VMaster, Request, Rest)
-    end.
-
-%% Loops until all vnodes of a given type are running on all
-%% nodes in the cluster
--spec ensure_all_vnodes_running_master(atom()) -> ok.
-ensure_all_vnodes_running_master(VnodeType) ->
-    check_registered(VnodeType),
-    bcast_vnode_check_up(VnodeType, {hello}, get_all_partitions()).
-
 %% Loops until a process with the given name is registered locally
 -spec check_registered(atom()) -> ok.
 check_registered(Name) ->
     case whereis(Name) of
         undefined ->
-            ?LOG_DEBUG("Wait for ~p to register", [Name]),
+            logger:debug("Wait for ~p to register", [Name]),
             timer:sleep(100),
             check_registered(Name);
         _ ->
@@ -289,3 +259,5 @@ is_ring_ready(Node) ->
         {ok, Ring} -> riak_core_ring:ring_ready(Ring);
         _ -> false
     end.
+
+

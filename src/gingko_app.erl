@@ -21,11 +21,11 @@
 
 -module(gingko_app).
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
--include("gingko.hrl").
+-include("inter_dc_repl.hrl").
 
 -behaviour(application).
 
--export([start/2, stop/1, get_default_config/0, initial_startup_nodes/1]).
+-export([start/2, stop/1, get_default_config/0, initial_startup_nodes/1, wait_until_everything_is_running/0]).
 
 -spec(start(StartType :: normal | {takeover, node()} | {failover, node()},
     StartArgs :: term()) ->
@@ -33,21 +33,20 @@
     {ok, pid(), State :: term()} |
     {error, Reason :: term()}).
 start(_StartType, _StartArgs) ->
-    case gingko_sup:start_link() of
+    case gingko_app_sup:start_link() of
         {ok, Pid} ->
             case ?USE_SINGLE_SERVER of
                 true -> ok;
                 false ->
                     ok = riak_core:register([{vnode_module, gingko_log_vnode}]),
                     ok = riak_core_node_watcher:service_up(gingko_log, self()),
-                    ok = riak_core:register([{vnode_module, gingko_vnode}]),
-                    ok = riak_core_node_watcher:service_up(gingko, self()),
+
                     ok = riak_core:register([{vnode_module, gingko_cache_vnode}]),
-                    ok = riak_core_node_watcher:service_up(gingko_cache, self()),
-                    ok = antidote_utilities:ensure_all_vnodes_running_master(?GINGKO_VNODE_MASTER),
-                    ok = antidote_utilities:ensure_all_vnodes_running_master(?GINGKO_LOG_VNODE_MASTER),
-                    ok = antidote_utilities:ensure_all_vnodes_running_master(?GINGKO_CACHE_VNODE_MASTER)
+                    ok = riak_core_node_watcher:service_up(gingko_cache, self())
             end,
+            wait_until_everything_is_running(),
+            _IsRestart = inter_dc_manager:check_node_restart(),
+            inter_dc_manager:start_bg_processes(stable_time_functions),
             {ok, Pid};
         {error, Reason} ->
             {error, Reason}
@@ -56,6 +55,17 @@ start(_StartType, _StartArgs) ->
 -spec(stop(State :: term()) -> term()).
 stop(_State) ->
     ok.
+
+wait_until_everything_is_running() ->
+    ok = gingko_utils:ensure_gingko_instance_running(gingko_server),
+    ok = gingko_utils:ensure_gingko_instance_running(?GINGKO_LOG),
+    ok = gingko_utils:ensure_gingko_instance_running(?GINGKO_CACHE),
+    ok = gingko_utils:ensure_gingko_instance_running(zmq_context),
+    ok = gingko_utils:ensure_gingko_instance_running(inter_dc_journal_receiver),
+    ok = gingko_utils:ensure_gingko_instance_running(inter_dc_journal_sender),
+    ok = gingko_utils:ensure_gingko_instance_running(inter_dc_request_responder),
+    ok = gingko_utils:ensure_gingko_instance_running(inter_dc_request_sender),
+    ok = gingko_utils:ensure_gingko_instance_running(bcounter_manager).
 
 get_default_config() ->
     [
@@ -90,10 +100,10 @@ initial_startup_nodes(Nodes) ->
                 [] ->
                     ok = mnesia:create_schema(Nodes),
                     rpc:multicall(Nodes, application, start, [mnesia]),
-                    ok = make_sure_checkpoint_store_is_running(Nodes),
-                    [] = sets:to_list(sets:del_element(ok, sets:from_list(general_utils:get_values(gingko_utils:bcast_gingko_sync(?GINGKO_LOG, setup_journal_mnesia_table))))),
-                    TableNames = general_utils:get_values(gingko_utils:bcast_gingko_sync(?GINGKO_LOG, get_journal_mnesia_table_name)),
-                    ok = mnesia:wait_for_tables([checkpoint_entry | TableNames], 5000), %TODO error handling
+                    ok = make_sure_global_stores_are_running([dc_info_entry, checkpoint_entry], Nodes),
+                    [] = sets:to_list(sets:del_element(ok, sets:from_list(gingko_utils:bcast_gingko_sync_only_values(?GINGKO_LOG, setup_journal_mnesia_table)))),
+                    TableNames = gingko_utils:bcast_gingko_sync_only_values(?GINGKO_LOG, get_journal_mnesia_table_name),
+                    ok = mnesia:wait_for_tables([dc_info_entry, checkpoint_entry | TableNames], 5000), %TODO error handling
                     ok; %TODO setup fresh
                 _ ->
                     NodesWithoutSchema = sets:to_list(sets:subtract(sets:from_list(Nodes), sets:from_list(NodesWithSchema))),
@@ -116,7 +126,7 @@ initial_startup_nodes(Nodes) ->
                                                 [] -> ok;
                                                 _ -> add_new_nodes_to_mnesia(hd(NodesWithSchema), NodesWithoutSchema)
                                             end,
-                                            ok = make_sure_checkpoint_store_is_running(Nodes),
+                                            ok = make_sure_global_stores_are_running([dc_info_entry, checkpoint_entry], Nodes),
                                             gingko_utils:bcast_gingko_sync(?GINGKO_LOG, setup_journal_mnesia_table),
                                             ok; %TODO checkpoint setup and inform all vnodes
                                         false ->
@@ -125,10 +135,10 @@ initial_startup_nodes(Nodes) ->
                                             case PartiallyPerfect of
                                                 true ->
                                                     %TODO fix setup (partially broken mnesia cluster)
-                                                    ok;
+                                                    {error, "Broken mnesia"};
                                                 false ->
                                                     %TODO fix setup (completely broken mnesia cluster)
-                                                    ok
+                                                    {error, "Broken mnesia"}
 
                                             end
                                     end
@@ -140,41 +150,51 @@ initial_startup_nodes(Nodes) ->
 
 %%TODO maybe do check other properties of the table
 %%TODO failure testing is required to check whether this works as intended
--spec make_sure_checkpoint_store_is_running([node()]) -> ok | {error, reason()}.
-make_sure_checkpoint_store_is_running([]) -> {error, "At least one node is required!"};
-make_sure_checkpoint_store_is_running(SetupMensiaNodes) ->
+-spec make_sure_global_stores_are_running([atom()], [node()]) -> ok | {error, reason()}.
+make_sure_global_stores_are_running(_TableNames, []) -> {error, "At least one node is required!"};
+make_sure_global_stores_are_running([], _SetupMnesiaNodes) -> {error, "At least one table name is required!"};
+make_sure_global_stores_are_running(TableNames, SetupMnesiaNodes) ->
     %%TODO currently we only allow checkpoint_entry table to be disc_copies
     Tables = mnesia:system_info(tables),
-    case lists:member(checkpoint_entry, Tables) of
-        true ->
-            RamCopiesNodes = mnesia:table_info(checkpoint_entry, ram_copies),
-            DiscOnlyNodes = mnesia:table_info(checkpoint_entry, disc_only_copies),
-            lists:foreach(
-                fun(Node) ->
-                    {atomic, ok} = mnesia:change_table_copy_type(checkpoint_entry, Node, disc_copies)
-                end, RamCopiesNodes ++ DiscOnlyNodes),
-            %%TODO maybe wait_for_tables?
-            NodesWhereTableIsSetup = mnesia:table_info(checkpoint_entry, disc_copies),
-            case length(NodesWhereTableIsSetup) of
-                0 ->
-                    {atomic, ok} = mnesia:create_table(checkpoint_entry,
-                        [{attributes, record_info(fields, checkpoint_entry)},
-                            {disc_copies, SetupMensiaNodes}]);
-                _ ->
+    lists:map(
+        fun(TableName) ->
+            case lists:member(TableName, Tables) of
+                true ->
+                    RamCopiesNodes = mnesia:table_info(TableName, ram_copies),
+                    DiscOnlyNodes = mnesia:table_info(TableName, disc_only_copies),
                     lists:foreach(
                         fun(Node) ->
-                            case lists:member(Node, NodesWhereTableIsSetup) of
-                                false -> {atomic, ok} = mnesia:add_table_copy(checkpoint_entry, Node, disc_copies);
-                                true -> ok
-                            end
-                        end, SetupMensiaNodes)
-            end,
-            ok;
-        false ->
-            {atomic, ok} = mnesia:create_table(checkpoint_entry,
-                [{attributes, record_info(fields, checkpoint_entry)},
-                    {disc_copies, SetupMensiaNodes}]),
-            ok
-    end.
+                            {atomic, ok} = mnesia:change_table_copy_type(TableName, Node, disc_copies)
+                        end, RamCopiesNodes ++ DiscOnlyNodes),
+                    %%TODO maybe wait_for_tables?
+                    NodesWhereTableIsSetup = mnesia:table_info(TableName, disc_copies),
+                    case length(NodesWhereTableIsSetup) of
+                        0 ->
+                            {atomic, ok} = create_tables(SetupMnesiaNodes, TableName);
+                        _ ->
+                            lists:foreach(
+                                fun(Node) ->
+                                    case lists:member(Node, NodesWhereTableIsSetup) of
+                                        false -> {atomic, ok} = mnesia:add_table_copy(TableName, Node, disc_copies);
+                                        true -> ok
+                                    end
+                                end, SetupMnesiaNodes)
+                    end,
+                    ok;
+                false ->
+                    {atomic, ok} = create_tables(SetupMnesiaNodes, TableName),
+                    ok
+            end
+        end, TableNames).
 
-
+create_tables(SetupMnesiaNodes, TableName) ->
+    RecordInfo =
+        case TableName of
+            checkpoint_entry ->
+                record_info(fields, checkpoint_entry);
+            dc_info_entry ->
+                record_info(fields, dc_info_entry)
+        end,
+    mnesia:create_table(TableName,
+        [{attributes, RecordInfo},
+            {disc_copies, SetupMnesiaNodes}]).

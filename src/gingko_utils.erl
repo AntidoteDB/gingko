@@ -23,9 +23,16 @@
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
 -include("gingko.hrl").
 
-%% API
 -export([get_timestamp/0,
-    get_dcid/0,
+    get_my_dcid/0,
+    get_my_dc_nodes/0,
+    get_my_partitions/0,
+    get_number_of_partitions/0,
+
+    check_registered/1,
+    ensure_local_gingko_instance_running/1,
+    ensure_gingko_instance_running/1,
+
     get_DCSf_vts/0,
     get_GCSf_vts/0,
 
@@ -41,6 +48,7 @@
     create_snapshot_from_checkpoint_entry/2,
 
     create_default_value/1,
+    is_system_operation/1,
     is_system_operation/2,
     contains_system_operation/2,
 
@@ -58,8 +66,11 @@
     call_gingko_sync/3,
     call_gingko_async_with_key/3,
     call_gingko_sync_with_key/3,
+    bcast_local_gingko_async/2,
     bcast_gingko_async/2,
     bcast_gingko_sync/2,
+    bcast_gingko_sync_only_values/2,
+
     get_key_partition/1]).
 
 -spec get_timestamp() -> non_neg_integer().
@@ -67,16 +78,110 @@ get_timestamp() ->
     {Mega, Sec, Micro} = os:timestamp(),
     (Mega * 1000000 + Sec) * 1000000 + Micro. %TODO check if this is a good solution
 
--spec get_dcid() -> dcid().
-get_dcid() ->
+-spec get_my_dcid() -> dcid().
+get_my_dcid() ->
     case ?USE_SINGLE_SERVER of
-        true -> undefined;
+        true -> node();
         false -> antidote_utilities:get_my_dc_id()
+    end.
+
+-spec get_my_dc_nodes() -> [node()].
+get_my_dc_nodes() ->
+    case ?USE_SINGLE_SERVER of
+        true -> node();
+        false -> antidote_utilities:get_my_dc_nodes()
+    end.
+
+-spec get_my_partitions() -> [partition_id()].
+get_my_partitions() ->
+    case ?USE_SINGLE_SERVER of
+        true -> [0];
+        false -> antidote_utilities:get_my_partitions()
+    end.
+
+-spec get_all_partitions() -> [partition_id()].
+get_all_partitions() ->
+    case ?USE_SINGLE_SERVER of
+        true -> [0];
+        false -> antidote_utilities:get_all_partitions()
+    end.
+
+-spec get_number_of_partitions() -> non_neg_integer().
+get_number_of_partitions() ->
+    case ?USE_SINGLE_SERVER of
+        true -> 1;
+        false -> antidote_utilities:get_partitions_num()
+    end.
+
+check_registered({ServerName, VMaster}) ->
+    case ?USE_SINGLE_SERVER of
+        true ->
+            antidote_utilities:check_registered(ServerName);
+        false ->
+            antidote_utilities:check_registered(VMaster)
+    end;
+check_registered(ServerName) ->
+    antidote_utilities:check_registered(ServerName).
+
+
+ensure_local_gingko_instance_running({ServerName, VMaster}) ->
+    check_registered({ServerName, VMaster}),
+    bcast_gingko_instance_check_up({ServerName, VMaster}, get_my_partitions());
+
+ensure_local_gingko_instance_running(ServerName) ->
+    check_registered(ServerName),
+    bcast_gingko_instance_check_up(ServerName, [0]).
+
+ensure_gingko_instance_running({ServerName, VMaster}) ->
+    check_registered({ServerName, VMaster}),
+    bcast_gingko_instance_check_up({ServerName, VMaster}, get_all_partitions());
+ensure_gingko_instance_running(ServerName) ->
+    ensure_local_gingko_instance_running(ServerName).
+
+%% Internal function that loops until a given vnode type is running
+-spec bcast_gingko_instance_check_up(atom() | {atom(), atom()}, [partition_id()]) -> ok.
+bcast_gingko_instance_check_up(_, []) ->
+    ok;
+bcast_gingko_instance_check_up(InstanceTuple = {_ServerName, _VMaster}, [Partition | Rest]) ->
+    Error = try
+              case call_gingko_sync(Partition, InstanceTuple, hello) of
+                  ok -> false;
+                  _Msg -> true
+              end
+          catch
+              _Ex:_Res -> true
+          end,
+    case Error of
+        true ->
+            logger:debug("Vnode not up retrying, ~p, ~p", [InstanceTuple, Partition]),
+            %TODO: Extract into configuration constant
+            timer:sleep(1000),
+            bcast_gingko_instance_check_up(InstanceTuple, [Partition | Rest]);
+        false ->
+            bcast_gingko_instance_check_up(InstanceTuple, Rest)
+    end;
+bcast_gingko_instance_check_up(ServerName, [0]) ->
+    Error = try
+              case gen_server:call(ServerName, hello) of
+                  ok -> false;
+                  _Msg -> true
+              end
+          catch
+              _Ex:_Res -> true
+          end,
+    case Error of
+        true ->
+            logger:debug("Server not up retrying, ~p", [ServerName]),
+            %TODO: Extract into configuration constant
+            timer:sleep(1000),
+            bcast_gingko_instance_check_up(ServerName, [0]);
+        false ->
+            ok
     end.
 
 -spec get_DCSf_vts() -> vectorclock().
 get_DCSf_vts() ->
-    Vectorclocks = bcast_gingko_sync(?GINGKO_LOG, get_current_dependency_vts),
+    Vectorclocks = bcast_gingko_sync_only_values(?GINGKO_LOG, get_current_dependency_vts),
     vectorclock:min(Vectorclocks).
 
 -spec get_GCSf_vts() -> vectorclock().
@@ -155,6 +260,11 @@ create_default_value(Type) ->
         true -> Type:new();
         false -> none
     end.
+
+-spec is_system_operation(journal_entry()) -> boolean().
+is_system_operation(JournalEntry) ->
+    Operation = JournalEntry#journal_entry.operation,
+    is_record(Operation, system_operation).
 
 -spec is_system_operation(journal_entry(), OpType :: atom()) -> boolean().
 is_system_operation(JournalEntry, OpType) ->
@@ -242,10 +352,9 @@ generate_downstream_op(KeyStruct, TxId, TypeOp, TableName) ->
             case Type of
                 antidote_crdt_counter_b ->
                     %% bcounter data-type. %%TODO bcounter!
-                    %%bcounter_mgr:generate_downstream(Key, TypeOp, Snapshot);
-                    {error, "BCounter not supported for now!"};
+                    bcounter_manager:generate_downstream(KeyStruct#key_struct.key, TypeOp, Snapshot#snapshot.value);
                 _ ->
-                    Type:downstream(TypeOp, Snapshot)
+                    Type:downstream(TypeOp, Snapshot#snapshot.value)
             end
     end.
 
@@ -277,6 +386,13 @@ call_gingko_sync_with_key(Key, {ServerName, VMaster}, Request) ->
         false -> antidote_utilities:call_vnode_sync_with_key(Key, VMaster, Request)
     end.
 
+-spec bcast_local_gingko_async({atom(), atom()}, any()) -> ok.
+bcast_local_gingko_async({ServerName, VMaster}, Request) ->
+    case ?USE_SINGLE_SERVER of
+        true -> gen_server:cast(ServerName, Request);
+        false -> antidote_utilities:bcast_local_vnode_async(VMaster, Request)
+    end.
+
 %% Sends the same (asynchronous) command to all vnodes of a given type.
 -spec bcast_gingko_async({atom(), atom()}, any()) -> ok.
 bcast_gingko_async({ServerName, VMaster}, Request) ->
@@ -292,6 +408,11 @@ bcast_gingko_sync({ServerName, VMaster}, Request) ->
         true -> [{0, gen_server:call(ServerName, Request)}];
         false -> antidote_utilities:bcast_vnode_sync(VMaster, Request)
     end.
+
+%% Sends the same (synchronous) command to all vnodes of a given type.
+-spec bcast_gingko_sync_only_values({atom(), atom()}, any()) -> [term()].
+bcast_gingko_sync_only_values({ServerName, VMaster}, Request) ->
+    general_utils:get_values(bcast_gingko_sync({ServerName, VMaster}, Request)).
 
 -spec get_key_partition(term()) -> {partition_id(), node()}.
 get_key_partition(Key) ->

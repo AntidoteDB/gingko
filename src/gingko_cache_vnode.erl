@@ -19,10 +19,9 @@
 -module(gingko_cache_vnode).
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
 -include("gingko.hrl").
--include_lib("kernel/include/logger.hrl").
+-include_lib("riak_core/include/riak_core_vnode.hrl").
 -behaviour(riak_core_vnode).
 
-%% API
 -export([start_vnode/1,
     init/1,
     handle_command/3,
@@ -60,6 +59,14 @@
 }).
 -type state() :: #state{}.
 
+%%%===================================================================
+%%% Public API
+%%%===================================================================
+
+%%%===================================================================
+%%% Spawning and vnode implementation
+%%%===================================================================
+
 -spec start_vnode(integer()) -> any().
 start_vnode(I) ->
     riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
@@ -68,89 +75,64 @@ start_vnode(I) ->
 %%      The name of the Log in disk is a combination of the the word
 %%      `log' and the partition identifier.
 init([Partition]) ->
-    logger:debug("init(~nPartition: ~p~n)", [Partition]),
+    default_vnode_behaviour:init(?MODULE, [Partition]),
     TableName = general_utils:concat_and_make_atom([integer_to_list(Partition), '_journal_entry']),
     CacheConfig = [{partition, Partition}, {table_name, TableName} | gingko_app:get_default_config()],
     NewState = apply_gingko_config(#state{}, CacheConfig),
     {ok, NewState#state{key_cache_entry_dict = dict:new()}}.
 
-handle_command({hello}, _Sender, State) ->
+handle_command(Request = hello, Sender, State) ->
+    default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
     {reply, ok, State};
 
-handle_command({get, KeyStruct, DependencyVts} = Request, Sender, State) ->
-    logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
+handle_command(Request = {get, KeyStruct, DependencyVts}, Sender, State) ->
+    default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
     {Reply, NewState} = get(KeyStruct, DependencyVts, State),
     {reply, Reply, NewState};
 
-handle_command({update_cache_config, CacheConfig} = Request, Sender, State) ->
-    logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
+handle_command(Request = {update_cache_config, CacheConfig}, Sender, State) ->
+    default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
     {Reply, NewState} = {ok, apply_gingko_config(State, CacheConfig)},
     {reply, Reply, NewState};
 
-handle_command({checkpoint_cache_cleanup, CheckpointVts} = Request, Sender, State) ->
-    logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
+handle_command(Request = {checkpoint_cache_cleanup, CheckpointVts}, Sender, State) ->
+    default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
     {Reply, NewState} = {ok, clean_up_cache_after_checkpoint(State, CheckpointVts)},
     {reply, Reply, NewState};
 
-handle_command(Request, Sender, State) ->
-    logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
-    {noreply, State}.
+handle_command(Request, Sender, State) -> default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State).
+handoff_starting(TargetNode, State) -> default_vnode_behaviour:handoff_starting(?MODULE, TargetNode, State).
+handoff_cancelled(State) -> default_vnode_behaviour:handoff_cancelled(?MODULE, State).
+handoff_finished(TargetNode, State) -> default_vnode_behaviour:handoff_finished(?MODULE, TargetNode, State).
 
-handoff_starting(TargetNode, State) ->
-    logger:debug("handoff_starting(~nTargetNode: ~p~nState: ~p~n)", [TargetNode, State]),
-    {true, State}.
+handle_handoff_command(Request = #riak_core_fold_req_v2{foldfun = VisitFun, acc0 = Acc0}, Sender, State) ->
+    %%TODO
+    default_vnode_behaviour:handle_handoff_command(?MODULE, Request, Sender, State),
+    {reply, ok, State};
 
-handoff_cancelled(State) ->
-    logger:debug("handoff_cancelled(~nState: ~p~n)", [State]),
-    {ok, State}.
-
-handoff_finished(TargetNode, State) ->
-    logger:debug("handoff_finished(~nTargetNode: ~p~nState: ~p~n)", [TargetNode, State]),
-    {ok, State}.
-
-handle_handoff_command(Request, Sender, State) ->
-    logger:debug("handle_handoff_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
-    {noreply, State}.
+handle_handoff_command(Request, Sender, State) -> default_vnode_behaviour:handle_handoff_command(?MODULE, Request, Sender, State).
 
 handle_handoff_data(BinaryData, State) ->
-    logger:debug("handle_handoff_data(~nData: ~p~nState: ~p~n)", [binary_to_term(BinaryData), State]),
+    default_vnode_behaviour:handle_handoff_data(?MODULE, BinaryData, State),
+    %%TODO
     {reply, ok, State}.
 
-encode_handoff_item(Key, Value) ->
-    logger:debug("encode_handoff_item(~nKey: ~p~nValue: ~p~n)", [Key, Value]),
-    term_to_binary({Key, Value}).
+encode_handoff_item(Key, Value) -> default_vnode_behaviour:encode_handoff_item(?MODULE, Key, Value).
 
 is_empty(State) ->
-    logger:debug("is_empty(~nState: ~p~n)", [State]),
+    default_vnode_behaviour:is_empty(?MODULE, State),
+    %%TODO
     {true, State}.
 
-terminate(Reason, State) ->
-    logger:debug("terminate(~nReason: ~p~nState: ~p~n)", [Reason, State]),
-    ok.
-
-delete(State) ->
-    logger:debug("delete(~nRequest: ~p~n)", [State]),
-    {ok, State}.
-
-handle_info(Request, State) ->
-    logger:debug("handle_info(~nRequest: ~p~nState: ~p~n)", [Request, State]),
-    {ok, State}.
-
-handle_exit(Pid, Reason, State) ->
-    logger:debug("handle_exit(~nPid: ~p~nReason: ~p~nState: ~p~n)", [Pid, Reason, State]),
-    {noreply, State}.
-
+terminate(Reason, State) -> default_vnode_behaviour:terminate(?MODULE, Reason, State).
+delete(State) -> default_vnode_behaviour:delete(?MODULE, State).
+handle_info(Request, State) -> default_vnode_behaviour:handle_info(?MODULE, Request, State).
+handle_exit(Pid, Reason, State) -> default_vnode_behaviour:handle_exit(?MODULE, Pid, Reason, State).
 handle_coverage(Request, KeySpaces, Sender, State) ->
-    logger:debug("handle_coverage(~nRequest: ~p~nKeySpaces: ~p~nSender: ~p~nState: ~p~n)", [Request, KeySpaces, Sender, State]),
-    {stop, not_implemented, State}.
-
+    default_vnode_behaviour:handle_coverage(?MODULE, Request, KeySpaces, Sender, State).
 handle_overload_command(Request, Sender, Partition) ->
-    logger:debug("handle_overload_command(~nRequest: ~p~nSender: ~p~nPartition: ~p~n)", [Request, Sender, Partition]),
-    ok.
-
-handle_overload_info(Request, Partition) ->
-    logger:debug("handle_overload_info(~nRequest: ~p~nPartition: ~p~n)", [Request, Partition]),
-    ok.
+    default_vnode_behaviour:handle_overload_command(?MODULE, Request, Sender, Partition).
+handle_overload_info(Request, Partition) -> default_vnode_behaviour:handle_overload_info(?MODULE, Request, Partition).
 
 %%%===================================================================
 %%% Internal functions
@@ -372,7 +354,7 @@ fifo_evict(CacheDict, CurrentOccupancy, TargetThreshold) ->
             fun(C, {OccIn, Dict}) ->
                 case OccIn =< TargetThreshold orelse C#cache_entry.usage#cache_usage.used of
                     true ->
-                        {OccIn, general_utils:add_to_value_list_or_create_single_value_list(Dict, C#cache_entry.key_struct, C)};
+                        {OccIn, general_utils:add_to_value_list_or_create_single_value_list(C#cache_entry.key_struct, C, Dict)};
                     false -> {OccIn - 1, Dict}
                 end
             end, {CurrentOccupancy, dict:new()}, SortedByFirstUsage),
@@ -392,7 +374,7 @@ lru_evict(CacheDict, CurrentOccupancy, TargetThreshold) ->
             fun(C, {OccIn, Dict}) ->
                 case OccIn =< TargetThreshold orelse C#cache_entry.usage#cache_usage.used of
                     true ->
-                        {OccIn, general_utils:add_to_value_list_or_create_single_value_list(Dict, C#cache_entry.key_struct, C)};
+                        {OccIn, general_utils:add_to_value_list_or_create_single_value_list(C#cache_entry.key_struct, C, Dict)};
                     false -> {OccIn - 1, Dict}
                 end
             end, {CurrentOccupancy, dict:new()}, SortedByFirstUsage),
@@ -412,7 +394,7 @@ lfu_evict(CacheDict, CurrentOccupancy, TargetThreshold) ->
             fun(C, {OccIn, Dict}) ->
                 case OccIn =< TargetThreshold orelse C#cache_entry.usage#cache_usage.used of
                     true ->
-                        {OccIn, general_utils:add_to_value_list_or_create_single_value_list(Dict, C#cache_entry.key_struct, C)};
+                        {OccIn, general_utils:add_to_value_list_or_create_single_value_list(C#cache_entry.key_struct, C, Dict)};
                     false -> {OccIn - 1, Dict}
                 end
             end, {CurrentOccupancy, dict:new()}, SortedByFirstUsage),
