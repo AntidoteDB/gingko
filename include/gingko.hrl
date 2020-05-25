@@ -13,6 +13,8 @@
 -define(ZMQ_TIMEOUT, 5000).
 -define(NUM_W, 2).
 -define(NUM_R, 2).
+-define(JOURNAL_PORT_NAME, journal_port).
+-define(REQUEST_PORT_NAME, request_port).
 -define(DEFAULT_JOURNAL_PORT, 8086).
 -define(DEFAULT_REQUEST_PORT, 8085).
 %% Allow read concurrency on shared ets tables

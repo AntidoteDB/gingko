@@ -144,13 +144,13 @@ bcast_gingko_instance_check_up(_, []) ->
     ok;
 bcast_gingko_instance_check_up(InstanceTuple = {_ServerName, _VMaster}, [Partition | Rest]) ->
     Error = try
-              case call_gingko_sync(Partition, InstanceTuple, hello) of
-                  ok -> false;
-                  _Msg -> true
-              end
-          catch
-              _Ex:_Res -> true
-          end,
+                case call_gingko_sync(Partition, InstanceTuple, hello) of
+                    ok -> false;
+                    _Msg -> true
+                end
+            catch
+                _Ex:_Res -> true
+            end,
     case Error of
         true ->
             logger:debug("Vnode not up retrying, ~p, ~p", [InstanceTuple, Partition]),
@@ -162,13 +162,13 @@ bcast_gingko_instance_check_up(InstanceTuple = {_ServerName, _VMaster}, [Partiti
     end;
 bcast_gingko_instance_check_up(ServerName, [0]) ->
     Error = try
-              case gen_server:call(ServerName, hello) of
-                  ok -> false;
-                  _Msg -> true
-              end
-          catch
-              _Ex:_Res -> true
-          end,
+                case gen_server:call(ServerName, hello) of
+                    ok -> false;
+                    _Msg -> true
+                end
+            catch
+                _Ex:_Res -> true
+            end,
     case Error of
         true ->
             logger:debug("Server not up retrying, ~p", [ServerName]),
@@ -332,30 +332,23 @@ generate_downstream_op(KeyStruct, TxId, TypeOp, TableName) ->
     %% TODO: Check if read can be omitted for some types as registers
     Type = KeyStruct#key_struct.type,
     NeedState = Type:require_state_downstream(TypeOp),
-    Result =
-        %% If state is needed to generate downstream, read it from the partition.
+    %% If state is needed to generate downstream, read it from the partition.
     case NeedState of
         true ->
             case gingko_log_vnode:perform_tx_read(KeyStruct, TxId, TableName) of
-                {ok, S} ->
-                    S;
+                {ok, Snapshot} ->
+                    case Type of
+                        antidote_crdt_counter_b ->
+                            %% bcounter data-type. %%TODO bcounter!
+                            bcounter_manager:generate_downstream(KeyStruct#key_struct.key, TypeOp, Snapshot#snapshot.value);
+                        _ ->
+                            Type:downstream(TypeOp, Snapshot#snapshot.value)
+                    end;
                 {error, Reason} ->
                     {error, {gen_downstream_read_failed, Reason}}
             end;
         false ->
-            {ok, ignore} %Use a dummy value
-    end,
-    case Result of
-        {error, R} ->
-            {error, R}; %% {error, Reason} is returned here.
-        Snapshot ->
-            case Type of
-                antidote_crdt_counter_b ->
-                    %% bcounter data-type. %%TODO bcounter!
-                    bcounter_manager:generate_downstream(KeyStruct#key_struct.key, TypeOp, Snapshot#snapshot.value);
-                _ ->
-                    Type:downstream(TypeOp, Snapshot#snapshot.value)
-            end
+            Type:downstream(TypeOp, ignore) %Use a dummy value
     end.
 
 -spec call_gingko_async(partition_id(), {atom(), atom()}, any()) -> ok.

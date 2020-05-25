@@ -67,7 +67,8 @@ start_link() ->
 
 init([]) ->
     default_gen_server_behaviour:init(?MODULE, []),
-    {ok, #state{zmq_context = erlzmq:context()}}.
+    {ok, ZmqContext} = erlzmq:context(),
+    {ok, #state{zmq_context = ZmqContext}}.
 
 handle_call(Request = hello, From, State) ->
     default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),

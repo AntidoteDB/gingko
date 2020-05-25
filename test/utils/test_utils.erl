@@ -66,7 +66,11 @@
 init_single_dc(Suite, Config) ->
     ct:pal("Initializing [~p] (Single-DC)", [Suite]),
     at_init_testsuite(),
-    ClusterConfiguration = [[dev1, dev2]],%, dev3, dev4, dev5, dev6, dev7, dev8]],
+    ClusterConfiguration =
+        case ?USE_SINGLE_SERVER of
+            true -> [[dev1]];
+            false -> [[dev1, dev2, dev3]]%, dev3, dev4, dev5, dev6, dev7, dev8]],
+        end,
     Clusters = set_up_clusters_common([{suite_name, ?MODULE} | Config], ClusterConfiguration),
     Nodes = hd(Clusters),
     [{clusters, [Nodes]} | [{nodes, Nodes} | [{node, hd(Nodes)} | Config]]].
@@ -132,6 +136,10 @@ start_node(Name, Config) ->
             ok = rpc:call(Node, application, set_env, [riak_core, schema_dirs, [GingkoFolder ++ "/_build/default/rel/gingko_app/lib/"]]),
             ok = rpc:call(Node, application, set_env, [mnesia, dir, filename:join([NodeWorkingDir, Node, "gingko_data"])]),
 
+            Port = web_ports(Name),
+            ok = rpc:call(Node, application, set_env, [?GINGKO_APP_NAME, ?REQUEST_PORT_NAME, Port]),
+            ok = rpc:call(Node, application, set_env, [?GINGKO_APP_NAME, ?JOURNAL_PORT_NAME, Port + 1]),
+            ok = rpc:call(Node, application, set_env, [riak_core, handoff_port, Port + 3]),
 
             %% LOGGING Configuration
             %% add additional logging handlers to ensure easy access to remote node logs
@@ -166,6 +174,20 @@ start_node(Name, Config) ->
             start_node(Name, Config)
     end.
 
+web_ports(dev1) -> 10015;
+web_ports(dev2) -> 10025;
+web_ports(dev3) -> 10035;
+web_ports(dev4) -> 10045;
+web_ports(dev5) -> 10015;
+web_ports(dev6) -> 10025;
+web_ports(dev7) -> 10035;
+web_ports(dev8) -> 10045;
+web_ports(clusterdev1) -> 10115;
+web_ports(clusterdev2) -> 10125;
+web_ports(clusterdev3) -> 10135;
+web_ports(clusterdev4) -> 10145;
+web_ports(clusterdev5) -> 10155;
+web_ports(clusterdev6) -> 10165.
 
 %% @doc Forces shutdown of nodes and restarts them again with given configuration
 -spec kill_and_restart_nodes([node()], [tuple()]) -> [node()].

@@ -51,22 +51,22 @@ get_ip_list_without_local_ip() ->
 
 -spec get_request_address() -> socket_address().
 get_request_address() ->
-    Port = application:get_env(gingko, request_port, ?DEFAULT_REQUEST_PORT),
+    Port = application:get_env(?GINGKO_APP_NAME, ?REQUEST_PORT_NAME, ?DEFAULT_REQUEST_PORT),
     {get_ip(), Port}.
 
 -spec get_request_address_list() -> [socket_address()].
 get_request_address_list() ->
-    Port = application:get_env(gingko, request_port, ?DEFAULT_REQUEST_PORT),
+    Port = application:get_env(?GINGKO_APP_NAME, ?REQUEST_PORT_NAME, ?DEFAULT_REQUEST_PORT),
     [{Ip, Port} || Ip <- get_ip_list_without_local_ip()].
 
 -spec get_journal_address() -> socket_address().
 get_journal_address() ->
-    Port = application:get_env(gingko, journal_port, ?DEFAULT_JOURNAL_PORT),
+    Port = application:get_env(?GINGKO_APP_NAME, ?JOURNAL_PORT_NAME, ?DEFAULT_JOURNAL_PORT),
     {get_ip(), Port}.
 
 -spec get_journal_address_list() -> [socket_address()].
 get_journal_address_list() ->
-    Port = application:get_env(gingko, journal_port, ?DEFAULT_JOURNAL_PORT),
+    Port = application:get_env(?GINGKO_APP_NAME, ?JOURNAL_PORT_NAME, ?DEFAULT_JOURNAL_PORT),
     [{Ip, Port} || Ip <- get_ip_list_without_local_ip()].
 
 -spec pad(non_neg_integer(), binary()) -> binary().

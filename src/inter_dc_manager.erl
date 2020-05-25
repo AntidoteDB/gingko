@@ -54,9 +54,15 @@ create_dc(Nodes) -> add_nodes_to_dc(Nodes).
 -spec add_nodes_to_dc([node()]) -> ok | {error, ring_not_ready}.
 add_nodes_to_dc(Nodes) ->
     %% check if ring is ready first
-    case riak_core_ring:ring_ready() of
-        true -> join_new_nodes(Nodes);
-        _ -> {error, ring_not_ready}
+    case ?USE_SINGLE_SERVER of
+        true -> gingko_app:initial_startup_nodes(Nodes);
+        false ->
+            case riak_core_ring:ring_ready() of
+                true ->
+                    ok = gingko_app:initial_startup_nodes(Nodes),
+                    join_new_nodes(Nodes);
+                _ -> {error, ring_not_ready}
+            end
     end.
 
 
@@ -146,8 +152,9 @@ wait_until_ring_ready(Node) ->
 -spec subscribe_updates_from([descriptor()]) -> ok.
 subscribe_updates_from(DCDescriptors) ->
     _Connected = connect_to_remote_dcs(DCDescriptors),
+    inter_dc_meta_data_manager:start_dc(),
     %%TODO Check return for errors
-    ok = dc_successfully_started(),
+    true = dc_successfully_started(),
     ok.
 
 -spec get_descriptor() -> descriptor().
@@ -198,7 +205,7 @@ connect_nodes_to_remote_dc(_Nodes, Descriptor, 0) ->
 connect_nodes_to_remote_dc([Node | Rest], Descriptor = #descriptor{dcid = DCID, journal_dc_address_list = JournalDcAddressList, request_dc_address_list = RequestDcAddressList}, Retries) ->
     case rpc:call(Node, inter_dc_request_sender, add_dc, [DCID, RequestDcAddressList], ?COMM_TIMEOUT) of
         ok ->
-            case rpc:call(Node, inter_dc_journal_receiver, add_dc, [DCID, JournalDcAddressList], ?COMM_TIMEOUT) of
+            case rpc:call(Node, inter_dc_txn_receiver, add_dc, [DCID, JournalDcAddressList], ?COMM_TIMEOUT) of
                 ok ->
                     connect_nodes_to_remote_dc(Rest, Descriptor, ?DC_CONNECT_RETRIES);
                 _ ->
@@ -227,15 +234,6 @@ check_node_restart() ->
         true ->
             logger:info("This node was previously configured, will restart from previous config"),
             MyNode = node(),
-            %% Ensure vnodes are running and meta_data
-            ok = gingko_utils:ensure_local_gingko_instance_running(?GINGKO_LOG),
-            ok = gingko_utils:ensure_local_gingko_instance_running(?GINGKO_CACHE),
-            ok = gingko_utils:check_registered(inter_dc_query_receive_socket),
-            ok = gingko_utils:check_registered(inter_dc_sub),
-            ok = gingko_utils:check_registered(inter_dc_pub),
-            ok = gingko_utils:check_registered(inter_dc_query_response_sup),
-            ok = gingko_utils:check_registered(inter_dc_query),
-            ok = gingko_utils:check_registered(zmq_context),
             %% Reconnect this node to other DCs
             OtherDCs = inter_dc_meta_data_manager:get_dc_descriptors(),
             Responses3 = reconnect_dcs_after_restart(OtherDCs, MyNode),
@@ -279,7 +277,7 @@ forget_dc(#descriptor{dcid = DCID}, Nodes) ->
         false ->
             logger:notice("Forgetting DC ~p", [DCID]),
             lists:foreach(fun(Node) -> ok = rpc:call(Node, inter_dc_request_sender, delete_dc, [DCID]) end, Nodes),
-            lists:foreach(fun(Node) -> ok = rpc:call(Node, inter_dc_journal_receiver, delete_dc, [DCID]) end, Nodes)
+            lists:foreach(fun(Node) -> ok = rpc:call(Node, inter_dc_txn_receiver, delete_dc, [DCID]) end, Nodes)
     end.
 
 -spec forget_dcs([descriptor()]) -> ok.

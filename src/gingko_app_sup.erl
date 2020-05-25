@@ -43,17 +43,19 @@ init(_Args) ->
             false ->
                 {?VNODE(?GINGKO_LOG_VNODE_MASTER, gingko_log_vnode), ?VNODE(?GINGKO_CACHE_VNODE_MASTER, gingko_cache_vnode)}
         end,
+    InterDcTxnManager = ?CHILD(inter_dc_txn_manager, worker, []),
     BCounterManager = ?CHILD(bcounter_manager, worker, []),
 
     ZMQContextManager = ?CHILD(zmq_context, worker, []),
-    InterDcJournalSender = ?CHILD(inter_dc_journal_sender, worker, []),
-    InterDcJournalReceiver = ?CHILD(inter_dc_journal_receiver, worker, []),
+    InterDcJournalSender = ?CHILD(inter_dc_txn_sender, worker, []),
+    InterDcJournalReceiver = ?CHILD(inter_dc_txn_receiver, worker, []),
     InterDcRequestSender = ?CHILD(inter_dc_request_sender, worker, []),
     InterDcRequestResponder = ?CHILD(inter_dc_request_responder, worker, []),
 
     SupFlags = #{strategy => one_for_one, intensity => 5, period => 10},
     {ok, {SupFlags, [
         GingkoMaster,
+        InterDcTxnManager,
         GingkoLogMaster,
         GingkoCacheMaster,
         ZMQContextManager,

@@ -37,7 +37,6 @@ all() ->
 init_per_suite(Config) ->
     NewConfig = test_utils:init_single_dc(?MODULE, Config),
     [Nodes | _] = proplists:get_value(clusters, NewConfig),
-    ok = rpc:call(hd(Nodes), gingko_app, initial_startup_nodes, [Nodes]),
     NewConfig.
 
 end_per_suite(Config) ->
@@ -54,7 +53,7 @@ end_per_testcase(Name, _) ->
 
 simple_integration_test(Config) ->
     [Cluster | _] = proplists:get_value(clusters, Config),
-    Node = lists:nth(2, Cluster),
+    Node = lists:nth(1, Cluster),
     ct:pal("Node: ~p", [Node]),
     CurrentTime = gingko_utils:get_timestamp(),
     TxId1 = #tx_id{local_start_time = CurrentTime, server_pid = self()},

@@ -45,8 +45,8 @@ start(_StartType, _StartArgs) ->
                     ok = riak_core_node_watcher:service_up(gingko_cache, self())
             end,
             wait_until_everything_is_running(),
-            _IsRestart = inter_dc_manager:check_node_restart(),
-            inter_dc_manager:start_bg_processes(stable_time_functions),
+
+            %%TODO solve restart test _IsRestart = inter_dc_manager:check_node_restart(),
             {ok, Pid};
         {error, Reason} ->
             {error, Reason}
@@ -58,11 +58,12 @@ stop(_State) ->
 
 wait_until_everything_is_running() ->
     ok = gingko_utils:ensure_gingko_instance_running(gingko_server),
+    ok = gingko_utils:ensure_gingko_instance_running(inter_dc_txn_manager),
     ok = gingko_utils:ensure_gingko_instance_running(?GINGKO_LOG),
     ok = gingko_utils:ensure_gingko_instance_running(?GINGKO_CACHE),
     ok = gingko_utils:ensure_gingko_instance_running(zmq_context),
-    ok = gingko_utils:ensure_gingko_instance_running(inter_dc_journal_receiver),
-    ok = gingko_utils:ensure_gingko_instance_running(inter_dc_journal_sender),
+    ok = gingko_utils:ensure_gingko_instance_running(inter_dc_txn_receiver),
+    ok = gingko_utils:ensure_gingko_instance_running(inter_dc_txn_sender),
     ok = gingko_utils:ensure_gingko_instance_running(inter_dc_request_responder),
     ok = gingko_utils:ensure_gingko_instance_running(inter_dc_request_sender),
     ok = gingko_utils:ensure_gingko_instance_running(bcounter_manager).
@@ -156,7 +157,7 @@ make_sure_global_stores_are_running([], _SetupMnesiaNodes) -> {error, "At least 
 make_sure_global_stores_are_running(TableNames, SetupMnesiaNodes) ->
     %%TODO currently we only allow checkpoint_entry table to be disc_copies
     Tables = mnesia:system_info(tables),
-    lists:map(
+    lists:foreach(
         fun(TableName) ->
             case lists:member(TableName, Tables) of
                 true ->
