@@ -88,7 +88,7 @@ get_my_dcid() ->
 -spec get_my_dc_nodes() -> [node()].
 get_my_dc_nodes() ->
     case ?USE_SINGLE_SERVER of
-        true -> node();
+        true -> [node()];
         false -> antidote_utilities:get_my_dc_nodes()
     end.
 

@@ -35,7 +35,7 @@ all() ->
     ].
 %TODO reimplement
 init_per_suite(Config) ->
-    NewConfig = test_utils:init_single_dc(?MODULE, Config),
+    NewConfig = test_utils:init_multi_dc(?MODULE, Config),
     [Nodes | _] = proplists:get_value(clusters, NewConfig),
     NewConfig.
 

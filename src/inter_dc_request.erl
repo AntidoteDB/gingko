@@ -22,7 +22,8 @@
 
 -export([create_request_record/3,
     create_request_entry/2,
-    is_relevant_request_for_responder/1]).
+    is_relevant_request_for_responder/1,
+    request_record_from_binary/1, request_record_to_binary/1, response_record_from_binary/1, response_record_to_binary/1]).
 
 create_request_record({RequestId, RequestType}, {TargetDCID, TargetPartition}, Request) ->
     #request_record{
@@ -37,6 +38,38 @@ create_request_record({RequestId, RequestType}, {TargetDCID, TargetPartition}, R
 
 create_request_entry(RequestRecord, ReturnFunc) ->
     #request_entry{request_record = RequestRecord, return_func = ReturnFunc}.
+
+request_record_to_tuple(#request_record{request_id = RequestId,
+    request_type = RequestType,
+    target_dcid = TargetDCID,
+    target_partition = TargetPartition,
+    source_dcid = SourceDCID,
+    source_node = SourceNode,
+    request = Request}) ->
+    {{RequestId, RequestType}, {TargetDCID, TargetPartition}, {SourceDCID, SourceNode}, Request}.
+
+request_record_from_tuple({{RequestId, RequestType}, {TargetDCID, TargetPartition}, {SourceDCID, SourceNode}, Request}) ->
+    #request_record{request_id = RequestId,
+        request_type = RequestType,
+        target_dcid = TargetDCID,
+        target_partition = TargetPartition,
+        source_dcid = SourceDCID,
+        source_node = SourceNode,
+        request = Request}.
+
+request_record_to_binary(RequestRecord) ->
+    term_to_binary(request_record_to_tuple(RequestRecord)).
+
+request_record_from_binary(RequestRecordBinary) ->
+    request_record_from_tuple(binary_to_term(RequestRecordBinary)).
+
+response_record_to_binary(#response_record{request_record = RequestRecord, response = Response}) ->
+    term_to_binary({request_record_to_tuple(RequestRecord), Response}).
+
+response_record_from_binary(ResponseBinary) ->
+    {RequestTuple, Response} = binary_to_term(ResponseBinary),
+    #response_record{request_record = request_record_from_tuple(RequestTuple), response = Response}.
+
 
 is_relevant_request_for_responder(#request_record{target_dcid = TargetDCID, target_partition = TargetPartition}) ->
     CheckPartition =

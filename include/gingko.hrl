@@ -3,7 +3,7 @@
 %% old snapshots to avoid clock-skew.
 %% This can break the tests is not set to 0
 -define(OLD_SS_MICROSEC, 0).
--define(USE_SINGLE_SERVER, false).
+-define(USE_SINGLE_SERVER, true).
 -define(GINGKO_APP_NAME, gingko_app).
 -define(GINGKO_LOG_VNODE_MASTER, gingko_log_vnode_master).
 -define(GINGKO_CACHE_VNODE_MASTER, gingko_cache_vnode_master).
@@ -68,6 +68,7 @@
 -define(REQUEST_TIMEOUT, 500000). % In Microseconds
 %% Frequency at which manager requests remote resources.
 -define(TRANSFER_FREQ, 100). %in Milliseconds
+-define(TXN_PING_FREQ, 100). %in Milliseconds
 
 -type microsecond() :: non_neg_integer().
 -type millisecond() :: non_neg_integer().

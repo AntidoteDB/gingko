@@ -66,7 +66,7 @@ perform_health_check_request(ReturnToSenderFunc) ->
 add_dc(DCID, DcAddressList) -> gen_server:call(?MODULE, {add_dc, DCID, DcAddressList}, ?COMM_TIMEOUT).
 
 -spec delete_dc(dcid()) -> ok.
-delete_dc(DCID) -> gen_server:call(?MODULE, {del_dc, DCID}, ?COMM_TIMEOUT).
+delete_dc(DCID) -> gen_server:call(?MODULE, {delete_dc, DCID}, ?COMM_TIMEOUT).
 
 %%%===================================================================
 %%% Spawning and gen_server implementation
@@ -92,7 +92,7 @@ handle_call(Request = {request, RequestType, {TargetDCID, TargetPartition}, Give
             RequestRecord = inter_dc_request:create_request_record({RequestId, RequestType}, {TargetDCID, TargetPartition}, GivenRequest),
             %% Build the binary request
             RequestEntry = inter_dc_request:create_request_entry(RequestRecord, ReturnFunc),
-            RequestRecordBinary = term_to_binary(RequestRecord),
+            RequestRecordBinary = inter_dc_request:request_record_to_binary(RequestRecord),
             lists:foreach(fun(Socket) -> erlzmq:send(Socket, RequestRecordBinary) end, Sockets),
             {reply, ok, request_sent_state_update(RequestEntry, State)};
         %% If socket not found
@@ -106,7 +106,7 @@ handle_call(Request = {add_dc, DCID, DcAddressList}, From, State) ->
     %% The DC will contain a list of ip/ports each with a list of partition ids located at each node
     %% This will connect to each node and store in the cache the list of partitions located at each node
     %% so that a request goes directly to the node where the needed partition is located
-    {_, NewState} = delete_dc(DCID, State),
+    NewState = delete_dc(DCID, State),
     DCIDToRequestSockets = NewState#state.dcid_to_request_sockets,
     case connect_to_nodes(DcAddressList, []) of
         {ok, Sockets} ->
@@ -116,9 +116,9 @@ handle_call(Request = {add_dc, DCID, DcAddressList}, From, State) ->
     end;
 
 %% Remove a DC. Unanswered queries are left untouched.
-handle_call(Request = {del_dc, DCID}, From, State) ->
+handle_call(Request = {delete_dc, DCID}, From, State) ->
     default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
-    {_, NewState} = delete_dc(DCID, State),
+    NewState = delete_dc(DCID, State),
     {reply, ok, NewState};
 
 handle_call(Request, From, State) -> default_gen_server_behaviour:handle_call(?MODULE, Request, From, State).
@@ -128,7 +128,7 @@ handle_cast(Request, State) -> default_gen_server_behaviour:handle_cast(?MODULE,
 %% Possible improvement - disconnect sockets unused for a defined period of time.
 handle_info(Info = {zmq, _Socket, ResponseBinary, _Flags}, State = #state{running_requests = RunningRequests}) ->
     default_gen_server_behaviour:handle_info(?MODULE, Info, State),
-    #response_record{request_record = RequestRecord, response = Response} = binary_to_term(ResponseBinary),
+    #response_record{request_record = RequestRecord, response = Response} = inter_dc_request:response_record_from_binary(ResponseBinary),
     RequestId = RequestRecord#request_record.request_id,
     %% Be sure this is a request from this socket
     NewRunningRequests =
@@ -199,7 +199,7 @@ connect_to_node([Address | Rest]) ->
     ok = erlzmq:setsockopt(TemporarySocket, rcvtimeo, ?ZMQ_TIMEOUT),
     %% Always use 0 as the id of the check up message
     RequestRecord = inter_dc_request:create_request_record({0, ?CHECK_UP_MSG}, {all, all}, ?CHECK_UP_MSG),
-    ok = erlzmq:send(TemporarySocket, term_to_binary(RequestRecord)),
+    ok = erlzmq:send(TemporarySocket, inter_dc_request:request_record_to_binary(RequestRecord)),
     Response = erlzmq:recv(TemporarySocket),
     ok = zmq_utils:close_socket(TemporarySocket),
     case Response of
@@ -207,10 +207,11 @@ connect_to_node([Address | Rest]) ->
             %% erlzmq:recv returns binary, its spec says iolist, but dialyzer compains that it is not a binary
             %% so I added this conversion, even though the result of recv is a binary anyway...
             ResponseBinary = iolist_to_binary(Binary),
+            ResponseRecord = inter_dc_request:response_record_from_binary(ResponseBinary),
             %% check that an ok msg was received
-            #response_record{request_record = RequestRecord, response = ?OK_MSG} = binary_to_term(ResponseBinary),
+            #response_record{request_record = RequestRecord, response = ?OK_MSG} = ResponseRecord,
             %% Create a subscriber socket for the specified DC
-            Socket = zmq_utils:create_connect_socket(req, false, Address),
+            Socket = zmq_utils:create_connect_socket(req, true, Address),
             %% For each partition in the current node:
             {ok, Socket};
         _ ->

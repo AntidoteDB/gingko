@@ -161,10 +161,16 @@ subscribe_updates_from(DCDescriptors) ->
 get_descriptor() ->
     %% Wait until all needed vnodes are spawned, so that the heartbeats are already being sent
     Nodes = gingko_utils:get_my_dc_nodes(),
-    JournalDcAddressList = lists:map(fun(Node) ->
-        rpc:call(Node, inter_dc_utils, get_journal_address_list, []) end, Nodes),
-    RequestDcAddressList = lists:map(fun(Node) ->
-        rpc:call(Node, inter_dc_utils, get_request_address_list, []) end, Nodes),
+    JournalDcAddressList =
+        lists:map(
+            fun(Node) ->
+                rpc:call(Node, inter_dc_utils, get_journal_address_list, [])
+            end, Nodes),
+    RequestDcAddressList =
+        lists:map(
+            fun(Node) ->
+                rpc:call(Node, inter_dc_utils, get_request_address_list, [])
+            end, Nodes),
     #descriptor{
         dcid = gingko_utils:get_my_dcid(),
         number_of_partitions = gingko_utils:get_number_of_partitions(),
@@ -253,6 +259,7 @@ connect_to_remote_dcs(Descriptors) ->
     Nodes = gingko_utils:get_my_dc_nodes(),
     connect_to_remote_dcs(Descriptors, Nodes).
 
+-spec connect_to_remote_dcs([descriptor()], [node()]) -> [].
 connect_to_remote_dcs(Descriptors, Nodes) ->
     Nodes = gingko_utils:get_my_dc_nodes(),
     ConnectionResults =
@@ -260,14 +267,14 @@ connect_to_remote_dcs(Descriptors, Nodes) ->
             fun(DC) ->
                 {connect_nodes_to_remote_dc(Nodes, DC), DC}
             end, Descriptors),
-    Descriptors = lists:filtermap(
+    OnlyDescriptors = lists:filtermap(
         fun({ConnectionResult, Descriptor}) ->
             case ConnectionResult of
                 ok -> {true, Descriptor};
                 _ -> false
             end
         end, ConnectionResults),
-    inter_dc_meta_data_manager:store_dc_descriptors(Descriptors),
+    inter_dc_meta_data_manager:store_dc_descriptors(OnlyDescriptors),
     [Result || {Result, _Descriptor} <- ConnectionResults].
 
 -spec forget_dc(descriptor(), [node()]) -> ok.

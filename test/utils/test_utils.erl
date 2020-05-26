@@ -79,7 +79,11 @@ init_single_dc(Suite, Config) ->
 init_multi_dc(Suite, Config) ->
     ct:pal("Initializing [~p] (Multi-DC)", [Suite]),
     at_init_testsuite(),
-    ClusterConfiguration = [[dev1, dev2, dev3, dev4, dev5, dev6, dev7, dev8], [dev9, dev10, dev11, dev12, dev13, dev14, dev15], [dev16, dev17, dev18, dev19, dev20]],
+    ClusterConfiguration =
+        case ?USE_SINGLE_SERVER of
+            true -> [[dev1], [dev2]];
+            false -> [[dev1, dev2], [dev3, dev4, dev5], [dev6, dev7, dev8, dev9]]
+        end,
     Clusters = set_up_clusters_common([{suite_name, ?MODULE} | Config], ClusterConfiguration),
     Nodes = hd(Clusters),
     [{clusters, Clusters} | [{nodes, Nodes} | [{node, hd(Nodes)} | Config]]].
@@ -178,16 +182,18 @@ web_ports(dev1) -> 10015;
 web_ports(dev2) -> 10025;
 web_ports(dev3) -> 10035;
 web_ports(dev4) -> 10045;
-web_ports(dev5) -> 10015;
-web_ports(dev6) -> 10025;
-web_ports(dev7) -> 10035;
-web_ports(dev8) -> 10045;
-web_ports(clusterdev1) -> 10115;
-web_ports(clusterdev2) -> 10125;
-web_ports(clusterdev3) -> 10135;
-web_ports(clusterdev4) -> 10145;
-web_ports(clusterdev5) -> 10155;
-web_ports(clusterdev6) -> 10165.
+web_ports(dev5) -> 10055;
+web_ports(dev6) -> 10065;
+web_ports(dev7) -> 10075;
+web_ports(dev8) -> 10085;
+web_ports(dev9) -> 10095;
+web_ports(dev10) -> 10105;
+web_ports(dev11) -> 10115;
+web_ports(dev12) -> 10125;
+web_ports(dev13) -> 10135;
+web_ports(dev14) -> 10145;
+web_ports(dev15) -> 10155;
+web_ports(dev16) -> 10165.
 
 %% @doc Forces shutdown of nodes and restarts them again with given configuration
 -spec kill_and_restart_nodes([node()], [tuple()]) -> [node()].
@@ -305,7 +311,7 @@ set_up_clusters_common(Config, ClusterConfiguration) ->
                             Descriptors =
                                 lists:map(
                                     fun([{_Status, FirstNode} | _]) ->
-                                        {ok, Descriptor} = rpc:call(FirstNode, inter_dc_manager, get_connection_descriptor, []),
+                                        Descriptor = rpc:call(FirstNode, inter_dc_manager, get_descriptor, []),
                                         Descriptor
                                     end, Clusters),
 

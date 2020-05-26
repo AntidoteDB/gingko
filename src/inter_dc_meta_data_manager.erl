@@ -25,6 +25,7 @@
     get_dc_descriptors/0,
     store_dc_descriptors/1,
     has_dc_started/0,
+    start_dc/0,
     start_dc/1,
     is_dc_restart/0]).
 
@@ -54,14 +55,14 @@ get_or_create_dc_info_entry() ->
             store_dc_info_entry(DcInfoEntry),
             DcInfoEntry;
         false ->
-            rpc:call(hd(Nodes), ?MODULE, get_or_create_dc_info_entry, [])
+            rpc:call(FirstNode, ?MODULE, get_or_create_dc_info_entry, [])
     end.
 
 -spec store_dc_info_entry(dc_info_entry()) -> ok.
 store_dc_info_entry(DcInfoEntry) ->
     Nodes = lists:sort(gingko_utils:get_my_dc_nodes()),
     FirstNode = hd(Nodes),
-    case FirstNode = node() of
+    case FirstNode == node() of
         true ->
             WriteFunc = fun() -> mnesia:write(?TABLE_NAME, DcInfoEntry, write) end,
             mnesia:activity(transaction, WriteFunc),
