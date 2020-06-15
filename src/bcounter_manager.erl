@@ -34,14 +34,11 @@
 %% (TODO: implement inter-dc transference policy E.g, round-robin).
 
 -module(bcounter_manager).
-
--include("inter_dc_repl.hrl").
-
+-include("inter_dc.hrl").
 -behaviour(gen_server).
 
 -export([generate_downstream/3,
-    process_transfer/1,
-    request_response/2]).
+    process_transfer/1]).
 
 -export([start_link/0,
     init/1,
@@ -86,10 +83,6 @@ generate_downstream(_Key, {transfer, {Amount, ToDCID, FromDCID}}, BCounter) ->
 -spec process_transfer({transfer, {key(), non_neg_integer(), dcid()}}) -> ok.
 process_transfer({transfer, TransferOp = {_Key, _Amount, _RemoteDCID}}) ->
     gen_server:cast(?MODULE, {transfer, TransferOp}).
-
-%% Request response - do nothing.
--spec request_response(binary(), request_entry()) -> ok.
-request_response(_BinaryResponse, _RequestEntry) -> ok.
 
 %%%===================================================================
 %%% Spawning and gen_server implementation
@@ -203,13 +196,13 @@ request_remote(RequiredSum, Key) ->
 -spec do_request(dcid(), dcid(), key(), non_neg_integer()) -> ok | unknown_dc.
 do_request(DCID, RemoteDCID, Key, Amount) ->
     {Partition, _} = gingko_utils:get_key_partition(Key),
-    inter_dc_request_sender:perform_bcounter_permissions_request({RemoteDCID, Partition}, {transfer, {Key, Amount, DCID}}, fun bcounter_manager:request_response/2).
+    inter_dc_request_sender:perform_bcounter_permissions_request({RemoteDCID, Partition}, {transfer, {Key, Amount, DCID}}).
 
 %% Orders the reservation of each DC, from high to low.
 -spec pref_list(antidote_crdt_counter_b:antidote_crdt_counter_b()) -> [{dcid(), non_neg_integer()}].
 pref_list(BCounter) ->
     DCID = gingko_utils:get_my_dcid(),
-    OtherDCDescriptors = dc_meta_data_utilities:get_dc_descriptors(),
+    OtherDCDescriptors = inter_dc_meta_data_manager:get_dc_descriptors(),
     OtherDCIDs = [DescriptorDCID || #descriptor{dcid = DescriptorDCID} <- OtherDCDescriptors, DescriptorDCID /= DCID],
     OtherDCPermissions = [{OtherDCID, ?DATA_TYPE:localPermissions(OtherDCID, BCounter)} || OtherDCID <- OtherDCIDs],
     lists:sort(fun({_, A}, {_, B}) -> A =< B end, OtherDCPermissions).

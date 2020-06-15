@@ -21,12 +21,11 @@
 
 -module(gingko_app_sup).
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
+-include("gingko.hrl").
 -behaviour(supervisor).
 
--include("gingko.hrl").
-
--export([start_link/0]).
--export([init/1]).
+-export([start_link/0,
+    init/1]).
 
 -define(CHILD(I, Type, Args), {I, {I, start_link, Args}, permanent, 5000, Type, [I]}).
 -define(VNODE(I, M), {I, {riak_core_vnode_master, start_link, [M]}, permanent, 5000, worker, [riak_core_vnode_master]}).
@@ -36,16 +35,17 @@ start_link() ->
 
 init(_Args) ->
     GingkoMaster = ?CHILD(gingko_server, worker, []),
-    {GingkoLogMaster, GingkoCacheMaster} =
+    {GingkoLogMaster, GingkoLogHelperMaster, GingkoCacheMaster, InterDcLogMaster} =
         case ?USE_SINGLE_SERVER of
             true ->
-                {?CHILD(gingko_log_server, worker, []), ?CHILD(gingko_cache_server, worker, [])};
+                {?CHILD(gingko_log_server, worker, []), ?CHILD(gingko_log_helper_server, worker, []), ?CHILD(gingko_cache_server, worker, []), ?CHILD(inter_dc_log_server, worker, [])};
             false ->
-                {?VNODE(?GINGKO_LOG_VNODE_MASTER, gingko_log_vnode), ?VNODE(?GINGKO_CACHE_VNODE_MASTER, gingko_cache_vnode)}
+                {?VNODE(?GINGKO_LOG_VNODE_MASTER, gingko_log_vnode), ?VNODE(?GINGKO_LOG_HELPER_VNODE_MASTER, gingko_log_helper_vnode), ?VNODE(?GINGKO_CACHE_VNODE_MASTER, gingko_cache_vnode), ?VNODE(?INTER_DC_LOG_VNODE_MASTER, inter_dc_log_vnode)}
         end,
-    InterDcTxnManager = ?CHILD(inter_dc_txn_manager, worker, []),
     BCounterManager = ?CHILD(bcounter_manager, worker, []),
-
+    TimeManager = ?CHILD(gingko_time_manager, worker, []),
+    CheckpointService = ?CHILD(gingko_checkpoint_service, worker, []),
+    StateService = ?CHILD(inter_dc_state_service, worker, []),
     ZMQContextManager = ?CHILD(zmq_context, worker, []),
     InterDcJournalSender = ?CHILD(inter_dc_txn_sender, worker, []),
     InterDcJournalReceiver = ?CHILD(inter_dc_txn_receiver, worker, []),
@@ -54,11 +54,15 @@ init(_Args) ->
 
     SupFlags = #{strategy => one_for_one, intensity => 5, period => 10},
     {ok, {SupFlags, [
+        TimeManager,
         GingkoMaster,
-        InterDcTxnManager,
+        InterDcLogMaster,
         GingkoLogMaster,
+        GingkoLogHelperMaster,
         GingkoCacheMaster,
         ZMQContextManager,
+        CheckpointService,
+        StateService,
         InterDcJournalSender,
         InterDcJournalReceiver,
         InterDcRequestSender,

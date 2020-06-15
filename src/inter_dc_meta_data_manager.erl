@@ -18,11 +18,12 @@
 
 -module(inter_dc_meta_data_manager).
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
--include("inter_dc_repl.hrl").
+-include("inter_dc.hrl").
 
 -export([get_or_create_dc_info_entry/0,
     store_dc_info_entry/1,
     get_dc_descriptors/0,
+    get_connected_dcids/0,
     store_dc_descriptors/1,
     has_dc_started/0,
     start_dc/0,
@@ -76,6 +77,11 @@ get_dc_descriptors() ->
     DcInfoEntry = get_or_create_dc_info_entry(),
     DcInfoEntry#dc_info_entry.connected_descriptors.
 
+-spec get_connected_dcids() -> [dcid()].
+get_connected_dcids() ->
+    Descriptors = get_dc_descriptors(),
+    lists:map(fun(Descriptor) -> Descriptor#descriptor.dcid end, Descriptors).
+
 -spec start_dc() -> ok.
 start_dc() ->
     DcInfoEntry = get_or_create_dc_info_entry(),
@@ -124,5 +130,5 @@ merge_descriptors([Descriptor = #descriptor{dcid = DCID} | OtherDescriptors], De
     MatchingDescriptors = lists:any(fun(#descriptor{dcid = MatchDCID}) -> DCID == MatchDCID end, DescriptorAcc),
     case MatchingDescriptors of
         false -> merge_descriptors(OtherDescriptors, [Descriptor | DescriptorAcc]);
-        true -> merge_descriptors(OtherDescriptors, [DescriptorAcc])
+        true -> merge_descriptors(OtherDescriptors, DescriptorAcc)
     end.

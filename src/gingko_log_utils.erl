@@ -20,137 +20,218 @@
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
 -include("gingko.hrl").
 
--export([add_journal_entry/2,
-    add_or_update_checkpoint_entry/1,
-    read_journal_entry/2,
-    read_checkpoint_entry/2,
-    read_all_journal_entries/1,
-    match_journal_entries/2,
-    read_journal_entries_with_tx_id/2,
+-export([
+    perform_tx_read/3,
+    checkpoint/3,
+
+    create_journal_mnesia_table/1,
     persist_journal_entries/1,
     clear_journal_entries/1,
-    read_all_journal_entries_sorted/1,
-    read_journal_entries_with_tx_id_sorted/2]).
+    add_journal_entry/2,
+    read_journal_entry/2,
+    read_all_journal_entries/1,
+    read_journal_entries_with_tx_id/2,
+    read_journal_entries_with_multiple_tx_ids/2,
+    read_journal_entries_with_dcid/2,
+    match_journal_entries/2,
 
--spec persist_journal_entries(atom()) -> {atomic, ok} | {aborted, reason()}.
-persist_journal_entries(TableName) ->
-    mnesia:dump_tables([TableName]).
+    read_all_checkpoint_entry_keys/0,
+    read_checkpoint_entry/2,
+    read_checkpoint_entries/2,
+    add_or_update_checkpoint_entry/1,
+    add_or_update_checkpoint_entries/1
+]).
 
--spec clear_journal_entries(atom()) -> {atomic, ok} | {aborted, reason()}.
-clear_journal_entries(TableName) ->
-    {atomic, ok} = mnesia:clear_table(TableName),
-    persist_journal_entries(TableName).
+-dialyzer([{[no_match], read_journal_entries_with_tx_id/2}]).
+-type table_name() :: atom().
 
--spec add_journal_entry(journal_entry(), atom()) -> ok | {error, {already_exists, [journal_entry()]}} | 'transaction abort'.
-add_journal_entry(JournalEntry, TableName) ->
-    F = fun() ->
-        case mnesia:read(TableName, JournalEntry#journal_entry.jsn) of
-            [] -> mnesia:write(TableName, JournalEntry, write);
-            ExistingJournalEntries -> {error, {already_exists, ExistingJournalEntries}}
-        end
-        end,
-    mnesia:activity(transaction, F).
-
--spec read_journal_entry(jsn(), atom()) -> journal_entry().%TODO compiler bug | {error, {"Multiple Journal Entries found", jsn(), [journal_entry()]}} | {error, {"No Journal Entry found", jsn()}} .
-read_journal_entry(Jsn, TableName) ->
-    List = mnesia:activity(transaction, fun() -> mnesia:read(TableName, Jsn) end),
-    case List of
-        [] -> {error, {"No Journal Entry found", Jsn}};
-        [J] -> J;
-        Js -> {error, {"Multiple Journal Entries found", Jsn, Js}}
+-spec perform_tx_read(key_struct(), txid(), table_name()) -> {ok, snapshot()} | {error, reason()}.
+perform_tx_read(KeyStruct, TxId, TableName) ->
+    TxJournalEntryList = gingko_log_utils:read_journal_entries_with_tx_id(TxId, TableName),
+    case TxJournalEntryList of
+        {error, Reason} -> {error, Reason};
+        _ ->
+            SortedTxJournalEntryList = gingko_utils:sort_journal_entries_of_same_tx(TxJournalEntryList),
+            case SortedTxJournalEntryList of
+                [] -> {ok, gingko_utils:create_new_snapshot(KeyStruct, vectorclock:new())};
+                _ ->
+                    #journal_entry{args = #begin_txn_args{dependency_vts = BeginVts}} = hd(SortedTxJournalEntryList), %%Crash if this is not true
+                    {ok, SnapshotBeforeTx} = gingko_utils:call_gingko_sync_with_key(KeyStruct, ?GINGKO_CACHE, {get, KeyStruct, BeginVts}),
+                    DownstreamOpsToBeAdded =
+                        lists:filtermap(
+                            fun(JournalEntry = #journal_entry{args = Args}) ->
+                                case gingko_utils:is_update_of_keys(JournalEntry, [KeyStruct]) of
+                                    true -> {true, Args#object_op_args.op_args};
+                                    false -> false
+                                end
+                            end, SortedTxJournalEntryList),
+                    gingko_materializer:materialize_snapshot_temporarily(SnapshotBeforeTx, DownstreamOpsToBeAdded)
+            end
     end.
 
--spec read_all_journal_entries(atom()) -> [journal_entry()].
+-spec checkpoint([journal_entry()], vectorclock(), dict:dict(dcid(), txn_num())) -> ok. %%TODO valid txns and so on
+checkpoint(ValidJournalEntryListBeforeCheckpoint, CheckpointVts, CheckpointDict) ->
+    CommitJournalEntries = gingko_utils:get_journal_entries_of_type(ValidJournalEntryListBeforeCheckpoint, commit_txn),
+    ValidCommits =
+        lists:filter(
+        fun(#journal_entry{dcid = DcId, args = #commit_txn_args{local_txn_num = {TxnNum, _, _}}}) ->
+            {LastTxnOrderNum, _, _} =
+                case dict:find(DcId, CheckpointDict) of
+                    {ok, LastTxnNum} -> LastTxnNum;
+                    error -> gingko_utils:get_default_txn_num()
+                end,
+            TxnNum =< LastTxnOrderNum
+        end, CommitJournalEntries),
+    ValidTxns = sets:from_list(lists:map(fun(#journal_entry{tx_id = TxId}) -> TxId end, ValidCommits)),
+    UpdatedKeyStructs =
+        lists:filtermap(
+            fun(#journal_entry{tx_id = TxId, args = Args}) ->
+                case Args of
+                    #object_op_args{key_struct = KeyStruct} ->
+                        case sets:is_element(TxId, ValidTxns) of
+                            true -> {true, KeyStruct};
+                            false -> false
+                        end;
+                    _ -> false
+                end
+            end, ValidJournalEntryListBeforeCheckpoint),
+    SnapshotsToStore =
+        lists:map(
+            fun(KeyStruct) ->
+                {ok, Snapshot} = gingko_utils:call_gingko_sync_with_key(KeyStruct, ?GINGKO_CACHE, {get, KeyStruct, CheckpointVts}),
+                Snapshot
+            end, UpdatedKeyStructs),
+    gingko_log_utils:add_or_update_checkpoint_entries(SnapshotsToStore).
+%TODO cache cleanup
+
+-spec create_journal_mnesia_table(table_name()) -> ok | {error, reason()}.
+create_journal_mnesia_table(TableName) ->
+    mnesia_utils:get_mnesia_result(mnesia:create_table(TableName,
+        [{attributes, record_info(fields, journal_entry)},
+            {index, [#journal_entry.tx_id]}, %%TODO maybe index of dcid and type (this may be too slow though)
+            {ram_copies, [node()]},
+            {record_name, journal_entry}
+        ])).
+
+-spec persist_journal_entries(table_name()) -> ok | {error, reason()}.
+persist_journal_entries(TableName) ->
+    mnesia_utils:get_mnesia_result(mnesia:dump_tables([TableName])).
+
+-spec clear_journal_entries(table_name()) -> ok | {error, reason()}.
+clear_journal_entries(TableName) ->
+    ClearTableResult = mnesia_utils:get_mnesia_result(mnesia:clear_table(TableName)),
+    case ClearTableResult of
+        ok -> persist_journal_entries(TableName);
+        Error -> Error
+    end.
+
+-spec add_journal_entry(journal_entry(), table_name()) -> ok | {error, reason()}.
+add_journal_entry(JournalEntry = #journal_entry{jsn = Jsn}, TableName) ->
+    F =
+        fun() ->
+            case mnesia:read(TableName, Jsn) of
+                [] -> mnesia:write(TableName, JournalEntry, write);
+                ExistingJournalEntryList -> {error, {already_exists, ExistingJournalEntryList}}
+            end
+        end,
+    mnesia_utils:run_transaction(F).
+
+-spec read_journal_entry(jsn(), table_name()) -> journal_entry() | {error, reason()}.
+read_journal_entry(Jsn, TableName) ->
+    F = fun() -> mnesia:read(TableName, Jsn) end,
+    ReadJournalEntryResult = mnesia_utils:run_transaction(F),
+    case ReadJournalEntryResult of
+        {error, Reason} -> {error, Reason};
+        [] -> {error, {"No Journal Entry found", Jsn}};
+        [JournalEntry] -> JournalEntry;
+        JournalEntryList -> {error, {"Multiple Journal Entries found", Jsn, JournalEntryList}}
+    end.
+
+-spec read_all_journal_entries(table_name()) -> [journal_entry()] | {error, reason()}.
 read_all_journal_entries(TableName) ->
-    mnesia:activity(transaction,
-        fun() ->
-            mnesia:foldl(fun(J, Acc) -> [J | Acc] end, [], TableName)
-        end).
+    F = fun() ->
+        mnesia:foldl(fun(JournalEntry, JournalEntryAcc) -> [JournalEntry | JournalEntryAcc] end, [], TableName) end,
+    mnesia_utils:run_transaction(F).
 
--spec read_all_journal_entries_sorted(atom()) -> [journal_entry()].
-read_all_journal_entries_sorted(TableName) ->
-    mnesia:activity(transaction,
-        fun() ->
-            mnesia:foldl(
-                fun(J, Acc) ->
-                    general_utils:sorted_insert(J, Acc,
-                        fun(J1, J2) ->
-                            J1#journal_entry.jsn =< J2#journal_entry.jsn
-                        end)
-                end, [], TableName)
-        end).
-
--spec read_journal_entries_with_tx_id(txid(), atom()) -> [journal_entry()].
+-spec read_journal_entries_with_tx_id(txid(), table_name()) -> [journal_entry()] | {error, reason()}.
 read_journal_entries_with_tx_id(TxId, TableName) ->
-    MatchJournalEntry = #journal_entry{tx_id = TxId, _ = '_'},
-    match_journal_entries(MatchJournalEntry, TableName).
+    F = fun() -> mnesia:index_read(TableName, TxId, #journal_entry.tx_id) end,
+    mnesia_utils:run_transaction(F).
 
--spec read_journal_entries_with_tx_id_sorted(txid(), atom()) -> [journal_entry()].
-read_journal_entries_with_tx_id_sorted(TxId, TableName) ->
-    gingko_utils:sort_by_jsn_number(read_journal_entries_with_tx_id(TxId, TableName)).
+-spec read_journal_entries_with_multiple_tx_ids([txid()], table_name()) -> [journal_entry()] | {error, reason()}.
+read_journal_entries_with_multiple_tx_ids(TxIdList, TableName) ->
+    F = fun() -> lists:append(lists:map(fun(TxId) ->
+        mnesia:index_read(TableName, TxId, #journal_entry.tx_id) end, TxIdList)) end,
+    mnesia_utils:run_transaction(F).
 
--spec match_journal_entries(journal_entry(), atom()) -> [journal_entry()].
+-spec read_journal_entries_with_dcid(dcid(), table_name()) -> [journal_entry()] | {error, reason()}.
+read_journal_entries_with_dcid(DcId, TableName) ->
+    JournalEntryPattern = mnesia:table_info(TableName, wild_pattern),
+    match_journal_entries(JournalEntryPattern#journal_entry{dcid = DcId}, TableName).
+
+-spec match_journal_entries(journal_entry() | term(), table_name()) -> [journal_entry()] | {error, reason()}.
 match_journal_entries(MatchJournalEntry, TableName) ->
-    mnesia:activity(transaction, fun() -> mnesia:match_object(TableName, MatchJournalEntry, read) end).
+    F = fun() -> mnesia:match_object(TableName, MatchJournalEntry, read) end,
+    mnesia_utils:run_transaction(F).
 
--spec read_all_checkpoint_entry_keys() -> [key_struct()].
+-spec read_all_checkpoint_entry_keys() -> [key_struct()] | {error, reason()}.
 read_all_checkpoint_entry_keys() ->
-    mnesia:activity(transaction,
-        fun() ->
-            mnesia:foldl(fun(C, Acc) -> [C#checkpoint_entry.key_struct | Acc] end, [], checkpoint_entry)
-        end).
+    F = fun() -> mnesia:foldl(fun(#checkpoint_entry{key_struct = KeyStruct}, Acc) ->
+        [KeyStruct | Acc] end, [], checkpoint_entry) end,
+    mnesia_utils:run_transaction(F).
 
--spec read_checkpoint_entry(key_struct(), vectorclock()) -> snapshot().%TODO compiler bug | {error, {"Multiple Snapshots found", key_struct(), [snapshot()]}}.
+-spec read_checkpoint_entry(key_struct(), vectorclock()) -> snapshot() | {error, reason()}.
 read_checkpoint_entry(KeyStruct, DependencyVts) ->
-    SnapshotList = mnesia:activity(transaction, fun() -> mnesia:read(checkpoint_entry, KeyStruct) end),
-    case SnapshotList of
+    F = fun() -> mnesia:read(checkpoint_entry, KeyStruct) end,
+    ReadCheckpointResult = mnesia_utils:run_transaction(F),
+    case ReadCheckpointResult of
+        {error, Reason} -> {error, Reason};
         [] -> gingko_utils:create_new_snapshot(KeyStruct, DependencyVts);
-        [C] -> gingko_utils:create_snapshot_from_checkpoint_entry(C, DependencyVts);
-        CList -> {error, {"Multiple Snapshots found", KeyStruct, CList}}
+        [CheckpointEntry] -> gingko_utils:create_snapshot_from_checkpoint_entry(CheckpointEntry, DependencyVts);
+        CheckpointEntryList -> {error, {"Multiple Snapshots found", KeyStruct, CheckpointEntryList}}
     end.
 
 %TODO testing necessary
--spec read_checkpoint_entries([key_struct()], vectorclock()) -> [snapshot()].%TODO compiler bug | {error, {"Multiple Snapshots found", key_struct(), [snapshot()]}}.
-read_checkpoint_entries(KeyStructs, DependencyVts) ->
-    SnapshotList =
-        mnesia:activity(transaction,
-            fun() ->
-                lists:filtermap(
-                    fun(K) ->
-                        case mnesia:read(checkpoint_entry, K) of
-                            [] -> {true, gingko_utils:create_new_snapshot(K, DependencyVts)};
-                            [C] -> {true, gingko_utils:create_snapshot_from_checkpoint_entry(C, DependencyVts)};
-                            CList ->
-                                {true, {error, {"Multiple snapshots for one key found", K, CList}}}
-                        end
-                    end, KeyStructs)
-            end),
+-spec read_checkpoint_entries([key_struct()], vectorclock()) -> [snapshot()] | {error, reason()}.
+read_checkpoint_entries(KeyStructList, DependencyVts) ->
+    F = fun() ->
+        lists:map(
+            fun(KeyStruct) ->
+                case mnesia:read(checkpoint_entry, KeyStruct) of
+                    [] ->
+                        gingko_utils:create_new_snapshot(KeyStruct, DependencyVts);
+                    [CheckpointEntry] ->
+                        gingko_utils:create_snapshot_from_checkpoint_entry(CheckpointEntry, DependencyVts);
+                    CheckpointEntryList ->
+                        {error, {"Multiple snapshots for one key found", KeyStruct, CheckpointEntryList}}
+                end
+            end, KeyStructList)
+        end,
+    ReadCheckpointEntryListResult = mnesia_utils:run_transaction(F),
     AnyErrors =
         lists:any(
-            fun(C) ->
-                case C of
+            fun(CheckpointEntryResult) ->
+                case CheckpointEntryResult of
                     {error, _} -> true;
                     _ -> false
                 end
-            end, SnapshotList),
+            end, ReadCheckpointEntryListResult),
     case AnyErrors of
-        true -> {error, {"One or more snapshot keys caused an error", SnapshotList}};
-        false -> SnapshotList
+        true -> {error, {"One or more snapshot keys caused an error", ReadCheckpointEntryListResult}};
+        false -> ReadCheckpointEntryListResult
     end.
 
--spec add_or_update_checkpoint_entry(snapshot()) -> ok | 'transaction abort'.
+-spec add_or_update_checkpoint_entry(snapshot()) -> ok | {error, reason()}.
 add_or_update_checkpoint_entry(Snapshot) ->
-    F = fun() ->
-        mnesia:write(#checkpoint_entry{key_struct = Snapshot#snapshot.key_struct, value = Snapshot#snapshot.value}) end,
-    mnesia:activity(transaction, F).
+    add_or_update_checkpoint_entries([Snapshot]).
 
--spec add_or_update_checkpoint_entries([snapshot()]) -> ok | 'transaction abort'.
-add_or_update_checkpoint_entries(Snapshots) ->
+-spec add_or_update_checkpoint_entries([snapshot()]) -> ok | {error, reason()}.
+add_or_update_checkpoint_entries(SnapshotList) ->
     F =
         fun() ->
             lists:foreach(
-                fun(Snapshot) ->
-                    mnesia:write(#checkpoint_entry{key_struct = Snapshot#snapshot.key_struct, value = Snapshot#snapshot.value})
-                end, Snapshots)
+                fun(#snapshot{key_struct = KeyStruct, value = Value}) ->
+                    mnesia:write(#checkpoint_entry{key_struct = KeyStruct, value = Value})
+                end, SnapshotList)
         end,
-    mnesia:activity(transaction, F).
+    mnesia_utils:run_transaction(F).

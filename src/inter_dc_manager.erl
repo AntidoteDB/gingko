@@ -27,10 +27,7 @@
 %% -------------------------------------------------------------------
 
 -module(inter_dc_manager).
--include("inter_dc_repl.hrl").
-
--define(DC_CONNECT_RETRIES, 5).
--define(DC_CONNECT_RETY_SLEEP, 1000).
+-include("inter_dc.hrl").
 
 -export([leave_dc/0,
     create_dc/1,
@@ -59,8 +56,8 @@ add_nodes_to_dc(Nodes) ->
         false ->
             case riak_core_ring:ring_ready() of
                 true ->
-                    ok = gingko_app:initial_startup_nodes(Nodes),
-                    join_new_nodes(Nodes);
+                    join_new_nodes(Nodes),
+                ok = gingko_app:initial_startup_nodes(Nodes);
                 _ -> {error, ring_not_ready}
             end
     end.
@@ -114,7 +111,13 @@ plan_and_commit(NewNodeMembers) ->
     %% this prevents writing to a ring which has not finished its balancing yet and therefore causes
     %% handoffs to be triggered
     %% FIXME this can be removed when #401 and #203 is fixed
+    riak_core_handoff_manager:set_concurrency(16),
+
+    %%riak_core_handoff_manager ! management_tick,
     wait_until_ring_no_pending_changes(),
+    application:set_env(riak_core,
+        vnode_management_timer,
+        10000),
     ok.
 
 
@@ -135,7 +138,7 @@ wait_until_ring_no_pending_changes() ->
         end,
     case F() of
         true -> ok;
-        _ -> timer:sleep(500), wait_until_ring_no_pending_changes()
+        _ -> timer:sleep(?DEFAULT_WAIT_TIME_MEDIUM), wait_until_ring_no_pending_changes()
     end.
 
 
@@ -145,7 +148,7 @@ wait_until_ring_ready(Node) ->
     logger:debug("Ring Status: ~p", [Status]),
     case Status of
         true -> ok;
-        false -> timer:sleep(100), wait_until_ring_ready(Node)
+        false -> timer:sleep(?DEFAULT_WAIT_TIME_SHORT), wait_until_ring_ready(Node)
     end.
 
 %% Start receiving updates from other DCs
@@ -182,7 +185,7 @@ get_descriptor() ->
 %% When a connecting to a new DC, Nodes will be all the nodes in the local DC
 %% Otherwise this will be called with a single node that is reconnecting (for example after one of the nodes in the DC crashes and restarts)
 %% Note this is an internal function, to instruct the local DC to connect to a new DC the observe_dcs_sync(Descriptors) function should be used
--spec connect_nodes_to_remote_dc([node()], descriptor()) -> ok | inter_dc_conn_err().
+-spec connect_nodes_to_remote_dc([node()], descriptor()) -> ok | {error, reason()}.
 connect_nodes_to_remote_dc(Nodes, Descriptor = #descriptor{dcid = DCID, number_of_partitions = RemoteNumberOfPartitions}) ->
     LocalNumberOfPartitions = gingko_utils:get_number_of_partitions(),
     case RemoteNumberOfPartitions == LocalNumberOfPartitions of
@@ -201,8 +204,7 @@ connect_nodes_to_remote_dc(Nodes, Descriptor = #descriptor{dcid = DCID, number_o
             end
     end.
 
--spec connect_nodes_to_remote_dc([node()], descriptor(), non_neg_integer()) ->
-    ok | {error, connection_error}.
+-spec connect_nodes_to_remote_dc([node()], descriptor(), non_neg_integer()) -> ok | {error, reason()}.
 connect_nodes_to_remote_dc([], _Descriptor, _Retries) ->
     ok;
 connect_nodes_to_remote_dc(_Nodes, Descriptor, 0) ->
@@ -215,12 +217,12 @@ connect_nodes_to_remote_dc([Node | Rest], Descriptor = #descriptor{dcid = DCID, 
                 ok ->
                     connect_nodes_to_remote_dc(Rest, Descriptor, ?DC_CONNECT_RETRIES);
                 _ ->
-                    timer:sleep(?DC_CONNECT_RETY_SLEEP),
+                    timer:sleep(?DC_CONNECT_RETRY_SLEEP),
                     logger:error("Unable to connect to publisher ~p", [DCID]),
                     connect_nodes_to_remote_dc([Node | Rest], Descriptor, Retries - 1)
             end;
         _ ->
-            timer:sleep(?DC_CONNECT_RETY_SLEEP),
+            timer:sleep(?DC_CONNECT_RETRY_SLEEP),
             logger:error("Unable to connect to log reader ~p", [DCID]),
             connect_nodes_to_remote_dc([Node | Rest], Descriptor, Retries - 1)
     end.
@@ -228,7 +230,7 @@ connect_nodes_to_remote_dc([Node | Rest], Descriptor = #descriptor{dcid = DCID, 
 %% This should be called once the DC is up and running successfully
 %% It sets a flag on disk to true.  When this is true on fail and
 %% restart the DC will load its state from disk
--spec dc_successfully_started() -> ok.
+-spec dc_successfully_started() -> boolean().
 dc_successfully_started() ->
     inter_dc_meta_data_manager:has_dc_started().
 
@@ -244,22 +246,24 @@ check_node_restart() ->
             OtherDCs = inter_dc_meta_data_manager:get_dc_descriptors(),
             Responses3 = reconnect_dcs_after_restart(OtherDCs, MyNode),
             %% Ensure all connections were successful, crash otherwise
+
             Responses3 = [X = ok || X <- Responses3],
             true;
         false ->
             false
     end.
 
--spec reconnect_dcs_after_restart([descriptor()], node()) -> [ok | inter_dc_conn_err()].
+-spec reconnect_dcs_after_restart([descriptor()], node()) -> [ok | {error, reason()}].
 reconnect_dcs_after_restart(Descriptors, MyNode) ->
-    ok = forget_dcs(Descriptors, [MyNode]),
+    forget_dcs(Descriptors, [MyNode]),
     connect_to_remote_dcs(Descriptors, [MyNode]).
 
+-spec connect_to_remote_dcs([descriptor()]) -> [ok | {error, reason()}].
 connect_to_remote_dcs(Descriptors) ->
     Nodes = gingko_utils:get_my_dc_nodes(),
     connect_to_remote_dcs(Descriptors, Nodes).
 
--spec connect_to_remote_dcs([descriptor()], [node()]) -> [].
+-spec connect_to_remote_dcs([descriptor()], [node()]) -> [ok | {error, reason()}].
 connect_to_remote_dcs(Descriptors, Nodes) ->
     Nodes = gingko_utils:get_my_dc_nodes(),
     ConnectionResults =

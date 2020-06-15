@@ -18,51 +18,35 @@
 
 -module(inter_dc_txn).
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
--include("inter_dc_repl.hrl").
+-include("inter_dc.hrl").
 
--export([from_journal_entries/1,
+-export([from_journal_entries/2,
     is_local/1,
     to_binary/1,
     from_binary/1]).
 
-send_inter_dc_txn_async(Partitions, TxId) ->
-    spawn_link(
-        fun() ->
-            JournalEntries = collect_journal_entries_internal(Partitions, TxId, []),
-            inter_dc_txn_sender:broadcast_journal_entries(JournalEntries)
-        end).
-
-%%TODO MULTICALL
-collect_journal_entries_internal([], _TxId, Acc) -> merge_journal_entries(Acc, []);
-collect_journal_entries_internal([Partition | Partitions], TxId, Acc) ->
-    JournalEntries = gingko_utils:call_gingko_sync(Partition, ?GINGKO_LOG, {get_journal_entries_from_tx_id, TxId}),
-    collect_journal_entries_internal(Partitions, TxId, JournalEntries ++ Acc).
-
--spec merge_journal_entries([journal_entry()], [journal_entry()]) -> [journal_entry()].
-merge_journal_entries([JournalEntry | JournalEntries], []) -> merge_journal_entries(JournalEntries, [JournalEntry]);
-merge_journal_entries([], JournalEntryAcc) -> JournalEntryAcc;
-merge_journal_entries([JournalEntry = #journal_entry{operation = #object_operation{}} | OtherJournalEntries], JournalEntryAcc) ->
-    merge_journal_entries(OtherJournalEntries, [JournalEntry | JournalEntryAcc]);
-merge_journal_entries([JournalEntry = #journal_entry{operation = Operation} | OtherJournalEntries], JournalEntryAcc) ->
-    MatchingJournalEntries = lists:any(fun(#journal_entry{operation = MatchOperation}) ->
-        Operation == MatchOperation end, JournalEntryAcc),
-    case MatchingJournalEntries of
-        false -> merge_journal_entries(OtherJournalEntries, [JournalEntry | JournalEntryAcc]);
-        true -> merge_journal_entries(OtherJournalEntries, [JournalEntryAcc])
-    end.
-
 %%TODO check correctness
--spec from_journal_entries([inter_dc_journal_entry()]) -> inter_dc_txn().
-from_journal_entries(InterDcJournalEntries) ->
-    #inter_dc_txn{source_dcid = gingko_utils:get_my_dcid(), inter_dc_journal_entries = InterDcJournalEntries}.
+-spec from_journal_entries(partition_id(), [journal_entry()]) -> inter_dc_txn().
+from_journal_entries(Partition, JournalEntryList) ->
+    #inter_dc_txn{partition = Partition, source_dcid = gingko_utils:get_my_dcid(), journal_entries = JournalEntryList}.
 
 -spec is_local(inter_dc_txn()) -> boolean().
 is_local(#inter_dc_txn{source_dcid = DCID}) -> DCID == gingko_utils:get_my_dcid().
 
+to_tuple(#inter_dc_txn{partition = Partition, source_dcid = DCID, journal_entries = JournalEntryList}) ->
+    {Partition, DCID, JournalEntryList}.
+
+from_tuple({Partition, DCID, InterDcJournalEntryList}) ->
+    #inter_dc_txn{partition = Partition, source_dcid = DCID, journal_entries = InterDcJournalEntryList}.
+
 -spec to_binary(inter_dc_txn()) -> binary().
-to_binary(InterDcTxn) ->
-    term_to_binary(InterDcTxn).
+to_binary(InterDcTxn = #inter_dc_txn{partition = Partition}) ->
+    PartitionPrefix = inter_dc_utils:partition_to_binary(Partition),
+    InterDcTxnBinary = term_to_binary(to_tuple(InterDcTxn)),
+    <<PartitionPrefix/binary, InterDcTxnBinary/binary>>.
 
 -spec from_binary(binary()) -> inter_dc_txn().
-from_binary(InterDcTxnBinary) ->
-    binary_to_term(InterDcTxnBinary).
+from_binary(InterDcTxnBinaryWithPartitionPrefix) ->
+    ByteSize = byte_size(InterDcTxnBinaryWithPartitionPrefix),
+    InterDcTxnBinary = binary_part(InterDcTxnBinaryWithPartitionPrefix, {?PARTITION_BYTE_LENGTH, ByteSize - ?PARTITION_BYTE_LENGTH}),
+    from_tuple(binary_to_term(InterDcTxnBinary)).

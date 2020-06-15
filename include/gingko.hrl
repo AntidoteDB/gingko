@@ -1,83 +1,51 @@
+-include_lib("riak_core/include/riak_core_vnode.hrl").
+-define(BUCKET, <<"gingko">>).
+-define(USE_SINGLE_SERVER, false).
+-define(USE_EXPERIMENTAL_TIMESTAMP, true).
+-define(EXPERIMENTAL_TIMESTAMP_USE_MONOTONIC_TIME, false).
+-define(SINGLE_SERVER_PARTITION, 0).
 
-%% This can be used for testing, so that transactions start with
-%% old snapshots to avoid clock-skew.
-%% This can break the tests is not set to 0
--define(OLD_SS_MICROSEC, 0).
--define(USE_SINGLE_SERVER, true).
 -define(GINGKO_APP_NAME, gingko_app).
 -define(GINGKO_LOG_VNODE_MASTER, gingko_log_vnode_master).
+-define(GINGKO_LOG_HELPER_VNODE_MASTER, gingko_log_helper_vnode_master).
 -define(GINGKO_CACHE_VNODE_MASTER, gingko_cache_vnode_master).
+-define(INTER_DC_LOG_VNODE_MASTER, inter_dc_log_vnode_master).
 -define(GINGKO_LOG, {gingko_log_server, ?GINGKO_LOG_VNODE_MASTER}).
+-define(GINGKO_LOG_HELPER, {gingko_log_helper_server, ?GINGKO_LOG_HELPER_VNODE_MASTER}).
 -define(GINGKO_CACHE, {gingko_cache_server, ?GINGKO_CACHE_VNODE_MASTER}).
--define(COMM_TIMEOUT, infinity).
--define(ZMQ_TIMEOUT, 5000).
--define(NUM_W, 2).
--define(NUM_R, 2).
+-define(INTER_DC_LOG, {inter_dc_log_server, ?INTER_DC_LOG_VNODE_MASTER}).
+
+
 -define(JOURNAL_PORT_NAME, journal_port).
 -define(REQUEST_PORT_NAME, request_port).
 -define(DEFAULT_JOURNAL_PORT, 8086).
 -define(DEFAULT_REQUEST_PORT, 8085).
-%% Allow read concurrency on shared ets tables
-%% These are the tables that store materialized objects
-%% and information about live transactions, so the assumption
-%% is there will be several more reads than writes
--define(TABLE_CONCURRENCY, {read_concurrency,true}).
-%% The read concurrency is the maximum number of concurrent
-%% readers per vnode.  This is so shared memory can be used
-%% in the case of keys that are read frequently.  There is
-%% still only 1 writer per vnode
--define(READ_CONCURRENCY, 20).
-%% The log reader concurrency is the pool of threads per
-%% physical node that handle requests from other DCs
-%% for example to request missing log operations
--define(INTER_DC_QUERY_CONCURRENCY, 20).
-%% This defines the concurrency for the meta-data tables that
-%% are responsible for storing the stable time that a transaction
-%% can read.  It is set to false because the erlang docs say
-%% you should only set to true if you have long bursts of either
-%% reads or writes, but here they should be interleaved (maybe).  But should
-%% do some performance testing.
--define(META_TABLE_CONCURRENCY, {read_concurrency, false}, {write_concurrency, false}).
--define(META_TABLE_STABLE_CONCURRENCY, {read_concurrency, true}, {write_concurrency, false}).
-%% The number of supervisors that are responsible for
-%% supervising transaction coorinator fsms
--define(NUM_SUP, 100).
-%% Threads will sleep for this length when they have to wait
-%% for something that is not ready after which they
-%% wake up and retry. I.e. a read waiting for
-%% a transaction currently in the prepare state that is blocking
-%% that read.
--define(SPIN_WAIT, 10).
-%% HEARTBEAT_PERIOD: Period of sending the heartbeat messages in interDC layer
--define(HEARTBEAT_PERIOD, 1000).
-%% VECTORCLOCK_UPDATE_PERIOD: Period of updates of the stable snapshot per partition
--define(VECTORCLOCK_UPDATE_PERIOD, 100).
-%% This is the time that nodes will sleep inbetween sending meta-data
-%% to other physical nodes within the DC
--define(META_DATA_SLEEP, 1000).
-%% Uncomment the following line to use erlang:now()
-%% Otherwise os:timestamp() is used which can go backwards
-%% which is unsafe for clock-si
--define(SAFE_TIME, true).
-%% Version of log records being used
--define(LOG_RECORD_VERSION, 0).
+
 %% Bounded counter manager parameters.
 %% Period during which transfer requests from the same DC to the same key are ignored.
 -define(GRACE_PERIOD, 1000000). % in Microseconds
 %% Time to forget a pending request.
 -define(REQUEST_TIMEOUT, 500000). % In Microseconds
 %% Frequency at which manager requests remote resources.
--define(TRANSFER_FREQ, 100). %in Milliseconds
--define(TXN_PING_FREQ, 100). %in Milliseconds
+
+
+-define(TRANSFER_FREQ, 1000). %in Milliseconds
+-define(TXN_PING_FREQ, 1000). %in Milliseconds
+-define(ZMQ_TIMEOUT, 5000).
+-define(COMM_TIMEOUT, 10000).
+-define(DEFAULT_WAIT_TIME_SUPER_SHORT, 10). %% in milliseconds
+-define(DEFAULT_WAIT_TIME_SHORT, 100). %% in milliseconds
+-define(DEFAULT_WAIT_TIME_MEDIUM, 500). %% in milliseconds
+-define(DEFAULT_WAIT_TIME_LONG, 1000). %% in milliseconds
+-define(DEFAULT_WAIT_TIME_SUPER_LONG, 10000). %% in milliseconds
 
 -type microsecond() :: non_neg_integer().
 -type millisecond() :: non_neg_integer().
+-type timestamp() :: non_neg_integer().
 
 -type key() :: term().
 -type type() :: atom().
 -type txn_properties() :: [{update_clock, boolean()} | {certify, use_default | certify | dont_certify}].
--type inter_dc_conn_err() :: {error, {partition_num_mismatch, non_neg_integer(), non_neg_integer()}
-| {error, connection_error}}.
 
 -record(tx_id, {
     local_start_time :: clock_time(),
@@ -85,15 +53,14 @@
 }).
 -type txid() :: #tx_id{}.
 
--define(BUCKET, <<"antidote">>).
-
 -type crdt() :: term().
 -type type_op() :: {Op :: atom(), OpArgs :: term()} | atom() | term(). %downstream(type_op, crdt())
 -type downstream_op() :: term(). %update(downstream_op, crdt())
 
--type dcid() :: undefined | {term(), term()}.
+-type dcid() :: node() | undefined | {term(), term()}.
 
 -type vectorclock() :: vectorclock:vectorclock().
+-type snapshot_time() :: 'undefined' | vectorclock:vectorclock().
 -type vts_range() :: {MinVts :: vectorclock() | none, MaxVts :: vectorclock() | none}.
 -type clock_time() :: non_neg_integer().
 -type clock_range() :: {MinClock :: clock_time() | none, MaxClock :: clock_time() | none}.
@@ -103,6 +70,9 @@
 -type preflist() :: riak_core_apl:preflist().
 -type partition_id() :: chash:index_as_int().
 -type ct_config() :: map_list().
+
+-type txn_num() :: {non_neg_integer(), txid() | none, clock_time()}.
+-type tx_op_num() :: non_neg_integer().
 
 -record(cache_usage, {
     used = true :: boolean(),
@@ -130,7 +100,6 @@
 -type raw_value() :: term().
 
 -record(checkpoint_entry, {
-    index = 0 :: non_neg_integer(),
     key_struct :: key_struct(),
     value :: snapshot_value()
 }).
@@ -148,51 +117,37 @@
 -record(begin_txn_args, {dependency_vts :: vectorclock()}).
 -type begin_txn_args() :: #begin_txn_args{}.
 
--record(prepare_txn_args, {prepare_time :: non_neg_integer()}).
+-record(prepare_txn_args, {}).
 -type prepare_txn_args() :: #prepare_txn_args{}.
 -record(commit_txn_args, {
-    commit_vts :: vectorclock()
+    commit_vts :: vectorclock(),
+    local_txn_num :: txn_num()
 }).
 -type commit_txn_args() :: #commit_txn_args{}.
 -record(abort_txn_args, {}).
 -type abort_txn_args() :: #abort_txn_args{}.
--record(checkpoint_args, {dependency_vts :: vectorclock()}).
+-record(checkpoint_args, {dependency_vts :: vectorclock(), dcid_to_last_txn_num :: dict:dict(dcid(), txn_num())}).
 -type checkpoint_args() :: #checkpoint_args{}.
 
--type system_operation_type() :: begin_txn | prepare_txn | commit_txn | abort_txn | checkpoint.
--type system_operation_args() :: begin_txn_args() | prepare_txn_args() | commit_txn_args() | abort_txn_args() | checkpoint_args().
-
--record(system_operation, {
-    op_type :: system_operation_type(),
-    op_args :: system_operation_args()
-}).
--type system_operation() :: #system_operation{}.
-
-
--record(object_operation, {
+-record(object_op_args, {
     key_struct :: key_struct(),
-    op_type :: update | read, %%TODO add others
-    op_args :: term() %%TODO specify further if possible
+    tx_op_num :: non_neg_integer(), %Order in a transaction
+    op_args = none :: none | downstream_op() %%TODO specify further if possible
 }).
--type object_operation() :: #object_operation{}.
+-type object_op_args() :: #object_op_args{}.
 
-
--type operation() :: system_operation() | object_operation().
+-type journal_entry_args() :: begin_txn_args() | prepare_txn_args() | commit_txn_args() | abort_txn_args() | checkpoint_args() | object_op_args().
 
 -type jsn() :: non_neg_integer().
--record(dc_info, {
-    dcid :: dcid(),
-    rt_timestamp :: clock_time(),
-    jsn :: jsn(),
-    first_message_since_startup = false :: boolean()
-}).
--type dc_info() :: #dc_info{}.
+-type journal_entry_type() :: begin_txn | prepare_txn | commit_txn | abort_txn | checkpoint | read | update.
 
 -record(journal_entry, {
     jsn :: jsn(),
-    dc_info :: dc_info(),
+    dcid :: dcid(),
+    rt_timestamp :: clock_time(),
     tx_id :: txid(),
-    operation :: operation()
+    type :: journal_entry_type(),
+    args :: journal_entry_args()
 }).
 -type journal_entry() :: #journal_entry{}.
 
@@ -204,3 +159,10 @@
     tx_id :: txid()
 }).
 -type update_payload() :: #update_payload{}.
+
+-record(jsn_state, {
+    next_jsn :: jsn(),
+    dcid :: dcid(),
+    rt_timestamp :: clock_time()
+}).
+-type jsn_state() :: #jsn_state{}.

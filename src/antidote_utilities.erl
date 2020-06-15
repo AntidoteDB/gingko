@@ -30,7 +30,6 @@
 %% files from the antidote project https://github.com/AntidoteDB/antidote
 
 -module(antidote_utilities).
-
 -include("gingko.hrl").
 
 -export([get_my_dc_id/0,
@@ -40,7 +39,7 @@
     get_all_partitions/0,
     get_all_partitions_nodes/0,
     get_my_partitions/0,
-    get_partitions_num/0,
+    get_number_of_partitions/0,
 
     call_vnode_async/3,
     call_vnode_sync/3,
@@ -54,10 +53,8 @@
 
     get_key_partition/1,
     get_preflist_from_key/1,
-    get_my_node/1,
 
     check_registered/1,
-    check_registered_global/1,
 
     is_ring_ready/1]).
 
@@ -123,8 +120,8 @@ get_my_partitions() ->
     riak_core_ring:my_indices(Ring).
 
 %% Returns the number of partitions.
--spec get_partitions_num() -> non_neg_integer().
-get_partitions_num() -> length(get_all_partitions()).
+-spec get_number_of_partitions() -> non_neg_integer().
+get_number_of_partitions() -> length(get_all_partitions()).
 
 
 %% Sends the asynchronous command to a vnode of a specified type and responsible for a specified partition number.
@@ -179,19 +176,8 @@ check_registered(Name) ->
     case whereis(Name) of
         undefined ->
             logger:debug("Wait for ~p to register", [Name]),
-            timer:sleep(100),
+            timer:sleep(?DEFAULT_WAIT_TIME_SHORT),
             check_registered(Name);
-        _ ->
-            ok
-    end.
-
-%% Loops until a process with the given name is registered globally
--spec check_registered_global(atom()) -> ok.
-check_registered_global(Name) ->
-    case global:whereis_name(Name) of
-        undefined ->
-            timer:sleep(100),
-            check_registered_global(Name);
         _ ->
             ok
     end.
@@ -222,11 +208,6 @@ get_primaries_preflist(Key) ->
     Pos = Key rem NumPartitions + 1,
     {Index, Node} = lists:nth(Pos, ListOfPartitions),
     [{Index, Node}].
-
--spec get_my_node(partition_id()) -> node().
-get_my_node(Partition) ->
-    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-    riak_core_ring:index_owner(Ring, Partition).
 
 %% @doc Convert key. If the key is integer(or integer in form of binary),
 %% directly use it to get the partition. If it is not integer, convert it

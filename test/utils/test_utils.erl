@@ -81,7 +81,7 @@ init_multi_dc(Suite, Config) ->
     at_init_testsuite(),
     ClusterConfiguration =
         case ?USE_SINGLE_SERVER of
-            true -> [[dev1], [dev2]];
+            true -> [[dev1], [dev2]];%, [dev3], [dev4]];
             false -> [[dev1, dev2], [dev3, dev4, dev5], [dev6, dev7, dev8, dev9]]
         end,
     Clusters = set_up_clusters_common([{suite_name, ?MODULE} | Config], ClusterConfiguration),

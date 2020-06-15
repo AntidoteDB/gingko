@@ -18,7 +18,6 @@
 
 -module(gingko_cache_server).
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
-
 -behaviour(gen_server).
 
 -export([start_link/0,
@@ -51,7 +50,7 @@ handle_cast(Request, State) ->
     {noreply, NewState}.
 
 handle_info(Info, State) ->
-    {ok, NewState} = gingko_cache_vnode:handle_info(Info, State),
+    {reply, _Result, NewState} = gingko_cache_vnode:handle_command(Info, {raw, undefined, self()}, State),
     {noreply, NewState}.
 
 terminate(Reason, State) ->

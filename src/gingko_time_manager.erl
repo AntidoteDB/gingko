@@ -1,12 +1,3 @@
-%% -------------------------------------------------------------------
-%%
-%% Copyright <2013-2018> <
-%%  Technische Universität Kaiserslautern, Germany
-%%  Université Pierre et Marie Curie / Sorbonne-Université, France
-%%  Universidade NOVA de Lisboa, Portugal
-%%  Université catholique de Louvain (UCL), Belgique
-%%  INESC TEC, Portugal
-%% >
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -22,19 +13,14 @@
 %% specific language governing permissions and limitations
 %% under the License.
 %%
-%% List of the contributors to the development of Antidote: see AUTHORS file.
 %% Description and complete License: see LICENSE file.
 %% -------------------------------------------------------------------
 
-%% ZMQ context manager
-%% In order to use ZeroMQ, a common context instance is needed (http://api.zeromq.org/4-0:zmq-ctx-new).
-%% The sole purpose of this gen_server is to provide this instance, and to terminate it gracefully.
-
--module(zmq_context).
--include("inter_dc.hrl").
+-module(gingko_time_manager).
+-author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
 -behaviour(gen_server).
 
--export([get/0]).
+-export([get_positive_monotonic_time/0, get_monotonic_system_time/0]).
 
 -export([start_link/0,
     init/1,
@@ -45,7 +31,8 @@
     code_change/3]).
 
 -record(state, {
-    zmq_context :: zmq_context()
+    offset :: non_neg_integer(),
+    monotonic_system_timestamp :: non_neg_integer()
 }).
 -type state() :: #state{}.
 
@@ -53,42 +40,56 @@
 %%% Public API
 %%%===================================================================
 
-%% Context is a NIF object handle
-get() ->
-    gen_server:call(?MODULE, get_context).
+-spec get_positive_monotonic_time() -> non_neg_integer().
+get_positive_monotonic_time() ->
+    gen_server:call(?MODULE, positive_monotonic_timestamp).
+
+-spec get_monotonic_system_time() -> non_neg_integer().
+get_monotonic_system_time() ->
+    gen_server:call(?MODULE, monotonic_system_timestamp).
 
 %%%===================================================================
 %%% Spawning and gen_server implementation
 %%%===================================================================
 
-start_link() ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
+start_link() -> gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 init([]) ->
     default_gen_server_behaviour:init(?MODULE, []),
-    case erlzmq:context() of
-        {ok, ZmqContext} -> {ok, #state{zmq_context = ZmqContext}};
-        Error -> {stop, Error}
-    end.
+    MonotonicTime = erlang:monotonic_time(),
+    Offset =
+        case MonotonicTime > 0 of
+            true -> erlang:monotonic_time() * (-1);
+            false -> 0
+        end,
+    SystemTime = general_utils:get_timestamp_in_microseconds(),
+    {ok, #state{offset = Offset, monotonic_system_timestamp = SystemTime}}.
 
 handle_call(Request = hello, From, State) ->
     default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
     {reply, ok, State};
 
-handle_call(Request = get_context, From, State = #state{zmq_context = ZmqContext}) ->
+handle_call(Request = positive_monotonic_timestamp, From, State = #state{offset = Offset}) ->
     default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
-    {reply, ZmqContext, State};
+    PositiveMonotonicTime = erlang:monotonic_time() + Offset,
+    {reply, PositiveMonotonicTime, State};
+
+handle_call(Request = monotonic_system_timestamp, From, State = #state{monotonic_system_timestamp = MonotonicSystemTimestamp}) ->
+    default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
+    CurrentTimestamp = general_utils:get_timestamp_in_microseconds(),
+    ResultTimestamp =
+        case CurrentTimestamp =< MonotonicSystemTimestamp of
+            true -> MonotonicSystemTimestamp + 1;
+            false -> CurrentTimestamp
+        end,
+    {reply, ResultTimestamp, State#state{monotonic_system_timestamp = ResultTimestamp}};
 
 handle_call(Request, From, State) -> default_gen_server_behaviour:handle_call_crash(?MODULE, Request, From, State).
 -spec handle_cast(term(), state()) -> no_return().
 handle_cast(Request, State) -> default_gen_server_behaviour:handle_cast_crash(?MODULE, Request, State).
 -spec handle_info(term(), state()) -> no_return().
 handle_info(Info, State) -> default_gen_server_behaviour:handle_info_crash(?MODULE, Info, State).
-
-terminate(Reason, State = #state{zmq_context = ZmqContext}) ->
-    default_gen_server_behaviour:terminate(?MODULE, Reason, State),
-    erlzmq:term(ZmqContext).
-
+terminate(Reason, State) -> default_gen_server_behaviour:terminate(?MODULE, Reason, State).
 code_change(OldVsn, State, Extra) -> default_gen_server_behaviour:code_change(?MODULE, OldVsn, State, Extra).
 
 %%%===================================================================

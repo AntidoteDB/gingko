@@ -18,12 +18,13 @@
 
 -module(inter_dc_request_sender).
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
--include("inter_dc_repl.hrl").
-
+-include("inter_dc.hrl").
 -behaviour(gen_server).
 
 -export([perform_journal_read_request/3,
-    perform_bcounter_permissions_request/3,
+    perform_bcounter_permissions_request/2,
+    perform_dc_state_request/1,
+    perform_health_check_request/1,
     add_dc/2,
     delete_dc/1]).
 
@@ -40,8 +41,7 @@
 -record(state, {
     dcid_to_request_sockets = dict:new() :: dict:dict(dcid(), [zmq_socket()]),
     next_request_id :: non_neg_integer(),
-    running_requests = dict:new() :: dict:dict(non_neg_integer(), request_entry()),
-    last_health_check_results = dict:new() :: dict:dict(dcid(), ok | running)
+    running_requests = dict:new() :: dict:dict(non_neg_integer(), request_entry())
 }).
 -type state() :: #state{}.
 
@@ -49,24 +49,28 @@
 %%% Public API
 %%%===================================================================
 
--spec perform_journal_read_request(dcid_and_partition(), {atom(), term()}, fun((term(), request_entry()) -> ok))
-        -> ok | unknown_dc.
+-spec perform_journal_read_request({dcid(), partition_id()}, {atom(), term()}, fun((term(), request_entry()) -> ok))
+        -> ok.
 perform_journal_read_request({TargetDCID, TargetPartition}, {JournalEntryFilterFuncName, JournalEntryFilterFuncArgs}, ReturnToSenderFunc) ->
-    gen_server:call(?MODULE, {request, ?JOURNAL_READ_REQUEST, {TargetDCID, TargetPartition}, {read_journal_entries, {JournalEntryFilterFuncName, JournalEntryFilterFuncArgs}}, ReturnToSenderFunc}).
+    gen_server:cast(?MODULE, {request, ?JOURNAL_READ_REQUEST, {TargetDCID, TargetPartition}, {JournalEntryFilterFuncName, JournalEntryFilterFuncArgs}, ReturnToSenderFunc}).
 
--spec perform_bcounter_permissions_request(dcid_and_partition(), {atom(), {key(), non_neg_integer(), dcid()}}, fun((term(), request_entry()) -> ok))
-        -> ok | unknown_dc.
-perform_bcounter_permissions_request({TargetDCID, TargetPartition}, {transfer, {Key, Amount, RequesterDCID}}, ReturnToSenderFunc) ->
-    gen_server:call(?MODULE, {request, ?BCOUNTER_REQUEST, {TargetDCID, TargetPartition}, {request_permissions, {transfer, {Key, Amount, RequesterDCID}}}, ReturnToSenderFunc}).
+-spec perform_bcounter_permissions_request({dcid(), partition_id()}, {atom(), {key(), non_neg_integer(), dcid()}})
+        -> ok.
+perform_bcounter_permissions_request({TargetDCID, TargetPartition}, {transfer, {Key, Amount, RequesterDCID}}) ->
+    gen_server:cast(?MODULE, {request, ?BCOUNTER_REQUEST, {TargetDCID, TargetPartition}, {transfer, {Key, Amount, RequesterDCID}}, none}).
+
+-spec perform_dc_state_request(dc_state()) -> ok.
+perform_dc_state_request(DcState) ->
+    gen_server:cast(?MODULE, {request, ?DCSF_MSG, {all, all}, DcState, none}).
 
 perform_health_check_request(ReturnToSenderFunc) ->
-    gen_server:call(?MODULE, {request, ?HEALTH_CHECK_MSG, {all, all}, health_check, ReturnToSenderFunc}).
+    gen_server:cast(?MODULE, {request, ?HEALTH_CHECK_MSG, {all, all}, none, ReturnToSenderFunc}).
 
--spec add_dc(dcid(), dc_address_list()) -> ok.
+-spec add_dc(dcid(), dc_address_list()) -> ok | {error, reason()}.
 add_dc(DCID, DcAddressList) -> gen_server:call(?MODULE, {add_dc, DCID, DcAddressList}, ?COMM_TIMEOUT).
 
 -spec delete_dc(dcid()) -> ok.
-delete_dc(DCID) -> gen_server:call(?MODULE, {delete_dc, DCID}, ?COMM_TIMEOUT).
+delete_dc(DCID) -> gen_server:cast(?MODULE, {delete_dc, DCID}).
 
 %%%===================================================================
 %%% Spawning and gen_server implementation
@@ -82,23 +86,6 @@ handle_call(Request = hello, From, State) ->
     default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
     {reply, ok, State};
 
-%% Handle an instruction to ask a remote DC.
-handle_call(Request = {request, RequestType, {TargetDCID, TargetPartition}, GivenRequest, ReturnFunc}, From, State = #state{dcid_to_request_sockets = DCIDToRequestSocket, next_request_id = RequestId}) ->
-    default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
-    case dict:find(TargetDCID, DCIDToRequestSocket) of
-        %% If socket found
-        %% Find the socket that is responsible for this partition
-        {ok, Sockets} ->
-            RequestRecord = inter_dc_request:create_request_record({RequestId, RequestType}, {TargetDCID, TargetPartition}, GivenRequest),
-            %% Build the binary request
-            RequestEntry = inter_dc_request:create_request_entry(RequestRecord, ReturnFunc),
-            RequestRecordBinary = inter_dc_request:request_record_to_binary(RequestRecord),
-            lists:foreach(fun(Socket) -> erlzmq:send(Socket, RequestRecordBinary) end, Sockets),
-            {reply, ok, request_sent_state_update(RequestEntry, State)};
-        %% If socket not found
-        _ -> {reply, unknown_dc, State}
-    end;
-
 %% Handle the instruction to add a new DC.
 handle_call(Request = {add_dc, DCID, DcAddressList}, From, State) ->
     default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
@@ -111,18 +98,33 @@ handle_call(Request = {add_dc, DCID, DcAddressList}, From, State) ->
     case connect_to_nodes(DcAddressList, []) of
         {ok, Sockets} ->
             {reply, ok, NewState#state{dcid_to_request_sockets = dict:store(DCID, Sockets, DCIDToRequestSockets)}};
-        connection_error ->
-            {reply, error, NewState}
+        Error ->
+            {reply, Error, NewState}
     end;
 
-%% Remove a DC. Unanswered queries are left untouched.
-handle_call(Request = {delete_dc, DCID}, From, State) ->
-    default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
-    NewState = delete_dc(DCID, State),
-    {reply, ok, NewState};
+handle_call(Request, From, State) -> default_gen_server_behaviour:handle_call_crash(?MODULE, Request, From, State).
 
-handle_call(Request, From, State) -> default_gen_server_behaviour:handle_call(?MODULE, Request, From, State).
-handle_cast(Request, State) -> default_gen_server_behaviour:handle_cast(?MODULE, Request, State).
+%% Handle an instruction to ask a remote DC.
+handle_cast(Request = {request, RequestType, {TargetDCIDOrAll, TargetPartition}, RequestArgs, ReturnFuncOrNone}, State = #state{dcid_to_request_sockets = DCIDToRequestSocket, next_request_id = RequestId}) ->
+    default_gen_server_behaviour:handle_cast(?MODULE, Request, State),
+    Sockets =
+        case TargetDCIDOrAll of
+            all -> lists:append(general_utils:get_values(DCIDToRequestSocket));
+            TargetDCID -> dict:find(TargetDCID, DCIDToRequestSocket)
+        end,
+    RequestRecord = inter_dc_request:create_request_record({RequestId, RequestType}, {TargetDCIDOrAll, TargetPartition}, RequestArgs),
+    %% Build the binary request
+    RequestEntry = inter_dc_request:create_request_entry(RequestRecord, ReturnFuncOrNone),
+    RequestRecordBinary = inter_dc_request:request_record_to_binary(RequestRecord),
+    lists:foreach(fun(Socket) -> zmq_utils:try_send(Socket, RequestRecordBinary) end, Sockets),
+    {noreply, request_sent_state_update(RequestEntry, State)};
+
+handle_cast(Request = {delete_dc, DCID}, State) ->
+    default_gen_server_behaviour:handle_cast(?MODULE, Request, State),
+    NewState = delete_dc(DCID, State),
+    {noreply, NewState};
+
+handle_cast(Request, State) -> default_gen_server_behaviour:handle_cast_crash(?MODULE, Request, State).
 
 %% Handle a response from any of the connected sockets
 %% Possible improvement - disconnect sockets unused for a defined period of time.
@@ -133,15 +135,19 @@ handle_info(Info = {zmq, _Socket, ResponseBinary, _Flags}, State = #state{runnin
     %% Be sure this is a request from this socket
     NewRunningRequests =
         case dict:find(RequestId, RunningRequests) of
-            {ok, RequestEntry = #request_entry{request_record = RequestRecord, return_func = ReturnFunc}} ->
-                ReturnFunc(Response, RequestEntry),
+            {ok, RequestEntry = #request_entry{request_record = RequestRecord, return_func_or_none = ReturnFuncOrNone}} ->
+                case ReturnFuncOrNone of
+                    none -> ok;
+                    _ -> ReturnFuncOrNone(Response, RequestEntry)
+                end,
                 dict:erase(RequestId, RunningRequests);
             error ->
                 logger:error("Got a bad (or repeated) request id: ~p", [RequestId]),
                 RunningRequests
         end,
     {noreply, State#state{running_requests = NewRunningRequests}};
-handle_info(Info, State) -> default_gen_server_behaviour:handle_info(?MODULE, Info, State).
+
+handle_info(Info, State) -> default_gen_server_behaviour:handle_info_crash(?MODULE, Info, State).
 
 terminate(Reason, State = #state{dcid_to_request_sockets = DCIDToRequestSocket}) ->
     default_gen_server_behaviour:terminate(?MODULE, Reason, State),
@@ -175,32 +181,32 @@ request_sent_state_update(RequestEntry = #request_entry{request_record = #reques
     NewRunningRequests = dict:store(RequestId, RequestEntry, RunningRequests),
     State#state{next_request_id = PreviousRequestId + 1, running_requests = NewRunningRequests}.
 
--spec connect_to_nodes(dc_address_list(), [zmq_socket()]) -> [zmq_socket()] | connection_error.
+-spec connect_to_nodes(dc_address_list(), [zmq_socket()]) -> {ok, [zmq_socket()]} | {error, reason()}.
 connect_to_nodes([], SocketAcc) ->
     {ok, SocketAcc};
 connect_to_nodes([NodeAddressList | Rest], SocketAcc) ->
     case connect_to_node(NodeAddressList) of
         {ok, Socket} ->
             connect_to_nodes(Rest, [Socket | SocketAcc]);
-        connection_error ->
+        {error, connection_error} ->
             lists:foreach(fun zmq_utils:close_socket/1, SocketAcc),
-            connection_error
+            {error, connection_error}
     end.
 
 %% A node is a list of addresses because it can have multiple interfaces
 %% this just goes through the list and connects to the first interface that works
--spec connect_to_node(node_address_list()) -> {ok, zmq_socket()} | connection_error.
+-spec connect_to_node(node_address_list()) -> {ok, zmq_socket()} | {error, reason()}.
 connect_to_node([]) ->
     logger:error("Unable to subscribe to DC log reader"),
-    connection_error;
+    {error, connection_error};
 connect_to_node([Address | Rest]) ->
     %% Test the connection
     TemporarySocket = zmq_utils:create_connect_socket(req, false, Address),
-    ok = erlzmq:setsockopt(TemporarySocket, rcvtimeo, ?ZMQ_TIMEOUT),
+    ok = zmq_utils:set_receive_timeout(TemporarySocket, ?ZMQ_TIMEOUT),
     %% Always use 0 as the id of the check up message
-    RequestRecord = inter_dc_request:create_request_record({0, ?CHECK_UP_MSG}, {all, all}, ?CHECK_UP_MSG),
-    ok = erlzmq:send(TemporarySocket, inter_dc_request:request_record_to_binary(RequestRecord)),
-    Response = erlzmq:recv(TemporarySocket),
+    RequestRecord = inter_dc_request:create_request_record({0, ?HEALTH_CHECK_MSG}, {all, all}, none),
+    ok = zmq_utils:try_send(TemporarySocket, inter_dc_request:request_record_to_binary(RequestRecord)),
+    Response = zmq_utils:try_recv(TemporarySocket),
     ok = zmq_utils:close_socket(TemporarySocket),
     case Response of
         {ok, Binary} ->

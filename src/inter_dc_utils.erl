@@ -18,7 +18,7 @@
 
 -module(inter_dc_utils).
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
--include("inter_dc_repl.hrl").
+-include("inter_dc.hrl").
 
 -export([get_request_address/0,
     get_request_address_list/0,

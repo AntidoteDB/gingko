@@ -21,8 +21,7 @@
 
 -module(gingko_app).
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
--include("inter_dc_repl.hrl").
-
+-include("inter_dc.hrl").
 -behaviour(application).
 
 -export([start/2, stop/1, get_default_config/0, initial_startup_nodes/1, wait_until_everything_is_running/0]).
@@ -38,10 +37,16 @@ start(_StartType, _StartArgs) ->
             case ?USE_SINGLE_SERVER of
                 true -> ok;
                 false ->
-                    ok = riak_core:register([{vnode_module, gingko_log_vnode}]),
+                    ok = riak_core:register(?GINGKO_APP_NAME, [{vnode_module, inter_dc_log_vnode}]),
+                    ok = riak_core_node_watcher:service_up(inter_dc_log, self()),
+
+                    ok = riak_core:register(?GINGKO_APP_NAME, [{vnode_module, gingko_log_vnode}]),
                     ok = riak_core_node_watcher:service_up(gingko_log, self()),
 
-                    ok = riak_core:register([{vnode_module, gingko_cache_vnode}]),
+                    ok = riak_core:register(?GINGKO_APP_NAME, [{vnode_module, gingko_log_helper_vnode}]),
+                    ok = riak_core_node_watcher:service_up(gingko_log_helper, self()),
+
+                    ok = riak_core:register(?GINGKO_APP_NAME, [{vnode_module, gingko_cache_vnode}]),
                     ok = riak_core_node_watcher:service_up(gingko_cache, self())
             end,
             wait_until_everything_is_running(),
@@ -57,11 +62,15 @@ stop(_State) ->
     ok.
 
 wait_until_everything_is_running() ->
+    ok = gingko_utils:ensure_gingko_instance_running(gingko_time_manager),
     ok = gingko_utils:ensure_gingko_instance_running(gingko_server),
-    ok = gingko_utils:ensure_gingko_instance_running(inter_dc_txn_manager),
+    ok = gingko_utils:ensure_gingko_instance_running(?INTER_DC_LOG),
     ok = gingko_utils:ensure_gingko_instance_running(?GINGKO_LOG),
+    ok = gingko_utils:ensure_gingko_instance_running(?GINGKO_LOG_HELPER),
     ok = gingko_utils:ensure_gingko_instance_running(?GINGKO_CACHE),
     ok = gingko_utils:ensure_gingko_instance_running(zmq_context),
+    ok = gingko_utils:ensure_gingko_instance_running(gingko_checkpoint_service),
+    ok = gingko_utils:ensure_gingko_instance_running(inter_dc_state_service),
     ok = gingko_utils:ensure_gingko_instance_running(inter_dc_txn_receiver),
     ok = gingko_utils:ensure_gingko_instance_running(inter_dc_txn_sender),
     ok = gingko_utils:ensure_gingko_instance_running(inter_dc_request_responder),
@@ -102,12 +111,13 @@ initial_startup_nodes(Nodes) ->
                     ok = mnesia:create_schema(Nodes),
                     rpc:multicall(Nodes, application, start, [mnesia]),
                     ok = make_sure_global_stores_are_running([dc_info_entry, checkpoint_entry], Nodes),
-                    [] = sets:to_list(sets:del_element(ok, sets:from_list(gingko_utils:bcast_gingko_sync_only_values(?GINGKO_LOG, setup_journal_mnesia_table)))),
-                    TableNames = gingko_utils:bcast_gingko_sync_only_values(?GINGKO_LOG, get_journal_mnesia_table_name),
+
+                    true = general_utils:list_all_equal(ok, gingko_utils:bcast_gingko_sync_only_values(?GINGKO_LOG, initialize)),
+                    TableNames = general_utils:get_values(gingko_utils:bcast_gingko_sync_only_values(?GINGKO_LOG, get_journal_mnesia_table_name)),
                     ok = mnesia:wait_for_tables([dc_info_entry, checkpoint_entry | TableNames], 5000), %TODO error handling
                     ok; %TODO setup fresh
                 _ ->
-                    NodesWithoutSchema = sets:to_list(sets:subtract(sets:from_list(Nodes), sets:from_list(NodesWithSchema))),
+                    NodesWithoutSchema = general_utils:list_without_elements_from_other_list(Nodes, NodesWithSchema),
                     {MnesiaNodesList, BadNodes} = rpc:multicall(NodesWithSchema, mnesia, system_info, [db_nodes]),
                     case BadNodes == [] of
                         false -> {error, {"One or more Nodes don't exist", BadNodes}};
@@ -128,7 +138,7 @@ initial_startup_nodes(Nodes) ->
                                                 _ -> add_new_nodes_to_mnesia(hd(NodesWithSchema), NodesWithoutSchema)
                                             end,
                                             ok = make_sure_global_stores_are_running([dc_info_entry, checkpoint_entry], Nodes),
-                                            gingko_utils:bcast_gingko_sync(?GINGKO_LOG, setup_journal_mnesia_table),
+                                            gingko_utils:bcast_gingko_sync(?GINGKO_LOG, initialize),
                                             ok; %TODO checkpoint setup and inform all vnodes
                                         false ->
                                             PartiallyPerfect = lists:all(fun(MnesiaNodes) ->

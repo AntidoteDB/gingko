@@ -27,43 +27,54 @@
 %% -------------------------------------------------------------------
 
 -module(zmq_utils).
--include("inter_dc_repl.hrl").
-
--type socket_type() :: term().
+-include("inter_dc.hrl").
 
 -export([create_connect_socket/3,
     create_bind_socket/3,
-    receive_filter/2,
-    close_socket/1]).
+    set_socket_option/3,
+    set_receive_filter/2,
+    set_receive_timeout/2,
+    close_socket/1,
+    try_send/2,
+    try_send/3,
+    try_recv/1,
+    try_recv/2]).
 
-
-
--spec create_socket(socket_type(), boolean()) -> zmq_socket().
+-spec create_socket(zmq_socket_type(), boolean()) -> zmq_socket() | no_return().
 create_socket(Type, Active) ->
-    Ctx = zmq_context:get(),
-    Result =
-        case Active of
-            true -> erlzmq:socket(Ctx, [Type, {active, true}]);
-            false -> erlzmq:socket(Ctx, Type)
-        end,
-    case Result of
+    ZmqContext = zmq_context:get(),
+    TypeArgs = case Active of
+                   true -> [Type, {active, true}];
+                   false -> Type
+               end,
+    case erlzmq:socket(ZmqContext, TypeArgs) of
         {ok, Socket} -> Socket;
-        _ -> throw(failed_to_create_zmq_socket)
+        Error ->
+            general_utils:print_and_return_unexpected_error(?MODULE, ?FUNCTION_NAME, [Type, Active], Error, [ZmqContext, TypeArgs])
     end.
 
--spec create_connect_socket(socket_type(), boolean(), socket_address()) -> zmq_socket().
+-spec create_connect_socket(zmq_socket_type(), boolean(), socket_address()) -> zmq_socket() | no_return().
 create_connect_socket(Type, Active, Address) ->
     Socket = create_socket(Type, Active),
-    ok = erlzmq:connect(Socket, connection_string(Address)),
-    Socket.
+    ConnectionString = connection_string(Address),
+    case erlzmq:connect(Socket, ConnectionString) of
+        ok -> Socket;
+        Error ->
+            general_utils:print_and_return_unexpected_error(?MODULE, ?FUNCTION_NAME, [Type, Active, Address], Error, [Socket, ConnectionString])
+    end.
 
--spec create_bind_socket(socket_type(), boolean(), inet:port_number()) -> zmq_socket().
+-spec create_bind_socket(zmq_socket_type(), boolean(), inet:port_number()) -> zmq_socket() | no_return().
 create_bind_socket(Type, Active, Port) ->
     Socket = create_socket(Type, Active),
-    ok = erlzmq:bind(Socket, connection_string({"*", Port})),
-    Socket.
+    ConnectionString = connection_string({"*", Port}),
+    case erlzmq:bind(Socket, ConnectionString) of
+        ok -> Socket;
+        Error ->
+            general_utils:print_and_return_unexpected_error(?MODULE, ?FUNCTION_NAME, [Type, Active, Port], Error, [Socket, ConnectionString])
+    end.
 
--spec connection_string(socket_address()) -> list().
+
+-spec connection_string(socket_address()) -> string().
 connection_string({Ip, Port}) ->
     IpString =
         case Ip of
@@ -72,10 +83,39 @@ connection_string({Ip, Port}) ->
         end,
     lists:flatten(io_lib:format("tcp://~s:~p", [IpString, Port])).
 
--spec receive_filter(zmq_socket(), binary()) -> ok.
-receive_filter(Socket, Prefix) ->
-    erlzmq:setsockopt(Socket, subscribe, Prefix).
+-spec set_socket_option(zmq_socket(), zmq_socket_option(), zmq_socket_option_value()) -> ok | no_return().
+set_socket_option(Socket, SocketOption, SocketOptionValue) ->
+    general_utils:run_function_with_unexpected_error(
+        erlzmq:setsockopt(Socket, SocketOption, SocketOptionValue), ok, ?MODULE, ?FUNCTION_NAME, [Socket, SocketOption, SocketOptionValue], []).
 
--spec close_socket(zmq_socket()) -> ok.
+-spec set_receive_filter(zmq_socket(), binary()) -> ok | no_return().
+set_receive_filter(Socket, Prefix) ->
+    set_socket_option(Socket, subscribe, Prefix).
+
+-spec set_receive_timeout(zmq_socket(), non_neg_integer()) -> ok | no_return().
+set_receive_timeout(Socket, Timeout) ->
+    set_socket_option(Socket, rcvtimeo, Timeout).
+
+-spec close_socket(zmq_socket()) -> ok | no_return().
 close_socket(Socket) ->
-    erlzmq:close(Socket).
+    general_utils:run_function_with_unexpected_error(
+        erlzmq:close(Socket), ok, ?MODULE, ?FUNCTION_NAME, [Socket], []).
+
+-spec try_send(zmq_socket(), binary()) -> ok | no_return().
+try_send(Socket, BinaryMessage) -> try_send(Socket, BinaryMessage, []).
+
+-spec try_send(zmq_socket(), binary(), zmq_send_recv_flags()) -> ok | no_return().
+try_send(Socket, BinaryMessage, Flags) ->
+    general_utils:run_function_with_unexpected_error(
+        erlzmq:send(Socket, BinaryMessage, Flags), ok, ?MODULE, ?FUNCTION_NAME, [Socket, BinaryMessage, Flags], []).
+
+-spec try_recv(zmq_socket()) -> {ok, zmq_data()} | {error, timeout} | no_return().
+try_recv(Socket) -> try_recv(Socket, []).
+
+-spec try_recv(zmq_socket(), zmq_send_recv_flags()) -> {ok, zmq_data()} | {error, timeout} | no_return().
+try_recv(Socket, Flags) ->
+    case erlzmq:recv(Socket, Flags) of
+        {ok, Data} -> {ok, Data};
+        {error, eagain} -> {error, timeout};
+        Error -> general_utils:print_and_return_unexpected_error(?MODULE, ?FUNCTION_NAME, [Socket], Error, [])
+    end.

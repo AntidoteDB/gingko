@@ -16,6 +16,21 @@
 %% Description and complete License: see LICENSE file.
 %% -------------------------------------------------------------------
 
--module(inter_dc_filter_functions).
+-module(mnesia_utils).
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
 -include("gingko.hrl").
+
+-export([run_transaction/1,
+    get_mnesia_result/1]).
+
+-spec run_transaction(fun(() -> ResType :: term())) -> ResType :: term().
+run_transaction(F) ->
+    get_mnesia_result(mnesia:activity(transaction, F)).
+
+-spec get_mnesia_result({atomic, ResType :: term()} | {aborted, reason()} | term()) -> ResType :: term() | {error, reason()}.
+get_mnesia_result(ActivityResult) ->
+    case ActivityResult of
+        {atomic, Res1} -> Res1;
+        {aborted, Reason} -> {error, {aborted, Reason}};
+        Res2 -> Res2
+    end.

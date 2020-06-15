@@ -18,11 +18,10 @@
 
 -module(inter_dc_txn_sender).
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
--include("inter_dc_repl.hrl").
-
+-include("inter_dc.hrl").
 -behaviour(gen_server).
 
--export([broadcast_journal_entries/1]).
+-export([broadcast_txn/2]).
 
 -export([start_link/0,
     init/1,
@@ -34,6 +33,7 @@
 
 -record(state, {
     journal_socket :: zmq_socket(),
+    partition_to_last_send_time :: dict:dict(partition_id(), timestamp()),
     ping_timer :: reference()
 }).
 
@@ -41,9 +41,9 @@
 %%% Public API
 %%%===================================================================
 
--spec broadcast_journal_entries([inter_dc_journal_entry()]) -> ok.
-broadcast_journal_entries(InterDcJournalEntries) ->
-    gen_server:call(?MODULE, {journal_entry, InterDcJournalEntries}).
+-spec broadcast_txn(partition_id(), [journal_entry()]) -> ok.
+broadcast_txn(Partition, JournalEntryList) ->
+    gen_server:cast(?MODULE, {inter_dc_txn, Partition, JournalEntryList}).
 
 %%%===================================================================
 %%% Spawning and gen_server implementation
@@ -55,32 +55,50 @@ init([]) ->
     default_gen_server_behaviour:init(?MODULE, []),
     {_, JournalPort} = inter_dc_utils:get_journal_address(),
     JournalSocket = zmq_utils:create_bind_socket(pub, false, JournalPort),
+    logger:info("Publisher started on port ~p", [JournalPort]),
     PingTimer = erlang:send_after(?TXN_PING_FREQ, self(), send_ping),
-    {ok, #state{journal_socket = JournalSocket, ping_timer = PingTimer}}.
+    CurrentTime = gingko_utils:get_timestamp(),
+    MyPartitions = gingko_utils:get_my_partitions(),
+    PartitionToLastSendTime = lists:foldl(fun(Partition, DictAcc) -> dict:store(Partition, CurrentTime, DictAcc) end, dict:new(), MyPartitions),
+    {ok, #state{journal_socket = JournalSocket, ping_timer = PingTimer, partition_to_last_send_time = PartitionToLastSendTime}}.
 
 handle_call(Request = hello, From, State) ->
     default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
     {reply, ok, State};
 
-handle_call(Request = {journal_entry, InterDcJournalEntries}, From, State = #state{journal_socket = JournalSocket}) ->
-    default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
-    InterDcTxn = inter_dc_txn:from_journal_entries(InterDcJournalEntries),
+handle_call(Request, From, State) -> default_gen_server_behaviour:handle_call_crash(?MODULE, Request, From, State).
+
+handle_cast(Request = {inter_dc_txn, Partition, JournalEntryList}, State = #state{journal_socket = JournalSocket, partition_to_last_send_time = PartitionToLastSendTime}) ->
+    default_gen_server_behaviour:handle_cast(?MODULE, Request, State),
+    NewPartitionToLastSendTime = dict:store(Partition, gingko_utils:get_timestamp(), PartitionToLastSendTime),
+    InterDcTxn = inter_dc_txn:from_journal_entries(Partition, JournalEntryList),
     BinaryMessage = inter_dc_txn:to_binary(InterDcTxn),
-    {reply, erlzmq:send(JournalSocket, BinaryMessage), State};
+    ok = zmq_utils:try_send(JournalSocket, BinaryMessage),
+    {noreply, State#state{partition_to_last_send_time = NewPartitionToLastSendTime}};
 
-handle_call(Request, From, State) -> default_gen_server_behaviour:handle_call(?MODULE, Request, From, State).
-handle_cast(Request, State) -> default_gen_server_behaviour:handle_cast(?MODULE, Request, State).
+handle_cast(Request, State) -> default_gen_server_behaviour:handle_cast_crash(?MODULE, Request, State).
 
-handle_info(Info = send_ping, State = #state{journal_socket = JournalSocket, ping_timer = PingTimer}) ->
+handle_info(Info = send_ping, State = #state{journal_socket = JournalSocket, ping_timer = PingTimer, partition_to_last_send_time = PartitionToLastSendTime}) ->
     default_gen_server_behaviour:handle_info(?MODULE, Info, State),
     erlang:cancel_timer(PingTimer),
-    InterDcTxn = inter_dc_txn:from_journal_entries([]),
-    BinaryMessage = inter_dc_txn:to_binary(InterDcTxn),
-    erlzmq:send(JournalSocket, BinaryMessage),
-    NewPingTimer = erlang:send_after(?TXN_PING_FREQ, self(), send_ping),
-    {noreply, State#state{ping_timer = NewPingTimer}};
+    CurrentTime = gingko_utils:get_timestamp(),
+    NewPartitionToLastSendTime =
+        dict:map(
+            fun(Partition, Timestamp) -> %%TODO redo time difference (currently microseconds)
+                case (CurrentTime - Timestamp) > 1000000 of
+                    true ->
+                        InterDcTxn = inter_dc_txn:from_journal_entries(Partition, []),
+                        BinaryMessage = inter_dc_txn:to_binary(InterDcTxn),
+                        ok = zmq_utils:try_send(JournalSocket, BinaryMessage),
+                        CurrentTime;
+                    false -> CurrentTime
+                end
+            end, PartitionToLastSendTime),
 
-handle_info(Info, State) -> default_gen_server_behaviour:handle_info(?MODULE, Info, State).
+    NewPingTimer = erlang:send_after(?TXN_PING_FREQ, self(), send_ping),
+    {noreply, State#state{ping_timer = NewPingTimer, partition_to_last_send_time = NewPartitionToLastSendTime}};
+
+handle_info(Info, State) -> default_gen_server_behaviour:handle_info_crash(?MODULE, Info, State).
 
 terminate(Reason, State = #state{journal_socket = JournalSocket}) ->
     default_gen_server_behaviour:terminate(?MODULE, Reason, State),

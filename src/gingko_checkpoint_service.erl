@@ -1,12 +1,3 @@
-%% -------------------------------------------------------------------
-%%
-%% Copyright <2013-2018> <
-%%  Technische Universität Kaiserslautern, Germany
-%%  Université Pierre et Marie Curie / Sorbonne-Université, France
-%%  Universidade NOVA de Lisboa, Portugal
-%%  Université catholique de Louvain (UCL), Belgique
-%%  INESC TEC, Portugal
-%% >
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -22,19 +13,15 @@
 %% specific language governing permissions and limitations
 %% under the License.
 %%
-%% List of the contributors to the development of Antidote: see AUTHORS file.
 %% Description and complete License: see LICENSE file.
 %% -------------------------------------------------------------------
 
-%% ZMQ context manager
-%% In order to use ZeroMQ, a common context instance is needed (http://api.zeromq.org/4-0:zmq-ctx-new).
-%% The sole purpose of this gen_server is to provide this instance, and to terminate it gracefully.
-
--module(zmq_context).
--include("inter_dc.hrl").
+-module(gingko_checkpoint_service).
+-author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
+-include("gingko.hrl").
 -behaviour(gen_server).
 
--export([get/0]).
+-export([update_checkpoint_service/2]).
 
 -export([start_link/0,
     init/1,
@@ -45,7 +32,9 @@
     code_change/3]).
 
 -record(state, {
-    zmq_context :: zmq_context()
+    active = false :: boolean(),
+    checkpoint_interval_millis = ?DEFAULT_WAIT_TIME_SUPER_LONG :: non_neg_integer(),
+    checkpoint_timer = none :: none | reference()
 }).
 -type state() :: #state{}.
 
@@ -53,44 +42,49 @@
 %%% Public API
 %%%===================================================================
 
-%% Context is a NIF object handle
-get() ->
-    gen_server:call(?MODULE, get_context).
+-spec update_checkpoint_service(boolean(), non_neg_integer()) -> ok.
+update_checkpoint_service(Active, CheckpointIntervalMillis) ->
+    gen_server:cast(?MODULE, {update_checkpoint_service, Active, CheckpointIntervalMillis}).
 
 %%%===================================================================
 %%% Spawning and gen_server implementation
 %%%===================================================================
 
-start_link() ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
+start_link() -> gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 init([]) ->
     default_gen_server_behaviour:init(?MODULE, []),
-    case erlzmq:context() of
-        {ok, ZmqContext} -> {ok, #state{zmq_context = ZmqContext}};
-        Error -> {stop, Error}
-    end.
+    {ok, #state{}}.
 
 handle_call(Request = hello, From, State) ->
     default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
     {reply, ok, State};
 
-handle_call(Request = get_context, From, State = #state{zmq_context = ZmqContext}) ->
-    default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
-    {reply, ZmqContext, State};
-
 handle_call(Request, From, State) -> default_gen_server_behaviour:handle_call_crash(?MODULE, Request, From, State).
--spec handle_cast(term(), state()) -> no_return().
+
+handle_cast(Request = {update_checkpoint_service, Active, CheckpointIntervalMillis}, State) ->
+    default_gen_server_behaviour:handle_cast(?MODULE, Request, State),
+    {noreply, update_timer(State#state{active = Active, checkpoint_interval_millis = CheckpointIntervalMillis})};
+
 handle_cast(Request, State) -> default_gen_server_behaviour:handle_cast_crash(?MODULE, Request, State).
--spec handle_info(term(), state()) -> no_return().
+
+handle_info(Info = checkpoint, State = #state{checkpoint_timer = CheckpointTimer, checkpoint_interval_millis = CheckpointIntervalMillis}) ->
+    default_gen_server_behaviour:handle_info(?MODULE, Info, State),
+    erlang:cancel_timer(CheckpointTimer),
+    DependencyVts = gingko_utils:get_GCSf_vts(),
+    gingko:checkpoint(DependencyVts),
+    NewCheckpointTimer = erlang:send_after(CheckpointIntervalMillis, self(), checkpoint),
+    {noreply, State#state{checkpoint_timer = NewCheckpointTimer}};
+
 handle_info(Info, State) -> default_gen_server_behaviour:handle_info_crash(?MODULE, Info, State).
-
-terminate(Reason, State = #state{zmq_context = ZmqContext}) ->
-    default_gen_server_behaviour:terminate(?MODULE, Reason, State),
-    erlzmq:term(ZmqContext).
-
+terminate(Reason, State) -> default_gen_server_behaviour:terminate(?MODULE, Reason, State).
 code_change(OldVsn, State, Extra) -> default_gen_server_behaviour:code_change(?MODULE, OldVsn, State, Extra).
 
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+
+-spec update_timer(state()) -> state().
+update_timer(State = #state{checkpoint_timer = CheckpointTimer, checkpoint_interval_millis = CheckpointIntervalMillis}) ->
+    NewCheckpointTimer = gingko_utils:update_timer(CheckpointTimer, true, CheckpointIntervalMillis, checkpoint, false),
+    State#state{checkpoint_timer = NewCheckpointTimer}.

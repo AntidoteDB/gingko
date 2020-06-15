@@ -18,8 +18,7 @@
 
 -module(inter_dc_txn_receiver).
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
--include("inter_dc_repl.hrl").
-
+-include("inter_dc.hrl").
 -behaviour(gen_server).
 
 -export([add_dc/2,
@@ -34,7 +33,8 @@
     code_change/3]).
 
 -record(state, {
-    dcid_to_journal_sockets = dict:new() :: dict:dict(dcid(), [zmq_socket()])
+    dcid_to_journal_sockets = dict:new() :: dict:dict(dcid(), [zmq_socket()]),
+    current_partition_filter = [] :: [partition_id()] %%TODO later
 }).
 -type state() :: #state{}.
 
@@ -43,11 +43,11 @@
 %%%===================================================================
 
 %% TODO: persist added DCs in case of a node failure, reconnect on node restart.
--spec add_dc(dcid(), dc_address_list()) -> ok.
+-spec add_dc(dcid(), dc_address_list()) -> ok | {error, reason()}.
 add_dc(DCID, DcAddressList) -> gen_server:call(?MODULE, {add_dc, DCID, DcAddressList}, ?COMM_TIMEOUT).
 
 -spec delete_dc(dcid()) -> ok.
-delete_dc(DCID) -> gen_server:call(?MODULE, {del_dc, DCID}, ?COMM_TIMEOUT).
+delete_dc(DCID) -> gen_server:cast(?MODULE, {delete_dc, DCID}).
 
 %%%===================================================================
 %%% Spawning and gen_server implementation
@@ -65,41 +65,37 @@ handle_call(Request = hello, From, State) ->
 
 handle_call(Request = {add_dc, DCID, DcAddressList}, From, State) ->
     default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
-    %% First delete the DC if it is alread connected
+    %% First delete the DC if it is already connected
+    PartitionFilter = gingko_utils:get_my_partitions(),
     NewState = delete_dc(DCID, State),
     DCIDToJournalSockets = NewState#state.dcid_to_journal_sockets,
     case connect_to_nodes(DcAddressList, []) of
         {ok, Sockets} ->
             {reply, ok, NewState#state{dcid_to_journal_sockets = dict:store(DCID, Sockets, DCIDToJournalSockets)}};
-        connection_error ->
-            {reply, error, NewState}
+        Error ->
+            {reply, Error, NewState}
     end;
 
-handle_call(Request = {del_dc, DCID}, From, State) ->
-    default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
-    NewState = delete_dc(DCID, State),
-    {reply, ok, NewState};
+handle_call(Request, From, State) -> default_gen_server_behaviour:handle_call_crash(?MODULE, Request, From, State).
 
-handle_call(Request, From, State) -> default_gen_server_behaviour:handle_call(?MODULE, Request, From, State).
-handle_cast(Request, State) -> default_gen_server_behaviour:handle_cast(?MODULE, Request, State).
+handle_cast(Request = {delete_dc, DCID}, State) ->
+    default_gen_server_behaviour:handle_cast(?MODULE, Request, State),
+    NewState = delete_dc(DCID, State),
+    {noreply, NewState};
+
+handle_cast(Request, State) -> default_gen_server_behaviour:handle_cast_crash(?MODULE, Request, State).
 
 %% handle an incoming interDC transaction from a remote node.
 handle_info(Info = {zmq, _Socket, InterDcTxnBinary, _Flags}, State) ->
     default_gen_server_behaviour:handle_info(?MODULE, Info, State),
-    %% decode the message
     InterDcTxn = inter_dc_txn:from_binary(InterDcTxnBinary),
-    MyPartitions = gingko_utils:get_my_partitions(),
-    RelevantInterDcJournalEntries = lists:filter(fun({Partition, _JournalEntry}) -> Partition == all orelse lists:member(Partition, MyPartitions) end, InterDcTxn#inter_dc_txn.inter_dc_journal_entries),
-    lists:foreach(
-        fun({Partition, JournalEntry}) ->
-            case Partition of
-                all -> gingko_utils:bcast_local_gingko_async(?GINGKO_LOG, {add_remote_journal_entry, JournalEntry});
-                _ -> gingko_utils:call_gingko_async(Partition, ?GINGKO_LOG, {add_remote_journal_entry, JournalEntry})
-            end
-        end, RelevantInterDcJournalEntries),
+    Partition = InterDcTxn#inter_dc_txn.partition,
+    JournalEntryList = InterDcTxn#inter_dc_txn.journal_entries,
+    SortedJournalEntryList = gingko_utils:sort_journal_entries_of_same_tx(JournalEntryList),
+    gingko_utils:call_gingko_async(Partition, ?GINGKO_LOG, {add_remote_txn, SortedJournalEntryList}),
     {noreply, State};
 
-handle_info(Info, State) -> default_gen_server_behaviour:handle_info(?MODULE, Info, State).
+handle_info(Info, State) -> default_gen_server_behaviour:handle_info_crash(?MODULE, Info, State).
 
 terminate(Reason, State = #state{dcid_to_journal_sockets = DCIDToJournalSockets}) ->
     default_gen_server_behaviour:terminate(?MODULE, Reason, State),
@@ -127,33 +123,38 @@ delete_dc(DCID, State = #state{dcid_to_journal_sockets = DCIDToJournalSockets}) 
             State
     end.
 
--spec connect_to_nodes(dc_address_list(), [zmq_socket()]) -> {ok, [zmq_socket()]} | connection_error.
+-spec connect_to_nodes(dc_address_list(), [zmq_socket()]) -> {ok, [zmq_socket()]} | {error, reason()}.
 connect_to_nodes([], SocketAcc) ->
     {ok, SocketAcc};
 connect_to_nodes([NodeAddressList | Rest], SocketAcc) ->
     case connect_to_node(NodeAddressList) of
         {ok, Socket} ->
             connect_to_nodes(Rest, [Socket | SocketAcc]);
-        connection_error ->
+        {error, Reason} ->
             lists:foreach(fun zmq_utils:close_socket/1, SocketAcc),
-            connection_error
+            {error, Reason}
     end.
 
--spec connect_to_node(node_address_list()) -> {ok, zmq_socket()} | connection_error.
+-spec connect_to_node(node_address_list()) -> {ok, zmq_socket()} | {error, reason()}.
 connect_to_node([]) ->
     logger:error("Unable to subscribe to DC Node"),
-    connection_error;
+    {error, connection_error};
 connect_to_node([NodeAddress | Rest]) ->
     %% Test the connection
     TemporarySocket = zmq_utils:create_connect_socket(sub, false, NodeAddress),
-    ok = erlzmq:setsockopt(TemporarySocket, rcvtimeo, ?ZMQ_TIMEOUT),
-    ok = zmq_utils:receive_filter(TemporarySocket, <<>>),
-    Result = erlzmq:recv(TemporarySocket),
+    ok = zmq_utils:set_receive_timeout(TemporarySocket, ?ZMQ_TIMEOUT),
+    ok = zmq_utils:set_receive_filter(TemporarySocket, <<>>),
+    Result = zmq_utils:try_recv(TemporarySocket),
     ok = zmq_utils:close_socket(TemporarySocket),
     case Result of
         {ok, _} ->
             %% Create a subscriber socket for the specified DC
-            Socket = zmq_utils:create_connect_socket(sub, false, NodeAddress),
+            Socket = zmq_utils:create_connect_socket(sub, true, NodeAddress),
+            lists:foreach(
+                fun(Partition) ->
+                    %% Make the socket subscribe to messages prefixed with the given partition number
+                    ok = zmq_utils:set_receive_filter(Socket, inter_dc_utils:partition_to_binary(Partition))
+                end, gingko_utils:get_my_partitions()),
             {ok, Socket};
         _ ->
             connect_to_node(Rest)

@@ -27,14 +27,15 @@
 -include("gingko.hrl").
 -export([init_per_suite/1, end_per_suite/1, init_per_testcase/2, end_per_testcase/2,
     all/0]).
--export([simple_integration_test/1, two_transactions/1]).
+-export([simple_integration_test/1, two_transactions/1, replication_test/1, checkpoint_test/1]).
 
 all() ->
     [
-        simple_integration_test, two_transactions
+        simple_integration_test, two_transactions, replication_test, checkpoint_test
     ].
 %TODO reimplement
 init_per_suite(Config) ->
+    %NewConfig = test_utils:init_single_dc(?MODULE, Config),
     NewConfig = test_utils:init_multi_dc(?MODULE, Config),
     [Nodes | _] = proplists:get_value(clusters, NewConfig),
     NewConfig.
@@ -55,51 +56,64 @@ simple_integration_test(Config) ->
     [Cluster | _] = proplists:get_value(clusters, Config),
     Node = lists:nth(1, Cluster),
     ct:pal("Node: ~p", [Node]),
-    CurrentTime = gingko_utils:get_timestamp(),
-    TxId1 = #tx_id{local_start_time = CurrentTime, server_pid = self()},
-    VC1 = vectorclock:new(),
-    VC2 = vectorclock:set(undefined, CurrentTime, VC1),
-    ok = rpc:call(Node, gingko, begin_txn, [VC2, TxId1]),
-    {Key1, Type1, TypeOp1} = {"Hello", antidote_crdt_counter_pn, {increment, 1}},
-    {Key2, Type2, TypeOp2} = {"There2314124refdssss", antidote_crdt_counter_pn, {increment, 1}},
+    TxId1 = rpc:call(Node, gingko, begin_txn, []),
+    #tx_id{} = TxId1,
+    {Key1, Type1, TypeOp1} = {1, antidote_crdt_counter_pn, {increment, 1}},
+    {Key2, Type2, TypeOp2} = {2, antidote_crdt_counter_pn, {increment, 1}},
     ok = rpc:call(Node, gingko, update, [{Key1, Type1}, TypeOp1, TxId1]),
     ok = rpc:call(Node, gingko, update, [{Key2, Type2}, TypeOp2, TxId1]),
     {ok, 1} = rpc:call(Node, gingko, read, [{Key1, Type1}, TxId1]),
     {ok, 1} = rpc:call(Node, gingko, read, [{Key2, Type2}, TxId1]),
-    ok = rpc:call(Node, gingko, prepare_txn, [100, TxId1]),
-    CommitTime = gingko_utils:get_timestamp() + 2,
-    VC3 = vectorclock:set(undefined, CommitTime, VC2),
-    ok = rpc:call(Node, gingko, commit_txn, [VC3, TxId1]).
+    {ok, _CommitVts} = rpc:call(Node, gingko, prepare_and_commit_txn, [TxId1]).
+
+simple_transaction(Node, Key, Type, TypeOp, ExpectedResult) ->
+    TxId = rpc:call(Node, gingko, begin_txn, []),
+    ok = rpc:call(Node, gingko, update, [{Key, Type}, TypeOp, TxId]),
+    {ok, ExpectedResult} = rpc:call(Node, gingko, read, [{Key, Type}, TxId]),
+    {ok, _CommitVts} = rpc:call(Node, gingko, prepare_and_commit_txn, [TxId]).
 
 two_transactions(Config) ->
     Node = proplists:get_value(node, Config),
-    CurrentTime1 = gingko_utils:get_timestamp(),
-    CurrentTime2 = gingko_utils:get_timestamp() + 1,
-    TxId1 = #tx_id{local_start_time = CurrentTime1, server_pid = self()},
-    TxId2 = #tx_id{local_start_time = CurrentTime2, server_pid = self()},
-    VC1 = vectorclock:new(),
-    VC2 = vectorclock:set(undefined, CurrentTime1, VC1),
-    VC3 = vectorclock:set(undefined, CurrentTime2, VC1),
-    ok = rpc:call(Node, gingko, begin_txn, [VC2, TxId1]),
-    ok = rpc:call(Node, gingko, begin_txn, [VC3, TxId2]),
+    TxId1 = rpc:call(Node, gingko, begin_txn, []),
+    TxId2 = rpc:call(Node, gingko, begin_txn, []),
 
-    {Key1, Type1, TypeOp1} = {"Hello", antidote_crdt_counter_pn, {increment, 1}},
+    {Key1, Type1, TypeOp1} = {1, antidote_crdt_counter_pn, {increment, 1}},
     ok = rpc:call(Node, gingko, update, [{Key1, Type1}, TypeOp1, TxId1]),
-    {Key2, Type2, TypeOp2} = {"Hello", antidote_crdt_counter_pn, {increment, 2}},
+    {Key2, Type2, TypeOp2} = {1, antidote_crdt_counter_pn, {increment, 2}},
     ok = rpc:call(Node, gingko, update, [{Key2, Type2}, TypeOp2, TxId2]),
 
     {ok, 2} = rpc:call(Node, gingko, read, [{Key1, Type1}, TxId1]),
     {ok, 3} = rpc:call(Node, gingko, read, [{Key2, Type2}, TxId2]),
 
-    ok = rpc:call(Node, gingko, prepare_txn, [100, TxId1]),
-    ok = rpc:call(Node, gingko, prepare_txn, [100, TxId2]),
+    {ok, _CommitVts1} = rpc:call(Node, gingko, prepare_and_commit_txn, [TxId1]),
+    {ok, _CommitVts2} = rpc:call(Node, gingko, prepare_and_commit_txn, [TxId2]).
 
-    CommitTime1 = gingko_utils:get_timestamp() + 2,
-    CommitTime2 = gingko_utils:get_timestamp() + 3,
-    VC4 = vectorclock:set(undefined, CommitTime1, VC2),
-    VC5 = vectorclock:set(undefined, CommitTime2, VC3),
-    ok = rpc:call(Node, gingko, commit_txn, [VC4, TxId1]),
-    ok = rpc:call(Node, gingko, commit_txn, [VC5, TxId2]).
+replication_test(Config) ->
+    Clusters = proplists:get_value(clusters, Config),
+    case Clusters of
+        [] -> error;
+        [_SingleCluster1] -> ok;
+        MultipleClusters1 ->
+            general_utils:parallel_foreach(
+                fun([FirstNode|_]) ->
+                    simple_transaction(FirstNode, 3, antidote_crdt_counter_pn, {increment, 1}, 1)
+                end, MultipleClusters1),
+            timer:sleep(5000)
+    end,
 
-checkpoint(_Config) ->
+    case Clusters of
+        [] -> error;
+        [_SingleCluster2] -> ok;
+        MultipleClusters2 ->
+            NumberOfClusters = length(MultipleClusters2),
+            general_utils:parallel_foreach(
+                fun([FirstNode|_]) ->
+                    simple_transaction(FirstNode, 3, antidote_crdt_counter_pn, {increment, 1}, NumberOfClusters + 1)
+                end, MultipleClusters2)
+    end.
+
+
+
+checkpoint_test(_Config) ->
+
     ok.

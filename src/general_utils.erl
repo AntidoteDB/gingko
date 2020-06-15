@@ -20,16 +20,21 @@
 %% -------------------------------------------------------------------
 
 -module(general_utils).
-
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
-
 -include("gingko.hrl").
 
 %% API
--export([get_values/1,
+-export([run_function_with_unexpected_error/6,
+    print_and_return_unexpected_error/5,
+    get_timestamp_in_microseconds/0,
+    list_all_equal/2,
+    list_without_elements_from_other_list/2,
+    set_equals_on_lists/2,
+    remove_duplicates_and_lose_order/1,
+    get_values/1,
     max_by/2,
     group_by/2,
-    add_to_value_list_or_create_single_value_list/3,
+    append_inner_dict/4,
     sorted_insert/3,
     get_or_default_dict/3,
     get_or_default_map_list/3,
@@ -40,9 +45,44 @@
     parallel_map/2,
     parallel_foreach/2]).
 
--spec get_values([{Key :: term(), Value :: term()}]) -> ValueList :: [Value :: term()].
-get_values(TupleList) ->
-    lists:map(fun({_Key, Value}) -> Value end, TupleList).
+-spec run_function_with_unexpected_error(term(), term(), atom(), atom(), list(), list()) -> term() | no_return().
+run_function_with_unexpected_error(Result, ExpectedResult, Module, FunctionName, Args, ExtraArgs) ->
+    case Result of
+        ExpectedResult -> ExpectedResult;
+        Error -> print_and_return_unexpected_error(Module, FunctionName, Args, Error, ExtraArgs)
+    end.
+
+-spec print_and_return_unexpected_error(atom(), atom(), list(), term(), list()) -> no_return().
+print_and_return_unexpected_error(Module, FunctionName, Args, Error, ExtraArgs) ->
+    logger:error("Unexpected Error!~nModule: ~p~nFunction: ~p~nArgs: ~p~nError: ~p~nExtraArgs: ~p~n", [Module, FunctionName, Args, Error, ExtraArgs]),
+    error("Unexpected Error!").
+
+-spec get_timestamp_in_microseconds() -> non_neg_integer().
+get_timestamp_in_microseconds() ->
+    {Mega, Sec, Micro} = erlang:timestamp(),
+    (Mega * 1000000 + Sec) * 1000000 + Micro.
+
+-spec list_all_equal(term(), list()) -> boolean().
+list_all_equal(Result, List) ->
+    [Result] == ordsets:from_list(List).
+
+-spec list_without_elements_from_other_list(list(), list()) -> list().
+list_without_elements_from_other_list(List, OtherList) ->
+    lists:filter(fun(Member) -> not lists:member(Member, OtherList) end, List).
+
+-spec set_equals_on_lists([TypeA :: term()], [TypeA :: term()]) -> boolean().
+set_equals_on_lists(List, OtherList) ->
+    ordsets:from_list(List) == ordsets:from_list(OtherList).
+
+-spec remove_duplicates_and_lose_order(list()) -> list().
+remove_duplicates_and_lose_order(List) ->
+    ordsets:to_list(ordsets:from_list(List)).
+
+-spec get_values([{Key :: term(), Value :: term()}] | dict:dict(Key :: term(), Value :: term())) -> ValueList :: [Value :: term()].
+get_values(TupleList) when is_list(TupleList) ->
+    lists:map(fun({_Key, Value}) -> Value end, TupleList);
+get_values(Dict) ->
+    get_values(dict:to_list(Dict)).
 
 -spec max_by(fun((ListElem :: term()) -> integer()), list()) -> MaxListElem :: term().
 max_by(Fun, List) ->
@@ -53,19 +93,18 @@ max_by(Fun, List) ->
 
 %% @doc Takes function that groups entries form the given list in a dictionary
 %%      For example grouping a list of journal entries by txid to get all journal entries that belong to a certain txid
--spec group_by(fun((ListType :: term()) -> GroupKeyType :: term()), [ListType :: term()]) -> dict:dict(GroupKeyType :: term(), ListType :: term()).
+-spec group_by(fun((ListType :: term()) -> GroupKeyType :: term()), [ListType :: term()]) -> dict:dict(GroupKeyType :: term(), [ListType :: term()]).
 group_by(Fun, List) ->
     lists:foldr(
         fun({Key, Value}, Dict) ->
             dict:append(Key, Value, Dict)
         end, dict:new(), [{Fun(X), X} || X <- List]).
 
-%% @doc Updates a dictionary that stores lists as values
-%%      If a list exists for the given key then the given value is added to the list otherwise a new list with the given value is added to the dictionary
--spec add_to_value_list_or_create_single_value_list(KeyTypeA :: term(), ValueTypeB :: term(), DictionaryTypeAToValueTypeBList :: dict:dict(KeyTypeA :: term(), TypeBList :: [term()])) -> dict:dict(KeyTypeA :: term(), TypeBList :: [term()]).
-add_to_value_list_or_create_single_value_list(KeyTypeA, ValueTypeB, DictionaryTypeAToValueTypeBList) ->
-    dict:update(KeyTypeA, fun(ValueTypeBList) ->
-        [ValueTypeB | ValueTypeBList] end, [ValueTypeB], DictionaryTypeAToValueTypeBList).
+-spec append_inner_dict(TypeA :: term(), TypeB :: term(), TypeC :: term(), dict:dict(TypeA :: term(), dict:dict(TypeB :: term(), [TypeC :: term()]))) -> dict:dict(TypeA :: term(), dict:dict(TypeB :: term(), [TypeC :: term()])).
+append_inner_dict(OuterKey, InnerKey, InnerValue, Dict) ->
+    InnerDict = get_or_default_dict(OuterKey, Dict, dict:new()),
+    UpdatedInnerDict = dict:append(InnerKey, InnerValue, InnerDict),
+    dict:store(OuterKey, UpdatedInnerDict, Dict).
 
 -spec sorted_insert(TypeA :: term(), [TypeA :: term()], fun((TypeA :: term(), TypeA :: term()) -> boolean())) -> [TypeA :: term()].
 sorted_insert(X, [], _Comparer) -> [X];
@@ -75,8 +114,8 @@ sorted_insert(X, L = [H | T], Comparer) ->
         false -> [H | sorted_insert(X, T, Comparer)]
     end.
 
--spec get_or_default_dict(dict:dict(TypeA :: term(), TypeB :: term()), TypeA :: term(), TypeB :: term()) -> TypeB :: term().
-get_or_default_dict(Dict, Key, Default) ->
+-spec get_or_default_dict(TypeA :: term(), dict:dict(TypeA :: term(), TypeB :: term()), TypeB :: term()) -> TypeB :: term().
+get_or_default_dict(Key, Dict, Default) ->
     case dict:find(Key, Dict) of
         {ok, Value} -> Value;
         error -> Default
