@@ -21,10 +21,9 @@
 -include("gingko.hrl").
 
 -export([create_local_journal_entry/4,
-    create_read_operation/2,
     create_update_operation/3,
     create_begin_operation/1,
-    create_prepare_operation/0,
+    create_prepare_operation/1,
     create_commit_operation/2,
     create_abort_operation/0,
     create_checkpoint_operation/2]).
@@ -41,30 +40,26 @@ create_local_journal_entry(#jsn_state{next_jsn = Jsn, rt_timestamp = RtTimestamp
         args = Args
     }.
 
--spec create_read_operation(key_struct(), non_neg_integer()) -> {journal_entry_type(), journal_entry_args()}.
-create_read_operation(KeyStruct, TxOpNumber) ->
-    {read, #object_op_args{key_struct = KeyStruct, tx_op_num = TxOpNumber}}.
-
--spec create_update_operation(key_struct(), non_neg_integer(), downstream_op()) -> {journal_entry_type(), journal_entry_args()}.
-create_update_operation(KeyStruct, TxOpNumber, DownstreamOp) ->
-    {update, #object_op_args{key_struct = KeyStruct, tx_op_num = TxOpNumber, op_args = DownstreamOp}}.
+-spec create_update_operation(key_struct(), tx_op_num(), downstream_op()) -> {journal_entry_type(), journal_entry_args()}.
+create_update_operation(KeyStruct, TxOpNum, DownstreamOp) ->
+    {update, #update_args{key_struct = KeyStruct, tx_op_num = TxOpNum, downstream_op = DownstreamOp}}.
 
 -spec create_begin_operation(vectorclock()) -> {journal_entry_type(), journal_entry_args()}.
 create_begin_operation(DependencyVts) ->
     {begin_txn, #begin_txn_args{dependency_vts = DependencyVts}}.
 
--spec create_prepare_operation() -> {journal_entry_type(), journal_entry_args()}.
-create_prepare_operation() ->
-    {prepare_txn, #prepare_txn_args{}}.
+-spec create_prepare_operation([partition_id()]) -> {journal_entry_type(), journal_entry_args()}.
+create_prepare_operation(Partitions) ->
+    {prepare_txn, #prepare_txn_args{partitions = Partitions}}.
 
--spec create_commit_operation(vectorclock(), txn_num()) -> {journal_entry_type(), journal_entry_args()}.
-create_commit_operation(CommitVts, LocalTxnNum) ->
-    {commit_txn, #commit_txn_args{commit_vts = CommitVts, local_txn_num = LocalTxnNum}}.
+-spec create_commit_operation(vectorclock(), txn_tracking_num()) -> {journal_entry_type(), journal_entry_args()}.
+create_commit_operation(CommitVts, LocalTxnTrackingNum) ->
+    {commit_txn, #commit_txn_args{commit_vts = CommitVts, txn_tracking_num = LocalTxnTrackingNum}}.
 
 -spec create_abort_operation() -> {journal_entry_type(), journal_entry_args()}.
 create_abort_operation() ->
     {abort_txn, #abort_txn_args{}}.
 
--spec create_checkpoint_operation(vectorclock(), dict:dict(dcid(), txn_num())) -> {journal_entry_type(), journal_entry_args()}.
+-spec create_checkpoint_operation(vectorclock(), #{dcid() => txn_tracking_num()}) -> {journal_entry_type(), journal_entry_args()}.
 create_checkpoint_operation(DependencyVts, DcIdToLastTxNum) ->
-    {checkpoint, #checkpoint_args{dependency_vts = DependencyVts, dcid_to_last_txn_num = DcIdToLastTxNum}}.
+    {checkpoint, #checkpoint_args{dependency_vts = DependencyVts, dcid_to_last_txn_tracking_num = DcIdToLastTxNum}}.

@@ -23,7 +23,7 @@
 
 -export([update_dc_state_service/2,
     update_dc_state/1,
-    get_GCSf/0]).
+    get_GCSt/0]).
 
 -export([start_link/0,
     init/1,
@@ -37,7 +37,7 @@
     active = false :: boolean(),
     dc_state_interval_millis = ?DEFAULT_WAIT_TIME_LONG :: non_neg_integer(),
     dc_state_timer = none :: none | reference(),
-    dcid_to_dc_state = dict:new() :: dict:dict(dcid(), dc_state())
+    dcid_to_dc_state = #{} :: #{dcid() => dc_state()}
 }).
 -type state() :: #state{}.
 
@@ -53,8 +53,8 @@ update_dc_state_service(Active, DcStateIntervalMillis) ->
 update_dc_state(DcState) ->
     gen_server:cast(?MODULE, {update_dc_state, DcState}).
 
-get_GCSf() ->
-    gen_server:call(?MODULE, get_gcsf).
+get_GCSt() ->
+    gen_server:call(?MODULE, get_gcst).
 
 %%%===================================================================
 %%% Spawning and gen_server implementation
@@ -70,11 +70,11 @@ handle_call(Request = hello, From, State) ->
     default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
     {reply, ok, State};
 
-handle_call(Request = get_gcsf, From, State = #state{dcid_to_dc_state = DCIDToDcState}) ->
+handle_call(Request = get_gcst, From, State = #state{dcid_to_dc_state = DCIDToDcState}) ->
     default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
     ConnectedDCIDs = gingko_utils:get_connected_dcids(),
-    ContainsAllDCIDs = general_utils:set_equals_on_lists(ConnectedDCIDs, dict:fetch_keys(DCIDToDcState)),
-    GCSf =
+    ContainsAllDCIDs = general_utils:set_equals_on_lists(ConnectedDCIDs, maps:keys(DCIDToDcState)),
+    GCSt =
         case ContainsAllDCIDs of
             true ->
                 MyDCSf = gingko_utils:get_DCSf_vts(),
@@ -83,7 +83,7 @@ handle_call(Request = get_gcsf, From, State = #state{dcid_to_dc_state = DCIDToDc
             false ->
                 vectorclock:new()
         end,
-    {reply, GCSf, State};
+    {reply, GCSt, State};
 
 handle_call(Request, From, State) -> default_gen_server_behaviour:handle_call_crash(?MODULE, Request, From, State).
 
@@ -93,7 +93,7 @@ handle_cast(Request = {update_dc_state_service, Active, DcStateIntervalMillis}, 
 
 handle_cast(Request = {update_dc_state, DcState = #dc_state{dcid = DCID}}, State = #state{dcid_to_dc_state = DCIDToDcState}) ->
     default_gen_server_behaviour:handle_cast(?MODULE, Request, State),
-    UpdatedDCIDToDcState = dict:store(DCID, DcState, DCIDToDcState),
+    UpdatedDCIDToDcState = DCIDToDcState#{DCID => DcState},
     {noreply, State#state{dcid_to_dc_state = UpdatedDCIDToDcState}};
 
 handle_cast(Request, State) -> default_gen_server_behaviour:handle_cast_crash(?MODULE, Request, State).
@@ -104,7 +104,7 @@ handle_info(Info = dc_state, State) ->
     erlang:cancel_timer(OldTimer),
     MyDcState = #dc_state{dcid = gingko_utils:get_my_dcid(), last_update = gingko_utils:get_timestamp(), dcsf = gingko_utils:get_DCSf_vts()},
     inter_dc_request_sender:perform_dc_state_request(MyDcState),
-    NewTimer = erlang:send_after(State#state.dc_state_interval_millis, self(), checkpoint),
+    NewTimer = erlang:send_after(State#state.dc_state_interval_millis, self(), dc_state),
     {noreply, State#state{dc_state_timer = NewTimer}};
 
 handle_info(Info, State) -> default_gen_server_behaviour:handle_info_crash(?MODULE, Info, State).

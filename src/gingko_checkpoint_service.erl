@@ -71,7 +71,7 @@ handle_cast(Request, State) -> default_gen_server_behaviour:handle_cast_crash(?M
 handle_info(Info = checkpoint, State = #state{checkpoint_timer = CheckpointTimer, checkpoint_interval_millis = CheckpointIntervalMillis}) ->
     default_gen_server_behaviour:handle_info(?MODULE, Info, State),
     erlang:cancel_timer(CheckpointTimer),
-    DependencyVts = gingko_utils:get_GCSf_vts(),
+    DependencyVts = gingko_utils:get_GCSt_vts(),
     gingko:checkpoint(DependencyVts),
     NewCheckpointTimer = erlang:send_after(CheckpointIntervalMillis, self(), checkpoint),
     {noreply, State#state{checkpoint_timer = NewCheckpointTimer}};

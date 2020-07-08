@@ -43,7 +43,6 @@
 ]).
 
 -dialyzer([{[no_match], read_journal_entries_with_tx_id/2}]).
--type table_name() :: atom().
 
 -spec perform_tx_read(key_struct(), txid(), table_name()) -> {ok, snapshot()} | {error, reason()}.
 perform_tx_read(KeyStruct, TxId, TableName) ->
@@ -54,40 +53,40 @@ perform_tx_read(KeyStruct, TxId, TableName) ->
             SortedTxJournalEntryList = gingko_utils:sort_journal_entries_of_same_tx(TxJournalEntryList),
             case SortedTxJournalEntryList of
                 [] -> {ok, gingko_utils:create_new_snapshot(KeyStruct, vectorclock:new())};
-                _ ->
+                [#journal_entry{args = #begin_txn_args{dependency_vts = BeginVts}} | _] ->
                     #journal_entry{args = #begin_txn_args{dependency_vts = BeginVts}} = hd(SortedTxJournalEntryList), %%Crash if this is not true
                     {ok, SnapshotBeforeTx} = gingko_utils:call_gingko_sync_with_key(KeyStruct, ?GINGKO_CACHE, {get, KeyStruct, BeginVts}),
                     DownstreamOpsToBeAdded =
                         lists:filtermap(
                             fun(JournalEntry = #journal_entry{args = Args}) ->
                                 case gingko_utils:is_update_of_keys(JournalEntry, [KeyStruct]) of
-                                    true -> {true, Args#object_op_args.op_args};
+                                    true -> {true, Args#update_args.downstream_op};
                                     false -> false
                                 end
                             end, SortedTxJournalEntryList),
-                    gingko_materializer:materialize_snapshot_temporarily(SnapshotBeforeTx, DownstreamOpsToBeAdded)
+                    gingko_materializer:materialize_tx_snapshot(SnapshotBeforeTx, DownstreamOpsToBeAdded)
             end
     end.
 
--spec checkpoint([journal_entry()], vectorclock(), dict:dict(dcid(), txn_num())) -> ok. %%TODO valid txns and so on
-checkpoint(ValidJournalEntryListBeforeCheckpoint, CheckpointVts, CheckpointDict) ->
+-spec checkpoint([journal_entry()], vectorclock(), #{dcid() => txn_tracking_num()}) -> ok | {error, reason()}.
+checkpoint(ValidJournalEntryListBeforeCheckpoint, DependencyVts, NewCheckpointDcIdToLastTxnTrackingNumMap) ->
     CommitJournalEntries = gingko_utils:get_journal_entries_of_type(ValidJournalEntryListBeforeCheckpoint, commit_txn),
     ValidCommits =
         lists:filter(
-        fun(#journal_entry{dcid = DcId, args = #commit_txn_args{local_txn_num = {TxnNum, _, _}}}) ->
-            {LastTxnOrderNum, _, _} =
-                case dict:find(DcId, CheckpointDict) of
-                    {ok, LastTxnNum} -> LastTxnNum;
-                    error -> gingko_utils:get_default_txn_num()
-                end,
-            TxnNum =< LastTxnOrderNum
-        end, CommitJournalEntries),
+            fun(#journal_entry{dcid = DcId, args = #commit_txn_args{txn_tracking_num = {TxnNum, _, _}}}) ->
+                {LastTxnOrderNum, _, _} =
+                    case maps:find(DcId, NewCheckpointDcIdToLastTxnTrackingNumMap) of
+                        {ok, LastTxnNum} -> LastTxnNum;
+                        error -> gingko_utils:get_default_txn_tracking_num()
+                    end,
+                TxnNum =< LastTxnOrderNum
+            end, CommitJournalEntries),
     ValidTxns = sets:from_list(lists:map(fun(#journal_entry{tx_id = TxId}) -> TxId end, ValidCommits)),
     UpdatedKeyStructs =
         lists:filtermap(
             fun(#journal_entry{tx_id = TxId, args = Args}) ->
                 case Args of
-                    #object_op_args{key_struct = KeyStruct} ->
+                    #update_args{key_struct = KeyStruct} ->
                         case sets:is_element(TxId, ValidTxns) of
                             true -> {true, KeyStruct};
                             false -> false
@@ -98,19 +97,21 @@ checkpoint(ValidJournalEntryListBeforeCheckpoint, CheckpointVts, CheckpointDict)
     SnapshotsToStore =
         lists:map(
             fun(KeyStruct) ->
-                {ok, Snapshot} = gingko_utils:call_gingko_sync_with_key(KeyStruct, ?GINGKO_CACHE, {get, KeyStruct, CheckpointVts}),
+                {ok, Snapshot} = gingko_utils:call_gingko_sync_with_key(KeyStruct, ?GINGKO_CACHE, {get, KeyStruct, DependencyVts, ValidJournalEntryListBeforeCheckpoint}),
                 Snapshot
             end, UpdatedKeyStructs),
     gingko_log_utils:add_or_update_checkpoint_entries(SnapshotsToStore).
 %TODO cache cleanup
+%%TODO txn tracking cleanup
 
 -spec create_journal_mnesia_table(table_name()) -> ok | {error, reason()}.
 create_journal_mnesia_table(TableName) ->
     mnesia_utils:get_mnesia_result(mnesia:create_table(TableName,
         [{attributes, record_info(fields, journal_entry)},
             {index, [#journal_entry.tx_id]}, %%TODO maybe index of dcid and type (this may be too slow though)
-            {ram_copies, [node()]},
-            {record_name, journal_entry}
+            {ram_copies, [node()]}, %%TODO instead of index we could use ets calls which are very fast
+            {record_name, journal_entry},
+            {local_content, true}
         ])).
 
 -spec persist_journal_entries(table_name()) -> ok | {error, reason()}.

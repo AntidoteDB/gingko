@@ -61,6 +61,7 @@ start(_StartType, _StartArgs) ->
 stop(_State) ->
     ok.
 
+-spec wait_until_everything_is_running() -> ok.
 wait_until_everything_is_running() ->
     ok = gingko_utils:ensure_gingko_instance_running(gingko_time_manager),
     ok = gingko_utils:ensure_gingko_instance_running(gingko_server),
@@ -77,6 +78,7 @@ wait_until_everything_is_running() ->
     ok = gingko_utils:ensure_gingko_instance_running(inter_dc_request_sender),
     ok = gingko_utils:ensure_gingko_instance_running(bcounter_manager).
 
+-spec get_default_config() -> map_list().
 get_default_config() ->
     [
         {max_occupancy, 100},
@@ -87,13 +89,15 @@ get_default_config() ->
         {eviction_strategy, interval}
     ].
 
+-spec add_new_nodes_to_mnesia(node(), [node()]) -> ok.
 add_new_nodes_to_mnesia(ExistingNode, NewNodes) ->
     rpc:call(ExistingNode, mnesia, change_config, [extra_db_nodes, NewNodes]),
     lists:foreach(
         fun(NewNode) ->
-            rpc:call(ExistingNode, mnesia, change_table_copy_type, [schema, NewNode, disc_copies])
+            rpc:call(ExistingNode, mnesia, change_table_copy_type, [schema, NewNode, disc_copies]),
+            {atomic, ok} = mnesia:add_table_copy(checkpoint_entry, NewNode, disk_copies),
+            {atomic, ok} = mnesia:add_table_copy(dc_info_entry, NewNode, disk_copies)
         end, NewNodes).
-%[mnesia:add_table_copy(Table, node(), disc_copies) || Table <- mnesia:system_info(tables), Table =/= schema].
 
 %%TODO startup is currently fail directly
 %%TODO keep this for later when inner dc replication becomes relevant (replicate between different nodes)
@@ -111,11 +115,10 @@ initial_startup_nodes(Nodes) ->
                     ok = mnesia:create_schema(Nodes),
                     rpc:multicall(Nodes, application, start, [mnesia]),
                     ok = make_sure_global_stores_are_running([dc_info_entry, checkpoint_entry], Nodes),
-
+                    ok = mnesia:wait_for_tables([dc_info_entry, checkpoint_entry], 5000), %TODO error handling
                     true = general_utils:list_all_equal(ok, gingko_utils:bcast_gingko_sync_only_values(?GINGKO_LOG, initialize)),
-                    TableNames = general_utils:get_values(gingko_utils:bcast_gingko_sync_only_values(?GINGKO_LOG, get_journal_mnesia_table_name)),
-                    ok = mnesia:wait_for_tables([dc_info_entry, checkpoint_entry | TableNames], 5000), %TODO error handling
-                    ok; %TODO setup fresh
+                    ok;
+                    %TODO setup fresh
                 _ ->
                     NodesWithoutSchema = general_utils:list_without_elements_from_other_list(Nodes, NodesWithSchema),
                     {MnesiaNodesList, BadNodes} = rpc:multicall(NodesWithSchema, mnesia, system_info, [db_nodes]),
@@ -141,8 +144,9 @@ initial_startup_nodes(Nodes) ->
                                             gingko_utils:bcast_gingko_sync(?GINGKO_LOG, initialize),
                                             ok; %TODO checkpoint setup and inform all vnodes
                                         false ->
-                                            PartiallyPerfect = lists:all(fun(MnesiaNodes) ->
-                                                ordsets:is_subset(MnesiaNodes, NodesWithSchemaOrdSet) end, MnesiaNodesList),
+                                            PartiallyPerfect = lists:all(
+                                                fun(MnesiaNodes) ->
+                                                ordsets:is_subset(ordsets:from_list(MnesiaNodes), NodesWithSchemaOrdSet) end, MnesiaNodesList),
                                             case PartiallyPerfect of
                                                 true ->
                                                     %TODO fix setup (partially broken mnesia cluster)
@@ -161,7 +165,7 @@ initial_startup_nodes(Nodes) ->
 
 %%TODO maybe do check other properties of the table
 %%TODO failure testing is required to check whether this works as intended
--spec make_sure_global_stores_are_running([atom()], [node()]) -> ok | {error, reason()}.
+-spec make_sure_global_stores_are_running([table_name()], [node()]) -> ok | {error, reason()}.
 make_sure_global_stores_are_running(_TableNames, []) -> {error, "At least one node is required!"};
 make_sure_global_stores_are_running([], _SetupMnesiaNodes) -> {error, "At least one table name is required!"};
 make_sure_global_stores_are_running(TableNames, SetupMnesiaNodes) ->
@@ -181,7 +185,7 @@ make_sure_global_stores_are_running(TableNames, SetupMnesiaNodes) ->
                     NodesWhereTableIsSetup = mnesia:table_info(TableName, disc_copies),
                     case length(NodesWhereTableIsSetup) of
                         0 ->
-                            {atomic, ok} = create_tables(SetupMnesiaNodes, TableName);
+                            ok = create_tables(SetupMnesiaNodes, TableName);
                         _ ->
                             lists:foreach(
                                 fun(Node) ->
@@ -190,14 +194,13 @@ make_sure_global_stores_are_running(TableNames, SetupMnesiaNodes) ->
                                         true -> ok
                                     end
                                 end, SetupMnesiaNodes)
-                    end,
-                    ok;
+                    end;
                 false ->
-                    {atomic, ok} = create_tables(SetupMnesiaNodes, TableName),
-                    ok
+                    ok = create_tables(SetupMnesiaNodes, TableName)
             end
         end, TableNames).
 
+-spec create_tables([node()], table_name()) -> ok | {error, reason()}.
 create_tables(SetupMnesiaNodes, TableName) ->
     RecordInfo =
         case TableName of
@@ -206,6 +209,6 @@ create_tables(SetupMnesiaNodes, TableName) ->
             dc_info_entry ->
                 record_info(fields, dc_info_entry)
         end,
-    mnesia:create_table(TableName,
+    mnesia_utils:get_mnesia_result(mnesia:create_table(TableName,
         [{attributes, RecordInfo},
-            {disc_copies, SetupMnesiaNodes}]).
+            {disc_copies, SetupMnesiaNodes}])).

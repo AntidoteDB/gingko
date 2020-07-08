@@ -41,7 +41,7 @@
 
 -record(state, {
     partition = 0 :: partition_id(),
-    txid_to_journal_entry_list_dict = dict:new() :: dict:dict(txid(), [journal_entry()])
+    txid_to_journal_entry_list_map = #{} :: #{txid() => [journal_entry()]}
 }).
 -type state() :: #state{}.
 
@@ -65,40 +65,29 @@ handle_command(Request = hello, Sender, State) ->
     default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
     {reply, ok, State};
 
-handle_command(Request = {journal_entry, JournalEntry = #journal_entry{tx_id = TxId, type = Type}}, Sender, State = #state{partition = Partition, txid_to_journal_entry_list_dict = TxIdToJournalEntryListDict}) ->
+handle_command(Request = {journal_entry, JournalEntry = #journal_entry{tx_id = TxId, type = Type}}, Sender, State = #state{partition = Partition, txid_to_journal_entry_list_map = TxIdToJournalEntryListMap}) ->
     %%TODO extra checks
     default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
-    NewTxIdToJournalEntryListDict = dict:append(TxId, JournalEntry, TxIdToJournalEntryListDict),
-    FinalTxIdToJournalEntryListDict =
+    NewTxIdToJournalEntryListMap = general_utils:maps_append(TxId, JournalEntry, TxIdToJournalEntryListMap),
+    FinalTxIdToJournalEntryListMap =
         case Type == commit_txn of
             true -> %%TODO find right handling (maybe gather and send later)
-                TxJournalEntryList = dict:fetch(TxId, NewTxIdToJournalEntryListDict),
+                TxJournalEntryList = maps:get(TxId, NewTxIdToJournalEntryListMap),
                 inter_dc_txn_sender:broadcast_txn(Partition, TxJournalEntryList),
-                dict:erase(TxId, NewTxIdToJournalEntryListDict);
+                maps:remove(TxId, NewTxIdToJournalEntryListMap);
             false ->
-                NewTxIdToJournalEntryListDict
+                NewTxIdToJournalEntryListMap
         end,
-    {reply, ok, State#state{txid_to_journal_entry_list_dict = FinalTxIdToJournalEntryListDict}};
+    {reply, ok, State#state{txid_to_journal_entry_list_map = FinalTxIdToJournalEntryListMap}};
 
 handle_command(Request, Sender, State) -> default_vnode_behaviour:handle_command_crash(?MODULE, Request, Sender, State).
 handoff_starting(TargetNode, State) -> default_vnode_behaviour:handoff_starting(?MODULE, TargetNode, State).
 handoff_cancelled(State) -> default_vnode_behaviour:handoff_cancelled(?MODULE, State).
 handoff_finished(TargetNode, State) -> default_vnode_behaviour:handoff_finished(?MODULE, TargetNode, State).
-
-handle_handoff_command(Request = #riak_core_fold_req_v2{foldfun = FoldFun, acc0 = Acc0}, Sender, State) ->
-    %%TODO
-    default_vnode_behaviour:handle_handoff_command(?MODULE, Request, Sender, State);
-
-handle_handoff_command(Request, Sender, State) ->
-    default_vnode_behaviour:handle_handoff_command(?MODULE, Request, Sender, State).
-
-handle_handoff_data(BinaryData, State) ->
-    default_vnode_behaviour:handle_handoff_data(?MODULE, BinaryData, State).
-
+handle_handoff_command(Request, Sender, State) -> default_vnode_behaviour:handle_handoff_command(?MODULE, Request, Sender, State).
+handle_handoff_data(BinaryData, State) -> default_vnode_behaviour:handle_handoff_data(?MODULE, BinaryData, State).
 encode_handoff_item(Key, Value) -> default_vnode_behaviour:encode_handoff_item(?MODULE, Key, Value).
-
 is_empty(State) -> default_vnode_behaviour:is_empty(?MODULE, State).
-
 terminate(Reason, State) -> default_vnode_behaviour:terminate(?MODULE, Reason, State).
 delete(State) -> default_vnode_behaviour:delete(?MODULE, State).
 -spec handle_info(term(), state()) -> no_return().

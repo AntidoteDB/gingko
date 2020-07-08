@@ -58,13 +58,6 @@ handle_call(Request = hello, From, State) ->
 
 handle_call(Request, From, State) -> default_gen_server_behaviour:handle_call_crash(?MODULE, Request, From, State).
 
-handle_cast(Request = {read_journal_entries, TargetPartition, RequestArgs, RequestState}, State) ->
-    default_gen_server_behaviour:handle_cast(?MODULE, Request, State),
-    {JournalEntryFilterFuncName, JournalEntryFilterFuncArgs} = RequestArgs,
-    JournalEntryList = get_journal_entries_internal(TargetPartition, {JournalEntryFilterFuncName, JournalEntryFilterFuncArgs}),
-    send_response(JournalEntryList, RequestState, State),
-    {noreply, State};
-
 handle_cast(Request, State) -> default_gen_server_behaviour:handle_cast_crash(?MODULE, Request, State).
 
 %% Handle the remote request
@@ -82,29 +75,8 @@ handle_info(Info = {zmq, Socket, RequestBinary, _Flags}, State = #state{current_
     RequestRecord = inter_dc_request:request_record_from_binary(RequestBinary),
     case inter_dc_request:is_relevant_request_for_responder(RequestRecord) of
         true ->
-            #request_record{request_type = RequestType, target_partition = TargetPartition, request_args = RequestArgs} = RequestRecord,
-            %% Create a response
-            RequestState = #request_state{
-                request_record = RequestRecord,
-                zmq_sender_id = ZmqSenderId,
-                local_pid = self()},
-            process_request(RequestRecord, ZmqSenderId, Socket),
-            case RequestType of
-                ?HEALTH_CHECK_MSG ->
-                    send_response(?OK_MSG, RequestRecord, ZmqSenderId, Socket);
-                ?JOURNAL_READ_REQUEST ->
-                    %%TODO accept all parameters for DCID and Partition
-                    gen_server:cast(?MODULE, {read_journal_entries, TargetPartition, RequestArgs, RequestState});
-                ?BCOUNTER_REQUEST ->
-                    {transfer, {_Key, _Amount, _RemoteDCID}} = RequestArgs,
-                    bcounter_manager:process_transfer(RequestArgs),
-                    send_response(?OK_MSG, RequestRecord, ZmqSenderId, Socket);
-                ?DCSF_MSG ->
-                    inter_dc_state_service:update_dc_state(RequestArgs),
-                    send_response(?OK_MSG, RequestRecord, ZmqSenderId, Socket);
-                _ ->
-                    send_response(?ERROR_MSG, RequestRecord, ZmqSenderId, Socket)
-            end
+            process_request(RequestRecord, ZmqSenderId, Socket);
+        false -> ok
     end,
     {noreply, State#state{next_query_state = id}};
 
@@ -122,20 +94,19 @@ code_change(OldVsn, State, Extra) -> default_gen_server_behaviour:code_change(?M
 
 process_request(RequestRecord = #request_record{request_type = ?HEALTH_CHECK_MSG}, ZmqSenderId, Socket) ->
     send_response(?OK_MSG, RequestRecord, ZmqSenderId, Socket);
-process_request(RequestRecord = #request_record{request_type = ?DCSF_MSG}, ZmqSenderId, Socket) ->
-    send_response(gingko_utils:get_DCSf_vts(), RequestRecord, ZmqSenderId, Socket);
+process_request(RequestRecord = #request_record{request_type = ?DCSF_MSG, request_args = RequestArgs}, ZmqSenderId, Socket) ->
+    inter_dc_state_service:update_dc_state(RequestArgs),
+    send_response(?OK_MSG, RequestRecord, ZmqSenderId, Socket);
 process_request(RequestRecord = #request_record{request_type = ?JOURNAL_READ_REQUEST, target_partition = TargetPartition, request_args = RequestArgs}, ZmqSenderId, Socket) ->
-    {JournalEntryFilterFuncName, JournalEntryFilterFuncArgs} = RequestArgs,
-    JournalEntryList = get_journal_entries_internal(TargetPartition, {JournalEntryFilterFuncName, JournalEntryFilterFuncArgs}),
+    TxIdList = RequestArgs,
+    {ok, JournalEntryList} = gingko_utils:call_gingko_sync(TargetPartition, ?GINGKO_LOG, {get_txns, TxIdList}),
     send_response(JournalEntryList, RequestRecord, ZmqSenderId, Socket);
 process_request(RequestRecord = #request_record{request_type = ?BCOUNTER_REQUEST, request_args = RequestArgs}, ZmqSenderId, Socket) ->
     {transfer, {_Key, _Amount, _RemoteDCID}} = RequestArgs,
     ok = bcounter_manager:process_transfer(RequestArgs),
-    send_response(?OK_MSG, RequestRecord, ZmqSenderId, Socket).
-
--spec send_response(term(), request_state(), state()) -> ok.
-send_response(Response, #request_state{request_record = RequestRecord, zmq_sender_id = ZmqSenderId}, #state{request_socket = RequestSocket}) ->
-    send_response(Response, RequestRecord, ZmqSenderId, RequestSocket).
+    send_response(?OK_MSG, RequestRecord, ZmqSenderId, Socket);
+process_request(RequestRecord, ZmqSenderId, Socket) ->
+    send_response(?REQUEST_NOT_SUPPORTED_MSG, RequestRecord, ZmqSenderId, Socket).
 
 -spec send_response(term(), request_record(), zmq_sender_id(), zmq_socket()) -> ok.
 send_response(Response, RequestRecord, ZmqSenderId, RequestSocket) ->
@@ -146,12 +117,3 @@ send_response(Response, RequestRecord, ZmqSenderId, RequestSocket) ->
     ok = zmq_utils:try_send(RequestSocket, ZmqSenderId, [sndmore]),
     ok = zmq_utils:try_send(RequestSocket, <<>>, [sndmore]),
     ok = zmq_utils:try_send(RequestSocket, ResponseBinary).
-
--spec get_journal_entries_internal(partition_id(), {atom(), term()}) -> [journal_entry()].
-get_journal_entries_internal(Partition, {JournalEntryFilterFuncName, JournalEntryFilterFuncArgs}) ->
-    FilterFunc =
-        fun(JournalEntry) ->
-            inter_dc_filter_functions:JournalEntryFilterFuncName(JournalEntryFilterFuncArgs, JournalEntry)
-        end,
-    {ok, JournalEntryList} = gingko_utils:call_gingko_sync(Partition, ?GINGKO_LOG, {get_journal_entries, gingko_utils:get_my_dcid(), FilterFunc}),
-    JournalEntryList.

@@ -25,14 +25,15 @@
     start/0,
     stop/0,
     get_new_tx_id/0,
+    read/1,
     read/2,
-    single_read_txn/1,
-    single_read_txn/2,
+    read_snapshot/2,
     read_multiple/2,
+    read_multiple_snapshots/2,
     update/3,
-    single_update_txn/2,
-    single_update_txn/3,
     update_multiple/2,
+    update_txn/1,
+    update_txn/2,
     begin_txn/0,
     begin_txn/1,
     begin_txn/2,
@@ -56,125 +57,133 @@ start() ->
 stop() ->
     application:stop(?GINGKO_APP_NAME).
 
+to_key_struct({Key, Type}) -> #key_struct{key = Key, type = Type};
+to_key_struct(KeyStruct) -> KeyStruct.
+
 -spec get_new_tx_id() -> txid().
 get_new_tx_id() ->
     CurrentTime = gingko_utils:get_timestamp(),
     #tx_id{local_start_time = CurrentTime, server_pid = self()}.
 
--spec read({key(), type()} | key_struct(), txid()) -> {ok, snapshot_value()} | {error, reason()}.
-read({Key, Type}, TxId) -> read(#key_struct{key = Key, type = Type}, TxId);
-read(KeyStruct, TxId) ->
-    Read = {{read, KeyStruct}, TxId},
-    gingko_server:perform_request(Read).
+-spec read({key(), type()} | key_struct()) -> {ok, crdt()} | {error, reason()}.
+read(KeyType) -> read(KeyType, gingko_utils:get_DCSf_vts()).
 
--spec single_read_txn({key(), type()} | key_struct()) -> {ok, snapshot_value()} | {error, reason()}.
-single_read_txn({Key, Type}) -> single_read_txn(#key_struct{key = Key, type = Type});
-single_read_txn(KeyStruct) ->
-    case begin_txn() of
-        {error, Reason1} -> {error, Reason1};
-        TxId ->
-            case read(KeyStruct, TxId) of
-                {error, Reason2} -> {error, Reason2};
-                ReadResult ->
-                    case prepare_and_commit_txn(TxId) of
-                        {ok, _CommitVts} -> ReadResult;
-                        Error -> Error
-                    end
-            end
+-spec read({key(), type()} | key_struct(), txid() | snapshot_time()) -> {ok, crdt()} | {error, reason()}.
+read(KeyStructOrKeyType, TxIdOrVts) ->
+    case read_snapshot(to_key_struct(KeyStructOrKeyType), TxIdOrVts) of
+        {ok, #snapshot{value = SnapshotValue}} -> {ok, SnapshotValue};
+        Error -> Error
     end.
 
--spec single_read_txn({key(), type()} | key_struct(), snapshot_time()) -> {ok, snapshot_value(), vectorclock()} | {error, reason()}.
-single_read_txn({Key, Type}, Clock) -> single_read_txn(#key_struct{key = Key, type = Type}, Clock);
-single_read_txn(KeyStruct, Clock) ->
-    TxId = case Clock of
-               undefined -> begin_txn();
-               Vts -> begin_txn(Vts)
-           end,
-    case TxId of
-        {error, Reason1} -> {error, Reason1};
-        _ ->
-            case read(KeyStruct, TxId) of
-                {error, Reason2} -> {error, Reason2};
-                {ok, Value} ->
-                    case prepare_and_commit_txn(TxId) of
-                        {ok, CommitVts} -> {ok, Value, CommitVts};
-                        Error -> Error
-                    end
-            end
+-spec read_snapshot({key(), type()} | key_struct(), txid() | snapshot_time()) -> {ok, snapshot()} | {error, reason()}.
+read_snapshot(KeyType, Atom) when is_atom(Atom) -> read_snapshot(KeyType, gingko_utils:get_DCSf_vts());
+read_snapshot(KeyStructOrKeyType, TxIdOrVts) ->
+    Read = {{read, to_key_struct(KeyStructOrKeyType)}, TxIdOrVts},
+    Fun = fun() -> gingko_server:perform_request(Read) end,
+    general_utils:bench("Read", Fun).
+%%    gingko_server:perform_request(Read).
+
+-spec read_multiple([key_struct() | {key(), type()}], txid() | snapshot_time()) -> {ok | error, [crdt() | {error, reason()}]}.
+read_multiple(KeyStructsOrTuples, TxIdOrVts) ->
+    case read_multiple_snapshots(KeyStructsOrTuples, TxIdOrVts) of
+        {ok, Results} ->
+            {ok, lists:map(
+                fun(#snapshot{value = Value}) ->
+                    Value
+                end, Results)};
+        Error -> Error
     end.
 
--spec read_multiple([key_struct() | {key(), type()}], txid()) -> [{key_struct() | {key(), type()}, {ok, snapshot_value()} | {error, reason()}}].
-read_multiple(KeyStructsOrTuples, TxId) ->
-    lists:map(fun(KeyStructOrTuple) -> {KeyStructOrTuple, read(KeyStructOrTuple, TxId)} end, KeyStructsOrTuples).
+-spec read_multiple_snapshots([key_struct() | {key(), type()}], txid() | snapshot_time()) -> {ok | error, [snapshot() | {error, reason()}]}.
+read_multiple_snapshots(KeyStructsOrTuples, TxIdOrVts) ->
+    lists:foldr(
+        fun(KeyStructOrTuple, {CurrentOkOrError, CurrentResults}) ->
+            case read_snapshot(KeyStructOrTuple, TxIdOrVts) of
+                {ok, Snapshot} -> {CurrentOkOrError, [Snapshot | CurrentResults]};
+                {error, Error} -> {error, [{error, {KeyStructOrTuple, Error}} | CurrentResults]}
+            end
+        end, {ok, []}, KeyStructsOrTuples).
 
 -spec update({key(), type()} | key_struct(), type_op(), txid()) -> ok | {error, reason()}.
-update({Key, Type}, TypeOp, TxId) ->
-    update(#key_struct{key = Key, type = Type}, TypeOp, TxId);
-update(KeyStruct, TypeOp, TxId) ->
-    Update = {{update, {KeyStruct, TypeOp}}, TxId},
-    gingko_server:perform_request(Update).
+update(KeyStructOrKeyType, TypeOp, TxId) ->
+    Update = {{update, {to_key_struct(KeyStructOrKeyType), TypeOp}}, TxId},
+    Fun = fun() -> gingko_server:perform_request(Update) end,
+    general_utils:bench("Update", Fun).
+%%    gingko_server:perform_request(Update).
 
--spec single_update_txn({key(), type()} | key_struct(), type_op()) -> ok | {error, reason()}.
-single_update_txn({Key, Type}, TypeOp) -> single_update_txn(#key_struct{key = Key, type = Type}, TypeOp);
-single_update_txn(KeyStruct, TypeOp) ->
-    case begin_txn() of
-        {error, Reason1} -> {error, Reason1};
-        TxId ->
-            case update(KeyStruct, TypeOp, TxId) of
-                {error, Reason2} -> {error, Reason2};
-                _ ->
-                    case prepare_and_commit_txn(TxId) of
-                        {ok, _CommitVts} -> ok;
-                        Error -> Error
-                    end
-            end
-    end.
-
--spec single_update_txn({key(), type()} | key_struct(), type_op(), snapshot_time()) -> {ok, vectorclock()} | {error, reason()}.
-single_update_txn({Key, Type}, TypeOp, Clock) -> single_update_txn(#key_struct{key = Key, type = Type}, TypeOp, Clock);
-single_update_txn(KeyStruct, TypeOp, Clock) ->
-    TxId = case Clock of
-               undefined -> begin_txn();
-               Vts -> begin_txn(Vts)
-           end,
-    case TxId of
-        {error, Reason1} -> {error, Reason1};
-        _ ->
-            case update(KeyStruct, TypeOp, TxId) of
-                {error, Reason2} -> {error, Reason2};
-                _ -> prepare_and_commit_txn(TxId)
-            end
-    end.
-
--spec update_multiple([{key_struct() | {key(), type()}, type_op()}], txid()) -> [{key_struct() | {key(), type()}, ok | {error, reason()}}].
+-spec update_multiple([{key_struct() | {key(), type()}, type_op()}], txid()) -> ok | {error, reason()}.
 update_multiple(KeyStructTypeOpTuples, TxId) ->
-    lists:map(
+    Result = lists:filtermap(
         fun({KeyStructOrTuple, TypeOp}) ->
-            {KeyStructOrTuple, update(KeyStructOrTuple, TypeOp, TxId)}
-        end, KeyStructTypeOpTuples).
+            case update(to_key_struct(KeyStructOrTuple), TypeOp, TxId) of
+                ok -> false;
+                {error, Reason} -> {true, {KeyStructOrTuple, TypeOp, Reason}}
+            end
+        end, KeyStructTypeOpTuples),
+    case Result of
+        [] -> ok;
+        _ -> {error, Result}
+    end.
 
--spec begin_txn() -> txid() | {error, reason()}.
+-spec update_txn([{key_struct() | {key(), type()}, type_op()}] | {key_struct() | {key(), type()}, type_op()}) -> ok | {error, reason()}.
+update_txn(KeyStructTypeOpTuples) when is_list(KeyStructTypeOpTuples) ->
+    case update_txn(KeyStructTypeOpTuples, ignore) of
+        {ok, Results, _} -> {ok, Results};
+        Error -> Error
+    end;
+update_txn(KeyStructTypeOpTuple) -> update_txn([KeyStructTypeOpTuple]).
+
+-spec update_txn([{key_struct() | {key(), type()}, type_op()}] | {key_struct() | {key(), type()}, type_op()}, snapshot_time()) -> {ok, vectorclock()} | {error, reason()}.
+update_txn(KeyStructTypeOpTuples, ignore) when is_list(KeyStructTypeOpTuples) ->
+    update_txn(KeyStructTypeOpTuples, undefined);
+update_txn(KeyStructTypeOpTuples, Clock) when is_list(KeyStructTypeOpTuples) ->
+    TxId = get_new_tx_id(),
+    BeginVts =
+        case Clock of
+            undefined -> gingko_utils:get_DCSf_vts();
+            Vts -> Vts
+        end,
+    case KeyStructTypeOpTuples of
+        [] ->
+            {ok, BeginVts};
+        _ ->
+            KeyStructs = lists:map(fun({KeyStructOrTuple, TypeOp}) ->
+                {to_key_struct(KeyStructOrTuple), TypeOp} end, KeyStructTypeOpTuples),
+            Transaction = {{transaction, {BeginVts, KeyStructs}}, TxId},
+            Fun = fun() -> gingko_server:perform_request(Transaction) end,
+            general_utils:bench("Transaction", Fun)
+    end;
+%%    gingko_server:perform_request(Transaction);
+update_txn(KeyStructTypeOpTuple, Clock) -> update_txn([KeyStructTypeOpTuple], Clock).
+
+-spec begin_txn() -> {ok, txid()} | {error, reason()}.
 begin_txn() ->
     DependencyVts = gingko_utils:get_DCSf_vts(),
     begin_txn(DependencyVts).
 
--spec begin_txn(vectorclock()) -> txid() | {error, reason()}.
+-spec begin_txn(snapshot_time()) -> {ok, txid()} | {error, reason()}.
+begin_txn(ignore) -> begin_txn();
+begin_txn(undefined) -> begin_txn();
 begin_txn(DependencyVts) ->
     TxId = get_new_tx_id(),
     case begin_txn(DependencyVts, TxId) of
-        ok -> TxId;
+        ok -> {ok, TxId};
         Error -> Error
     end.
 
 -spec begin_txn(vectorclock(), txid()) -> ok | {error, reason()}.
 begin_txn(DependencyVts, TxId) ->
     BeginTxn = {{begin_txn, DependencyVts}, TxId},
-    gingko_server:perform_request(BeginTxn).
+    Fun = fun() -> gingko_server:perform_request(BeginTxn) end,
+    general_utils:bench("BeginTxn", Fun).
+%%    gingko_server:perform_request(BeginTxn).
 
 -spec prepare_txn(txid()) -> ok | {error, reason()}.
 prepare_txn(TxId) ->
     PrepareTxn = {{prepare_txn, none}, TxId},
-    gingko_server:perform_request(PrepareTxn).
+    Fun = fun() -> gingko_server:perform_request(PrepareTxn) end,
+    general_utils:bench("PrepareTxn", Fun).
+%%    gingko_server:perform_request(PrepareTxn).
 
 -spec commit_txn(txid()) -> {ok, vectorclock()} | {error, reason()}.
 commit_txn(TxId) ->
@@ -185,10 +194,12 @@ commit_txn(TxId) ->
 -spec commit_txn(vectorclock(), txid()) -> {ok, vectorclock()} | {error, reason()}.
 commit_txn(CommitVts, TxId) ->
     CommitTxn = {{commit_txn, CommitVts}, TxId},
-    case gingko_server:perform_request(CommitTxn) of
-        ok -> {ok, CommitVts};
-        Error -> Error
-    end.
+    Fun = fun() -> gingko_server:perform_request(CommitTxn) end,
+    general_utils:bench("CommitTxn", Fun).
+%%    case gingko_server:perform_request(CommitTxn) of
+%%        ok -> {ok, CommitVts};
+%%        Error -> Error
+%%    end.
 
 -spec prepare_and_commit_txn(txid()) -> {ok, vectorclock()} | {error, reason()}.
 prepare_and_commit_txn(TxId) ->
@@ -204,10 +215,10 @@ abort_txn(TxId) ->
 
 -spec checkpoint() -> ok.
 checkpoint() ->
-    DependencyVts = gingko_utils:get_GCSf_vts(),
+    DependencyVts = gingko_utils:get_GCSt_vts(),
     checkpoint(DependencyVts).
 
-%% TODO: Dependency Vts is GCSf, also checkpoint is actually new and correct
+%% TODO: Dependency Vts is GCSt, also checkpoint is actually new and correct
 -spec checkpoint(vectorclock()) -> ok.
 checkpoint(DependencyVts) ->
     Checkpoint = {{checkpoint, DependencyVts}, #tx_id{local_start_time = gingko_utils:get_timestamp(), server_pid = self()}},

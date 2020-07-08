@@ -31,12 +31,12 @@
 
 all() ->
     [
-        simple_integration_test, two_transactions, replication_test, checkpoint_test
+%%        simple_integration_test, two_transactions, replication_test, checkpoint_test
     ].
 %TODO reimplement
 init_per_suite(Config) ->
     %NewConfig = test_utils:init_single_dc(?MODULE, Config),
-    NewConfig = test_utils:init_multi_dc(?MODULE, Config),
+    NewConfig = test_utils:init_single_dc(?MODULE, Config),
     [Nodes | _] = proplists:get_value(clusters, NewConfig),
     NewConfig.
 
@@ -56,8 +56,7 @@ simple_integration_test(Config) ->
     [Cluster | _] = proplists:get_value(clusters, Config),
     Node = lists:nth(1, Cluster),
     ct:pal("Node: ~p", [Node]),
-    TxId1 = rpc:call(Node, gingko, begin_txn, []),
-    #tx_id{} = TxId1,
+    {ok, TxId1} = rpc:call(Node, gingko, begin_txn, []),
     {Key1, Type1, TypeOp1} = {1, antidote_crdt_counter_pn, {increment, 1}},
     {Key2, Type2, TypeOp2} = {2, antidote_crdt_counter_pn, {increment, 1}},
     ok = rpc:call(Node, gingko, update, [{Key1, Type1}, TypeOp1, TxId1]),
@@ -67,15 +66,15 @@ simple_integration_test(Config) ->
     {ok, _CommitVts} = rpc:call(Node, gingko, prepare_and_commit_txn, [TxId1]).
 
 simple_transaction(Node, Key, Type, TypeOp, ExpectedResult) ->
-    TxId = rpc:call(Node, gingko, begin_txn, []),
+    {ok, TxId} = rpc:call(Node, gingko, begin_txn, []),
     ok = rpc:call(Node, gingko, update, [{Key, Type}, TypeOp, TxId]),
     {ok, ExpectedResult} = rpc:call(Node, gingko, read, [{Key, Type}, TxId]),
     {ok, _CommitVts} = rpc:call(Node, gingko, prepare_and_commit_txn, [TxId]).
 
 two_transactions(Config) ->
     Node = proplists:get_value(node, Config),
-    TxId1 = rpc:call(Node, gingko, begin_txn, []),
-    TxId2 = rpc:call(Node, gingko, begin_txn, []),
+    {ok, TxId1} = rpc:call(Node, gingko, begin_txn, []),
+    {ok, TxId2} = rpc:call(Node, gingko, begin_txn, []),
 
     {Key1, Type1, TypeOp1} = {1, antidote_crdt_counter_pn, {increment, 1}},
     ok = rpc:call(Node, gingko, update, [{Key1, Type1}, TypeOp1, TxId1]),
@@ -114,6 +113,7 @@ replication_test(Config) ->
 
 
 
-checkpoint_test(_Config) ->
+checkpoint_test(Config) ->
+    Node = proplists:get_value(node, Config),
 
     ok.

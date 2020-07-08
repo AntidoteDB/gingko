@@ -120,7 +120,7 @@ handle_cast(Request = {transfer, {Key, Amount, RequesterDCID}}, State = #state{l
         true ->
             BCounterKey = {Key, ?DATA_TYPE},
             % try to transfer locks, might return {error,no_permissions} if not enough permissions are available locally
-            _ = gingko:single_update_txn(BCounterKey, {transfer, {Amount, RequesterDCID, DCID}}),
+            _ = gingko:update_txn({BCounterKey, {transfer, {Amount, RequesterDCID, DCID}}}),
             {noreply, State#state{last_transfers = orddict:store({Key, RequesterDCID}, erlang:timestamp(), NewLastTransfers)}};
         _ ->
             {noreply, State#state{last_transfers = NewLastTransfers}}
@@ -177,7 +177,7 @@ request_remote(0, _Key) -> 0;
 request_remote(RequiredSum, Key) ->
     DCID = gingko_utils:get_my_dcid(),
     BCounterKey = {Key, ?DATA_TYPE},
-    {ok, [BCounter]} = gingko:single_read_txn(BCounterKey),
+    {ok, BCounter} = gingko:read(BCounterKey),
     PrefList = pref_list(BCounter),
     lists:foldl(
         fun({RemoteDCID, AvailableRemotely}, Remaining0) ->

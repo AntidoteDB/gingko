@@ -23,6 +23,7 @@
 -export([get_or_create_dc_info_entry/0,
     store_dc_info_entry/1,
     get_dc_descriptors/0,
+    get_connected_dcids_and_mine/0,
     get_connected_dcids/0,
     store_dc_descriptors/1,
     has_dc_started/0,
@@ -38,44 +39,38 @@
 
 -spec get_or_create_dc_info_entry() -> dc_info_entry().
 get_or_create_dc_info_entry() ->
-    Nodes = lists:sort(gingko_utils:get_my_dc_nodes()),
-    FirstNode = hd(Nodes),
-    case node() == FirstNode of
-        true ->
-            DCID = gingko_utils:get_my_dcid(),
-            %%TODO check that table exists
-            ReadFunc = fun() -> mnesia:read(?TABLE_NAME, DCID) end,
-            DcInfoEntryList = mnesia:activity(transaction, ReadFunc),
-            DcInfoEntry =
-                case DcInfoEntryList of
-                    [] -> #dc_info_entry{dcid = DCID, has_started = false, connected_descriptors = []};
-                    [Descriptor] -> Descriptor;
-                    [FirstDescriptor | _Descriptors] -> FirstDescriptor
-                    %%TODO{error, {"BAD", DCID, Descriptors}}
-                end,
-            store_dc_info_entry(DcInfoEntry),
-            DcInfoEntry;
-        false ->
-            rpc:call(FirstNode, ?MODULE, get_or_create_dc_info_entry, [])
-    end.
+    DCID = gingko_utils:get_my_dcid(),
+    %%TODO check that table exists
+    ReadFunc = fun() ->
+        DcInfoEntryList = mnesia:read(?TABLE_NAME, DCID),
+        {DcInfoEntry, MustBeUpdated} =
+            case DcInfoEntryList of
+                [] -> {#dc_info_entry{dcid = DCID, has_started = false, connected_descriptors = []}, true};
+                [Descriptor] -> {Descriptor, false};
+                [FirstDescriptor | _Descriptors] ->
+                    {FirstDescriptor, true}%%TODO{error, {"BAD", DCID, Descriptors}}
+            end,
+        case MustBeUpdated of
+            true -> mnesia:write(?TABLE_NAME, DcInfoEntry, write);
+            false -> ok
+        end,
+        DcInfoEntry
+               end,
+    mnesia_utils:run_sync_transaction(ReadFunc).
 
 -spec store_dc_info_entry(dc_info_entry()) -> ok.
 store_dc_info_entry(DcInfoEntry) ->
-    Nodes = lists:sort(gingko_utils:get_my_dc_nodes()),
-    FirstNode = hd(Nodes),
-    case FirstNode == node() of
-        true ->
-            WriteFunc = fun() -> mnesia:write(?TABLE_NAME, DcInfoEntry, write) end,
-            mnesia:activity(transaction, WriteFunc),
-            ok;
-        false ->
-            rpc:call(FirstNode, ?MODULE, store_dc_info_entry, [])
-    end.
+    WriteFunc = fun() -> mnesia:write(?TABLE_NAME, DcInfoEntry, write) end,
+    mnesia_utils:run_sync_transaction(WriteFunc).
 
 -spec get_dc_descriptors() -> [descriptor()].
 get_dc_descriptors() ->
     DcInfoEntry = get_or_create_dc_info_entry(),
     DcInfoEntry#dc_info_entry.connected_descriptors.
+
+-spec get_connected_dcids_and_mine() -> [descriptor()].
+get_connected_dcids_and_mine() ->
+    [gingko_utils:get_my_dcid() | get_connected_dcids()].
 
 -spec get_connected_dcids() -> [dcid()].
 get_connected_dcids() ->

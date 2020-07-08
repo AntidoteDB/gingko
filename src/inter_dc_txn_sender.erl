@@ -33,7 +33,7 @@
 
 -record(state, {
     journal_socket :: zmq_socket(),
-    partition_to_last_send_time :: dict:dict(partition_id(), timestamp()),
+    partition_to_last_send_time = #{} :: #{partition_id() => timestamp()},
     ping_timer :: reference()
 }).
 
@@ -59,7 +59,7 @@ init([]) ->
     PingTimer = erlang:send_after(?TXN_PING_FREQ, self(), send_ping),
     CurrentTime = gingko_utils:get_timestamp(),
     MyPartitions = gingko_utils:get_my_partitions(),
-    PartitionToLastSendTime = lists:foldl(fun(Partition, DictAcc) -> dict:store(Partition, CurrentTime, DictAcc) end, dict:new(), MyPartitions),
+    PartitionToLastSendTime = lists:foldl(fun(Partition, MapAcc) -> MapAcc#{Partition => CurrentTime} end, #{}, MyPartitions),
     {ok, #state{journal_socket = JournalSocket, ping_timer = PingTimer, partition_to_last_send_time = PartitionToLastSendTime}}.
 
 handle_call(Request = hello, From, State) ->
@@ -70,7 +70,7 @@ handle_call(Request, From, State) -> default_gen_server_behaviour:handle_call_cr
 
 handle_cast(Request = {inter_dc_txn, Partition, JournalEntryList}, State = #state{journal_socket = JournalSocket, partition_to_last_send_time = PartitionToLastSendTime}) ->
     default_gen_server_behaviour:handle_cast(?MODULE, Request, State),
-    NewPartitionToLastSendTime = dict:store(Partition, gingko_utils:get_timestamp(), PartitionToLastSendTime),
+    NewPartitionToLastSendTime = PartitionToLastSendTime#{Partition => gingko_utils:get_timestamp()},
     InterDcTxn = inter_dc_txn:from_journal_entries(Partition, JournalEntryList),
     BinaryMessage = inter_dc_txn:to_binary(InterDcTxn),
     ok = zmq_utils:try_send(JournalSocket, BinaryMessage),
@@ -83,7 +83,7 @@ handle_info(Info = send_ping, State = #state{journal_socket = JournalSocket, pin
     erlang:cancel_timer(PingTimer),
     CurrentTime = gingko_utils:get_timestamp(),
     NewPartitionToLastSendTime =
-        dict:map(
+        maps:map(
             fun(Partition, Timestamp) -> %%TODO redo time difference (currently microseconds)
                 case (CurrentTime - Timestamp) > 1000000 of
                     true ->

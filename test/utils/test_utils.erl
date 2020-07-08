@@ -36,7 +36,6 @@
 
 -export([
     at_init_testsuite/0,
-    bucket/1,
     init_single_dc/2,
     init_multi_dc/2,
     get_node_name/1,
@@ -69,7 +68,7 @@ init_single_dc(Suite, Config) ->
     ClusterConfiguration =
         case ?USE_SINGLE_SERVER of
             true -> [[dev1]];
-            false -> [[dev1, dev2, dev3]]%, dev3, dev4, dev5, dev6, dev7, dev8]],
+            false -> [[dev1]]%[[dev1, dev2, dev3, dev4]]%, dev3, dev4, dev5, dev6, dev7, dev8]],
         end,
     Clusters = set_up_clusters_common([{suite_name, ?MODULE} | Config], ClusterConfiguration),
     Nodes = hd(Clusters),
@@ -81,7 +80,7 @@ init_multi_dc(Suite, Config) ->
     at_init_testsuite(),
     ClusterConfiguration =
         case ?USE_SINGLE_SERVER of
-            true -> [[dev1], [dev2]];%, [dev3], [dev4]];
+            true -> [[dev1], [dev2], [dev3], [dev4]];
             false -> [[dev1, dev2], [dev3, dev4, dev5], [dev6, dev7, dev8, dev9]]
         end,
     Clusters = set_up_clusters_common([{suite_name, ?MODULE} | Config], ClusterConfiguration),
@@ -236,7 +235,8 @@ restart_nodes(NodeList, Config) ->
 
             ct:log("Waiting until ring converged @ ~p", [Node]),
             riak_utils:wait_until_ring_converged([Node])
-        end, NodeList).
+        end, NodeList),
+    NodeList.
 
 
 %% @doc Convert node to node atom
@@ -324,13 +324,6 @@ set_up_clusters_common(Config, ClusterConfiguration) ->
 
     ct:pal("Clusters joined and data centers connected connected: ~p", [ClusterConfiguration]),
     [unpack(Cluster) || Cluster <- Clusters].
-
-
-bucket(BucketBaseAtom) ->
-    BucketRandomSuffix = [rand:uniform(127)],
-    Bucket = list_to_atom(atom_to_list(BucketBaseAtom) ++ BucketRandomSuffix),
-    ct:log("Using random bucket: ~p", [Bucket]),
-    Bucket.
 
 
 %% logger configuration for each level

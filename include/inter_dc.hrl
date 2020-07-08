@@ -9,6 +9,7 @@
 -define(JOURNAL_READ_REQUEST, 4).
 -define(BCOUNTER_REQUEST, 5).
 -define(DCSF_MSG, 6).
+-define(REQUEST_NOT_SUPPORTED_MSG, 7).
 
 %% The number of bytes a partition id is in a message
 -define(PARTITION_BYTE_LENGTH, 20).

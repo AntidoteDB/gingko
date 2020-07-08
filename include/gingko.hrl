@@ -1,6 +1,6 @@
 -include_lib("riak_core/include/riak_core_vnode.hrl").
 -define(BUCKET, <<"gingko">>).
--define(USE_SINGLE_SERVER, false).
+-define(USE_SINGLE_SERVER, true).
 -define(USE_EXPERIMENTAL_TIMESTAMP, true).
 -define(EXPERIMENTAL_TIMESTAMP_USE_MONOTONIC_TIME, false).
 -define(SINGLE_SERVER_PARTITION, 0).
@@ -43,6 +43,8 @@
 -type millisecond() :: non_neg_integer().
 -type timestamp() :: non_neg_integer().
 
+-type table_name() :: atom().
+
 -type key() :: term().
 -type type() :: atom().
 -type txn_properties() :: [{update_clock, boolean()} | {certify, use_default | certify | dont_certify}].
@@ -54,13 +56,13 @@
 -type txid() :: #tx_id{}.
 
 -type crdt() :: term().
--type type_op() :: {Op :: atom(), OpArgs :: term()} | atom() | term(). %downstream(type_op, crdt())
+-type type_op() :: {Op :: atom(), OpArgs :: term()} | {Op :: atom(), OpArgs :: term(), MoreOpArgs :: term()} | atom() | term(). %downstream(type_op, crdt())
 -type downstream_op() :: term(). %update(downstream_op, crdt())
 
 -type dcid() :: node() | undefined | {term(), term()}.
 
 -type vectorclock() :: vectorclock:vectorclock().
--type snapshot_time() :: 'undefined' | vectorclock:vectorclock().
+-type snapshot_time() :: ignore | undefined | vectorclock:vectorclock().
 -type vts_range() :: {MinVts :: vectorclock() | none, MaxVts :: vectorclock() | none}.
 -type clock_time() :: non_neg_integer().
 -type clock_range() :: {MinClock :: clock_time() | none, MaxClock :: clock_time() | none}.
@@ -70,24 +72,22 @@
 -type preflist() :: riak_core_apl:preflist().
 -type partition_id() :: chash:index_as_int().
 -type ct_config() :: map_list().
-
--type txn_num() :: {non_neg_integer(), txid() | none, clock_time()}.
+-type txn_num() :: non_neg_integer().
+-type txn_tracking_num() :: {txn_num(), txid() | none, clock_time()}.
+-type invalid_txn_tracking_num() :: {txn_tracking_num(), vectorclock()}.
 -type tx_op_num() :: non_neg_integer().
 
 -record(cache_usage, {
     used = true :: boolean(),
     first_used = 0 :: clock_time(),
     last_used = 0 :: clock_time(),
-    times_used = 1 :: non_neg_integer()
+    times_used = 0 :: non_neg_integer()
 }).
 -type cache_usage() :: #cache_usage{}.
 
 -record(cache_entry, {
-    key_struct :: key_struct(),
-    commit_vts :: vectorclock(),
-    valid_vts :: vectorclock(),
-    usage = #cache_usage{} :: cache_usage(),
-    blob :: term() | crdt()
+    snapshot :: snapshot(),
+    usage = #cache_usage{} :: cache_usage()
 }).
 -type cache_entry() :: #cache_entry{}.
 
@@ -97,11 +97,9 @@
 }).
 -type key_struct() :: #key_struct{}.
 
--type raw_value() :: term().
-
 -record(checkpoint_entry, {
     key_struct :: key_struct(),
-    value :: snapshot_value()
+    value :: crdt() %%TODO later this should probably be a binary
 }).
 -type checkpoint_entry() :: #checkpoint_entry{}.
 
@@ -109,37 +107,37 @@
     key_struct :: key_struct(),
     commit_vts :: vectorclock(),
     snapshot_vts :: vectorclock(),
-    value :: snapshot_value()
+    value :: crdt()
 }).
 -type snapshot() :: #snapshot{}.
--type snapshot_value() :: crdt() | raw_value() | reference | none. %%TODO define reference
 
 -record(begin_txn_args, {dependency_vts :: vectorclock()}).
 -type begin_txn_args() :: #begin_txn_args{}.
 
--record(prepare_txn_args, {}).
+-record(prepare_txn_args, {partitions :: [partition_id()]}).
 -type prepare_txn_args() :: #prepare_txn_args{}.
 -record(commit_txn_args, {
     commit_vts :: vectorclock(),
-    local_txn_num :: txn_num()
+    txn_tracking_num :: txn_tracking_num()
 }).
 -type commit_txn_args() :: #commit_txn_args{}.
 -record(abort_txn_args, {}).
 -type abort_txn_args() :: #abort_txn_args{}.
--record(checkpoint_args, {dependency_vts :: vectorclock(), dcid_to_last_txn_num :: dict:dict(dcid(), txn_num())}).
+-record(checkpoint_args, {dependency_vts :: vectorclock(), dcid_to_last_txn_tracking_num :: #{dcid() => txn_tracking_num()}}).
 -type checkpoint_args() :: #checkpoint_args{}.
 
--record(object_op_args, {
+-record(update_args, {
     key_struct :: key_struct(),
-    tx_op_num :: non_neg_integer(), %Order in a transaction
-    op_args = none :: none | downstream_op() %%TODO specify further if possible
+    tx_op_num :: tx_op_num(), %Order in a transaction
+    downstream_op :: downstream_op()
 }).
--type object_op_args() :: #object_op_args{}.
+-type update_args() :: #update_args{}.
 
--type journal_entry_args() :: begin_txn_args() | prepare_txn_args() | commit_txn_args() | abort_txn_args() | checkpoint_args() | object_op_args().
+-type journal_entry_args() :: begin_txn_args() | prepare_txn_args() | commit_txn_args() | abort_txn_args() | checkpoint_args() | update_args().
 
 -type jsn() :: non_neg_integer().
--type journal_entry_type() :: begin_txn | prepare_txn | commit_txn | abort_txn | checkpoint | read | update.
+-type journal_entry_type() :: begin_txn | prepare_txn | commit_txn | abort_txn | checkpoint | checkpoint_commit | checkpoint_abort | update.
+-type operation_type() :: journal_entry_type() | read | transaction.
 
 -record(journal_entry, {
     jsn :: jsn(),
@@ -153,10 +151,9 @@
 
 -record(update_payload, {
     key_struct :: key_struct(),
-    update_op :: downstream_op() | fun((Value :: term()) -> UpdatedValue :: term()), %%TODO define operations on non crdt types
     commit_vts :: vectorclock(),
     snapshot_vts :: vectorclock(),
-    tx_id :: txid()
+    downstream_op :: downstream_op()
 }).
 -type update_payload() :: #update_payload{}.
 

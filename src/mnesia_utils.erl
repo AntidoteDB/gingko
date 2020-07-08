@@ -20,12 +20,20 @@
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
 -include("gingko.hrl").
 
--export([run_transaction/1,
+-export([run_transaction/1, run_sync_transaction/1,
     get_mnesia_result/1]).
 
 -spec run_transaction(fun(() -> ResType :: term())) -> ResType :: term().
 run_transaction(F) ->
-    get_mnesia_result(mnesia:activity(transaction, F)).
+    run_operation(transaction, F).
+
+-spec run_sync_transaction(fun(() -> ResType :: term())) -> ResType :: term().
+run_sync_transaction(F) ->
+    run_operation(sync_transaction, F).
+
+-spec run_operation(atom(), fun(() -> ResType :: term())) -> ResType :: term().
+run_operation(ActivityType, F) ->
+    get_mnesia_result(mnesia:activity(ActivityType, F)).
 
 -spec get_mnesia_result({atomic, ResType :: term()} | {aborted, reason()} | term()) -> ResType :: term() | {error, reason()}.
 get_mnesia_result(ActivityResult) ->

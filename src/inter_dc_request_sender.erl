@@ -39,9 +39,9 @@
 %%TODO assign sockets to partitions (needs updates during handoffs)
 
 -record(state, {
-    dcid_to_request_sockets = dict:new() :: dict:dict(dcid(), [zmq_socket()]),
+    dcid_to_request_sockets = #{} :: #{dcid() => [zmq_socket()]},
     next_request_id :: non_neg_integer(),
-    running_requests = dict:new() :: dict:dict(non_neg_integer(), request_entry())
+    running_requests = #{} :: #{non_neg_integer() => request_entry()}
 }).
 -type state() :: #state{}.
 
@@ -97,7 +97,7 @@ handle_call(Request = {add_dc, DCID, DcAddressList}, From, State) ->
     DCIDToRequestSockets = NewState#state.dcid_to_request_sockets,
     case connect_to_nodes(DcAddressList, []) of
         {ok, Sockets} ->
-            {reply, ok, NewState#state{dcid_to_request_sockets = dict:store(DCID, Sockets, DCIDToRequestSockets)}};
+            {reply, ok, NewState#state{dcid_to_request_sockets = DCIDToRequestSockets#{DCID => Sockets}}};
         Error ->
             {reply, Error, NewState}
     end;
@@ -110,7 +110,7 @@ handle_cast(Request = {request, RequestType, {TargetDCIDOrAll, TargetPartition},
     Sockets =
         case TargetDCIDOrAll of
             all -> lists:append(general_utils:get_values(DCIDToRequestSocket));
-            TargetDCID -> dict:find(TargetDCID, DCIDToRequestSocket)
+            TargetDCID -> maps:get(TargetDCID, DCIDToRequestSocket) %%TODO potential error
         end,
     RequestRecord = inter_dc_request:create_request_record({RequestId, RequestType}, {TargetDCIDOrAll, TargetPartition}, RequestArgs),
     %% Build the binary request
@@ -134,13 +134,13 @@ handle_info(Info = {zmq, _Socket, ResponseBinary, _Flags}, State = #state{runnin
     RequestId = RequestRecord#request_record.request_id,
     %% Be sure this is a request from this socket
     NewRunningRequests =
-        case dict:find(RequestId, RunningRequests) of
+        case maps:find(RequestId, RunningRequests) of
             {ok, RequestEntry = #request_entry{request_record = RequestRecord, return_func_or_none = ReturnFuncOrNone}} ->
                 case ReturnFuncOrNone of
                     none -> ok;
                     _ -> ReturnFuncOrNone(Response, RequestEntry)
                 end,
-                dict:erase(RequestId, RunningRequests);
+                maps:remove(RequestId, RunningRequests);
             error ->
                 logger:error("Got a bad (or repeated) request id: ~p", [RequestId]),
                 RunningRequests
@@ -151,12 +151,12 @@ handle_info(Info, State) -> default_gen_server_behaviour:handle_info_crash(?MODU
 
 terminate(Reason, State = #state{dcid_to_request_sockets = DCIDToRequestSocket}) ->
     default_gen_server_behaviour:terminate(?MODULE, Reason, State),
-    dict:fold(
-        fun(_, Dict, _) ->
-            dict:fold(
-                fun(_, Socket, _) ->
+    maps:fold(
+        fun(_, List, _) ->
+            lists:foreach(
+                fun(Socket) ->
                     zmq_utils:close_socket(Socket)
-                end, ok, Dict)
+                end, List)
         end, ok, DCIDToRequestSocket).
 
 code_change(OldVsn, State, Extra) -> default_gen_server_behaviour:code_change(?MODULE, OldVsn, State, Extra).
@@ -167,10 +167,10 @@ code_change(OldVsn, State, Extra) -> default_gen_server_behaviour:code_change(?M
 
 -spec delete_dc(dcid(), state()) -> state().
 delete_dc(DCID, State = #state{dcid_to_request_sockets = DCIDToRequestSocket}) ->
-    case dict:find(DCID, DCIDToRequestSocket) of
+    case maps:find(DCID, DCIDToRequestSocket) of
         {ok, Sockets} ->
             lists:foreach(fun(Socket) -> zmq_utils:close_socket(Socket) end, Sockets),
-            State#state{dcid_to_request_sockets = dict:erase(DCID, DCIDToRequestSocket)};
+            State#state{dcid_to_request_sockets = maps:remove(DCID, DCIDToRequestSocket)};
         error ->
             State
     end.
@@ -178,7 +178,7 @@ delete_dc(DCID, State = #state{dcid_to_request_sockets = DCIDToRequestSocket}) -
 %% Saves the request in the state, so it can be resent if the DC was disconnected.
 -spec request_sent_state_update(request_entry(), state()) -> state().
 request_sent_state_update(RequestEntry = #request_entry{request_record = #request_record{request_id = RequestId}}, State = #state{next_request_id = PreviousRequestId, running_requests = RunningRequests}) ->
-    NewRunningRequests = dict:store(RequestId, RequestEntry, RunningRequests),
+    NewRunningRequests = RunningRequests#{RequestId => RequestEntry},
     State#state{next_request_id = PreviousRequestId + 1, running_requests = NewRunningRequests}.
 
 -spec connect_to_nodes(dc_address_list(), [zmq_socket()]) -> {ok, [zmq_socket()]} | {error, reason()}.

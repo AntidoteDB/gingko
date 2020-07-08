@@ -33,7 +33,7 @@
     code_change/3]).
 
 -record(state, {
-    dcid_to_journal_sockets = dict:new() :: dict:dict(dcid(), [zmq_socket()]),
+    dcid_to_journal_sockets = #{} :: #{dcid() => [zmq_socket()]},
     current_partition_filter = [] :: [partition_id()] %%TODO later
 }).
 -type state() :: #state{}.
@@ -66,12 +66,11 @@ handle_call(Request = hello, From, State) ->
 handle_call(Request = {add_dc, DCID, DcAddressList}, From, State) ->
     default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
     %% First delete the DC if it is already connected
-    PartitionFilter = gingko_utils:get_my_partitions(),
     NewState = delete_dc(DCID, State),
     DCIDToJournalSockets = NewState#state.dcid_to_journal_sockets,
     case connect_to_nodes(DcAddressList, []) of
         {ok, Sockets} ->
-            {reply, ok, NewState#state{dcid_to_journal_sockets = dict:store(DCID, Sockets, DCIDToJournalSockets)}};
+            {reply, ok, NewState#state{dcid_to_journal_sockets = DCIDToJournalSockets#{DCID => Sockets}}};
         Error ->
             {reply, Error, NewState}
     end;
@@ -92,19 +91,19 @@ handle_info(Info = {zmq, _Socket, InterDcTxnBinary, _Flags}, State) ->
     Partition = InterDcTxn#inter_dc_txn.partition,
     JournalEntryList = InterDcTxn#inter_dc_txn.journal_entries,
     SortedJournalEntryList = gingko_utils:sort_journal_entries_of_same_tx(JournalEntryList),
-    gingko_utils:call_gingko_async(Partition, ?GINGKO_LOG, {add_remote_txn, SortedJournalEntryList}),
+    gingko_utils:call_gingko_async(Partition, ?GINGKO_LOG, {add_remote_txn, SortedJournalEntryList, InterDcTxn#inter_dc_txn.source_dcid}),
     {noreply, State};
 
 handle_info(Info, State) -> default_gen_server_behaviour:handle_info_crash(?MODULE, Info, State).
 
 terminate(Reason, State = #state{dcid_to_journal_sockets = DCIDToJournalSockets}) ->
     default_gen_server_behaviour:terminate(?MODULE, Reason, State),
-    dict:fold(
-        fun(_, Dict, _) ->
-            dict:fold(
+    maps:fold(
+        fun(_, Map, _) ->
+            maps:fold(
                 fun(_, Socket, _) ->
                     zmq_utils:close_socket(Socket)
-                end, ok, Dict)
+                end, ok, Map)
         end, ok, DCIDToJournalSockets).
 
 code_change(OldVsn, State, Extra) -> default_gen_server_behaviour:code_change(?MODULE, OldVsn, State, Extra).
@@ -115,10 +114,10 @@ code_change(OldVsn, State, Extra) -> default_gen_server_behaviour:code_change(?M
 
 -spec delete_dc(dcid(), state()) -> state().
 delete_dc(DCID, State = #state{dcid_to_journal_sockets = DCIDToJournalSockets}) ->
-    case dict:find(DCID, DCIDToJournalSockets) of
+    case maps:find(DCID, DCIDToJournalSockets) of
         {ok, Sockets} ->
             lists:foreach(fun zmq_utils:close_socket/1, Sockets),
-            State#state{dcid_to_journal_sockets = dict:erase(DCID, DCIDToJournalSockets)};
+            State#state{dcid_to_journal_sockets = maps:remove(DCID, DCIDToJournalSockets)};
         error ->
             State
     end.

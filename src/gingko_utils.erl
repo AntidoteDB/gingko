@@ -28,7 +28,7 @@
     get_connected_dcids/0,
     get_my_dc_nodes/0,
     get_DCSf_vts/0,
-    get_GCSf_vts/0,
+    get_GCSt_vts/0,
     get_my_partitions/0,
     get_number_of_partitions/0,
     gingko_send_after/2,
@@ -54,7 +54,7 @@
     is_system_operation/1,
     is_journal_entry_type/2,
     contains_journal_entry_type/2,
-    get_object_operations/1,
+    get_updates/1,
 
     is_update_of_keys/2,
     is_update_of_keys_or_commit/2,
@@ -67,7 +67,7 @@
     remove_existing_journal_entries_handoff/2,
 
     get_latest_vts/1,
-    get_default_txn_num/0,
+    get_default_txn_tracking_num/0,
     generate_downstream_op/4,
 
     call_gingko_async/3,
@@ -123,9 +123,9 @@ get_DCSf_vts() ->
     Vectorclocks = general_utils:get_values(bcast_gingko_sync_only_values(?GINGKO_LOG, get_current_dependency_vts)),
     vectorclock:min(Vectorclocks).
 
--spec get_GCSf_vts() -> vectorclock().
-get_GCSf_vts() ->
-    inter_dc_state_service:get_GCSf().
+-spec get_GCSt_vts() -> vectorclock().
+get_GCSt_vts() ->
+    inter_dc_state_service:get_GCSt().
 
 %% Gets all partitions of the caller node
 %% USE_SINGLE_SERVER: returns the default SINGLE_SERVER_PARTITION in a list
@@ -166,7 +166,7 @@ update_timer(CurrentTimerOrNone, UpdateExistingTimer, TimeMillis, Request, IsPot
     UpdateTimerFun =
         fun() ->
             case IsPotentialVNode of
-                true -> gingko_utils:gingko_send_after(TimeMillis, Request);
+                true -> gingko_send_after(TimeMillis, Request);
                 false -> erlang:send_after(TimeMillis, self(), Request)
             end
         end,
@@ -278,12 +278,12 @@ is_in_clock_range(ClockTime, ClockRange) ->
 
 -spec create_new_snapshot(key_struct(), vectorclock()) -> snapshot().
 create_new_snapshot(KeyStruct = #key_struct{type = Type}, DependencyVts) ->
-    DefaultValue = gingko_utils:create_default_value(Type),
+    DefaultValue = create_default_value(Type),
     #snapshot{key_struct = KeyStruct, commit_vts = DependencyVts, snapshot_vts = DependencyVts, value = DefaultValue}.
 
 -spec create_cache_entry(snapshot()) -> cache_entry().
-create_cache_entry(#snapshot{key_struct = KeyStruct, commit_vts = CommitVts, snapshot_vts = SnapshotVts, value = Value}) ->
-    #cache_entry{key_struct = KeyStruct, commit_vts = CommitVts, valid_vts = SnapshotVts, usage = #cache_usage{first_used = get_timestamp(), last_used = get_timestamp()}, blob = Value}.
+create_cache_entry(Snapshot) ->
+    #cache_entry{snapshot = Snapshot, usage = #cache_usage{first_used = get_timestamp(), last_used = get_timestamp()}}.
 
 -spec update_cache_usage(cache_entry(), boolean()) -> cache_entry().
 update_cache_usage(CacheEntry = #cache_entry{usage = CacheUsage}, Used) ->
@@ -295,8 +295,8 @@ update_cache_usage(CacheEntry = #cache_entry{usage = CacheUsage}, Used) ->
     CacheEntry#cache_entry{usage = NewCacheUsage}.
 
 -spec create_snapshot_from_cache_entry(cache_entry()) -> snapshot().
-create_snapshot_from_cache_entry(#cache_entry{key_struct = KeyStruct, commit_vts = CommitVts, valid_vts = SnapshotVts, blob = Value}) ->
-    #snapshot{key_struct = KeyStruct, commit_vts = CommitVts, snapshot_vts = SnapshotVts, value = Value}.
+create_snapshot_from_cache_entry(#cache_entry{snapshot = Snapshot}) ->
+    Snapshot.
 
 -spec create_snapshot_from_checkpoint_entry(checkpoint_entry(), vectorclock()) -> snapshot().
 create_snapshot_from_checkpoint_entry(CheckpointEntry, DependencyVts) ->
@@ -304,13 +304,9 @@ create_snapshot_from_checkpoint_entry(CheckpointEntry, DependencyVts) ->
     Value = CheckpointEntry#checkpoint_entry.value,
     #snapshot{key_struct = KeyStruct, commit_vts = DependencyVts, snapshot_vts = DependencyVts, value = Value}.
 
--spec create_default_value(type()) -> crdt() | none. %%TODO Consider other types
+-spec create_default_value(type()) -> crdt().
 create_default_value(Type) ->
-    IsCrdt = antidote_crdt:is_type(Type),
-    case IsCrdt of
-        true -> Type:new();
-        false -> none
-    end.
+    Type:new().
 
 -spec is_system_operation(journal_entry_type() | journal_entry()) -> boolean().
 is_system_operation(begin_txn) -> true;
@@ -322,10 +318,6 @@ is_system_operation(JournalEntryType) when is_atom(JournalEntryType) -> false;
 is_system_operation(#journal_entry{type = JournalEntryType}) -> is_system_operation(JournalEntryType);
 is_system_operation(_) -> false.
 
--spec is_object_operation(journal_entry_type() | journal_entry()) -> boolean().
-is_object_operation(JournalEntryType) when is_atom(JournalEntryType) -> not is_system_operation(JournalEntryType);
-is_object_operation(#journal_entry{type = JournalEntryType}) -> not is_system_operation(JournalEntryType).
-
 -spec is_journal_entry_type(journal_entry(), journal_entry_type() | [journal_entry_type()]) -> boolean().
 is_journal_entry_type(#journal_entry{type = OpType}, OpType) -> true;
 is_journal_entry_type(#journal_entry{type = OpType}, OpTypeList) when is_list(OpTypeList) ->
@@ -336,12 +328,12 @@ is_journal_entry_type(_, _) -> false.
 contains_journal_entry_type(JournalEntryList, OpType) ->
     lists:any(fun(JournalEntry) -> is_journal_entry_type(JournalEntry, OpType) end, JournalEntryList).
 
--spec get_object_operations([journal_entry()]) -> [journal_entry()].
-get_object_operations(JournalEntryList) ->
-    lists:filter(fun(JournalEntry) -> is_object_operation(JournalEntry) end, JournalEntryList).
+-spec get_updates([journal_entry()]) -> [journal_entry()].
+get_updates(JournalEntryList) ->
+    lists:filter(fun(JournalEntry) -> is_update(JournalEntry) end, JournalEntryList).
 
 -spec is_update_of_keys(journal_entry(), [key_struct()] | all_keys) -> boolean().
-is_update_of_keys(#journal_entry{type = update, args = #object_op_args{key_struct = KeyStruct}}, KeyStructFilter) ->
+is_update_of_keys(#journal_entry{type = update, args = #update_args{key_struct = KeyStruct}}, KeyStructFilter) ->
     KeyStructFilter == all_keys orelse lists:member(KeyStruct, KeyStructFilter);
 is_update_of_keys(_, _) -> false.
 
@@ -350,8 +342,8 @@ is_update_of_keys_or_commit(JournalEntry, KeyStructFilter) ->
     is_update_of_keys(JournalEntry, KeyStructFilter) orelse is_journal_entry_type(JournalEntry, commit_txn).
 
 -spec is_update(journal_entry()) -> boolean().
-is_update(JournalEntry) ->
-    is_journal_entry_type(JournalEntry, update).
+is_update(#journal_entry{type = update}) -> true;
+is_update(_) -> false.
 
 -spec get_journal_entries_of_type([journal_entry()], journal_entry_type() | [journal_entry_type()]) -> [journal_entry()].
 get_journal_entries_of_type(JournalEntryList, GivenType) when is_atom(GivenType) ->
@@ -364,7 +356,7 @@ get_keys_from_updates(JournalEntryList) ->
     lists:filtermap(
         fun(JournalEntry) ->
             case JournalEntry of
-                #journal_entry{type = update, args = #object_op_args{key_struct = KeyStruct}} -> {true, KeyStruct};
+                #journal_entry{type = update, args = #update_args{key_struct = KeyStruct}} -> {true, KeyStruct};
                 _ -> false
             end
         end, JournalEntryList).
@@ -395,7 +387,7 @@ op_type_sort(abort_txn, _) -> true;
 op_type_sort(_, abort_txn) -> false. %%TODO checkpoint is not needed
 
 -spec get_op_type(journal_entry()) -> atom() | non_neg_integer().
-get_op_type(#journal_entry{args = #object_op_args{tx_op_num = TxOpNum}}) -> TxOpNum;
+get_op_type(#journal_entry{args = #update_args{tx_op_num = TxOpNum}}) -> TxOpNum;
 get_op_type(#journal_entry{type = OpType}) -> OpType.
 
 -spec remove_existing_journal_entries_handoff([journal_entry()], [journal_entry()]) -> [journal_entry()].
@@ -409,11 +401,11 @@ remove_existing_journal_entries_handoff(NewJournalEntryList, ExistingJournalEntr
     FinalCommit = remove_existing_journal_entry_handoff(NewJournalEntryList, ExistingJournalEntryList, commit_txn),
     FinalAbort = remove_existing_journal_entry_handoff(NewJournalEntryList, ExistingJournalEntryList, abort_txn),
     FinalCheckpoint = remove_existing_journal_entry_handoff(NewJournalEntryList, ExistingJournalEntryList, checkpoint),
-    NewObjectJs = gingko_utils:get_object_operations(NewJournalEntryList),
-    ExistingObjectJs = gingko_utils:get_object_operations(ExistingJournalEntryList),
-    ExistingTxOpNum = lists:map(fun(#journal_entry{args = #object_op_args{tx_op_num = TxOpNum}}) ->
+    NewObjectJs = get_updates(NewJournalEntryList),
+    ExistingObjectJs = get_updates(ExistingJournalEntryList),
+    ExistingTxOpNum = lists:map(fun(#journal_entry{args = #update_args{tx_op_num = TxOpNum}}) ->
         TxOpNum end, ExistingObjectJs),
-    FinalObjectJs = lists:filter(fun(#journal_entry{args = #object_op_args{tx_op_num = TxOpNum}}) ->
+    FinalObjectJs = lists:filter(fun(#journal_entry{args = #update_args{tx_op_num = TxOpNum}}) ->
         not lists:member(TxOpNum, ExistingTxOpNum) end, NewObjectJs),
     FinalBegin ++ FinalObjectJs ++ FinalPrepare ++ FinalCommit ++ FinalAbort ++ FinalCheckpoint.
 
@@ -434,10 +426,10 @@ get_latest_vts(SortedJournalEntryList) ->
     LastJournalEntryWithVts = hd(
         lists:filter(
             fun(JournalEntry) ->
-                gingko_utils:is_journal_entry_type(JournalEntry, begin_txn) orelse gingko_utils:is_journal_entry_type(JournalEntry, commit_txn)
+                is_journal_entry_type(JournalEntry, begin_txn) orelse is_journal_entry_type(JournalEntry, commit_txn)
             end, ReversedSortedJournalEntryList)),
     LastVts =
-        case gingko_utils:is_journal_entry_type(LastJournalEntryWithVts, begin_txn) of
+        case is_journal_entry_type(LastJournalEntryWithVts, begin_txn) of
             true ->
                 LastJournalEntryWithVts#journal_entry.args#begin_txn_args.dependency_vts;
             false ->
@@ -445,12 +437,12 @@ get_latest_vts(SortedJournalEntryList) ->
         end,
     LastVts.
 
--spec get_default_txn_num() -> txn_num().
-get_default_txn_num() -> {0, none, 0}.
+-spec get_default_txn_tracking_num() -> txn_tracking_num().
+get_default_txn_tracking_num() -> {0, none, 0}.
 
--spec generate_downstream_op(key_struct(), txid(), type_op(), atom()) ->
+-spec generate_downstream_op(key_struct(), type_op(), txid(), atom()) ->
     {ok, downstream_op()} | {error, reason()}.
-generate_downstream_op(KeyStruct = #key_struct{key = Key, type = Type}, TxId, TypeOp, TableName) ->
+generate_downstream_op(KeyStruct = #key_struct{key = Key, type = Type}, TypeOp, TxId, TableName) ->
     %% TODO: Check if read can be omitted for some types as registers
     NeedState = Type:require_state_downstream(TypeOp),
     %% If state is needed to generate downstream, read it from the partition.
