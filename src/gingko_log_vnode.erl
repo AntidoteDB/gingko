@@ -364,16 +364,26 @@ create_and_add_local_journal_entry(JsnState, TxId, Type, Args, #state{partition 
 
 -spec add_remote_txn([journal_entry()], dcid(), state()) -> state().
 add_remote_txn([], DcId, State) -> State;
-add_remote_txn(SortedTxJournalEntryList = [BeginJournalEntry | _], DcId, State) ->
-    lists:foldl(
-        fun(JournalEntry = #journal_entry{type = Type}, StateAcc = #state{next_jsn = NextJsn, table_name = TableName}) ->
-            ok = gingko_log_utils:add_journal_entry(JournalEntry#journal_entry{jsn = NextJsn}, TableName),
-            NewState = StateAcc#state{next_jsn = NextJsn + 1},
-            case Type of
-                commit_txn -> add_commit(BeginJournalEntry, JournalEntry, NewState);
-                _ -> NewState
-            end
-        end, State, SortedTxJournalEntryList).
+add_remote_txn(SortedTxJournalEntryList = [BeginJournalEntry = #journal_entry{dcid = DcId} | _], DcId, State = #state{next_jsn = NextJsn, table_name = TableName}) ->
+    CommitJournalEntry = lists:last(SortedTxJournalEntryList),
+    case transaction_already_exists(CommitJournalEntry, State) of
+        true -> State;
+        false ->
+            NewNextJsn = NextJsn + length(SortedTxJournalEntryList),
+            FixedJournalEntries =
+                lists:foldl(
+                    fun(JournalEntry, CurrentNextJsn) ->
+                        JournalEntry#journal_entry{jsn = CurrentNextJsn},
+                        CurrentNextJsn + 1
+                    end, NextJsn, SortedTxJournalEntryList),
+            ok = gingko_log_utils:add_journal_entry_list(FixedJournalEntries, TableName),
+            add_commit(BeginJournalEntry, CommitJournalEntry, State#state{next_jsn = NewNextJsn})
+    end.
+
+-spec transaction_already_exists(journal_entry(), state()) -> boolean().
+transaction_already_exists(#journal_entry{dcid = DcId, args = #commit_txn_args{txn_tracking_num = CommitTxnTrackingNum = {CommitTxnNum, _, _}}}, #state{dcid_to_dc_txn_tracking_state = DcIdToDcTxnTrackingState}) ->
+    #dc_txn_tracking_state{last_checkpoint_txn_tracking_num = {CheckpointTxnNum, _, _}, valid_txn_tracking_num_gb_set = ValidSet, invalid_txn_tracking_num_gb_set = InvalidSet} = maps:get(DcId, DcIdToDcTxnTrackingState, #dc_txn_tracking_state{}),
+    CommitTxnNum =< CheckpointTxnNum orelse gb_sets:is_member(CommitTxnTrackingNum, ValidSet) orelse gb_sets:is_member(CommitTxnTrackingNum, InvalidSet).
 
 %%TODO add checks
 -spec add_handoff_journal_entry(journal_entry(), state()) -> state().

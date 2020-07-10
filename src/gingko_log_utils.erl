@@ -28,6 +28,7 @@
     persist_journal_entries/1,
     clear_journal_entries/1,
     add_journal_entry/2,
+    add_journal_entry_list/2,
     read_journal_entry/2,
     read_all_journal_entries/1,
     read_journal_entries_with_tx_id/2,
@@ -134,6 +135,23 @@ add_journal_entry(JournalEntry = #journal_entry{jsn = Jsn}, TableName) ->
                 [] -> mnesia:write(TableName, JournalEntry, write);
                 ExistingJournalEntryList -> {error, {already_exists, ExistingJournalEntryList}}
             end
+        end,
+    mnesia_utils:run_transaction(F).
+
+-spec add_journal_entry_list([journal_entry()], table_name()) -> ok | {error, reason()}.
+add_journal_entry_list(JournalEntryList, TableName) ->
+    F =
+        fun() ->
+            lists:foldl(
+                fun(JournalEntry = #journal_entry{jsn = Jsn}, Result) ->
+                    case mnesia:read(TableName, Jsn) of
+                        [] ->
+                            mnesia:write(TableName, JournalEntry, write),
+                            Result;
+                        ExistingJournalEntryList ->
+                            {error, {already_exists, ExistingJournalEntryList}}
+                    end
+                end, ok, JournalEntryList)
         end,
     mnesia_utils:run_transaction(F).
 
