@@ -29,7 +29,7 @@
 %% This file is combination of the dc_utilities and log_utilities
 %% files from the antidote project https://github.com/AntidoteDB/antidote
 
--module(antidote_utilities).
+-module(antidote_utils).
 -include("gingko.hrl").
 
 -export([get_my_dc_id/0,
@@ -48,6 +48,7 @@
     call_vnode_async_with_key/3,
     call_vnode_sync_with_key/3,
     bcast_local_vnode_async/2,
+    bcast_local_vnode_sync/2,
     bcast_vnode_async/2,
     bcast_vnode_sync/2,
 
@@ -156,19 +157,23 @@ call_vnode_sync_with_key(Key, VMaster, Request) ->
     IndexNode = get_key_partition(Key),
     riak_core_vnode_master:sync_spawn_command(IndexNode, Request, VMaster).
 
-%% Sends the same (synchronous) command to all vnodes of a given type.
--spec bcast_vnode_sync(atom(), any()) -> [{partition_id(), term()}].
-bcast_vnode_sync(VMaster, Request) ->
-    general_utils:parallel_map(fun(P) -> {P, call_vnode_sync(P, VMaster, Request)} end, get_all_partitions()).
-
 -spec bcast_local_vnode_async(atom(), any()) -> ok.
 bcast_local_vnode_async(VMaster, Request) ->
     general_utils:parallel_foreach(fun(P) -> call_vnode_async(P, VMaster, Request) end, get_my_partitions()).
+
+-spec bcast_local_vnode_sync(atom(), any()) -> ok.
+bcast_local_vnode_sync(VMaster, Request) ->
+    general_utils:parallel_map(fun(P) -> {P, call_vnode_sync(P, VMaster, Request)} end, get_my_partitions()).
 
 %% Sends the same (asynchronous) command to all vnodes of a given type.
 -spec bcast_vnode_async(atom(), any()) -> ok.
 bcast_vnode_async(VMaster, Request) ->
     general_utils:parallel_foreach(fun(P) -> call_vnode_async(P, VMaster, Request) end, get_all_partitions()).
+
+%% Sends the same (synchronous) command to all vnodes of a given type.
+-spec bcast_vnode_sync(atom(), any()) -> [{partition_id(), term()}].
+bcast_vnode_sync(VMaster, Request) ->
+    general_utils:parallel_map(fun(P) -> {P, call_vnode_sync(P, VMaster, Request)} end, get_all_partitions()).
 
 %% Loops until a process with the given name is registered locally
 -spec check_registered(atom()) -> ok.

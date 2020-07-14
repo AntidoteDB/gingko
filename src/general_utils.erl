@@ -25,7 +25,7 @@
 -include_lib("eunit/include/eunit.hrl").
 
 %% API
--export([bench/2,
+-export([benchmark/2,
     run_function_with_unexpected_error/6,
     print_and_return_unexpected_error/5,
     get_timestamp_in_microseconds/0,
@@ -46,11 +46,11 @@
     parallel_map/2,
     parallel_foreach/2]).
 
-bench(Name, Fun) ->
+benchmark(Name, Fun) ->
     Start = erlang:monotonic_time(millisecond),
     Result = Fun(),
     End = erlang:monotonic_time(millisecond),
-    logger:error("BenchTime ~p: ~p | Result: ~p", [Name, End - Start, Result]),
+    logger:debug("~p Run Time (ms) ~p | ~p Result: ~p", [Name, End - Start, Result]),
     Result.
 
 -spec run_function_with_unexpected_error(term(), term(), atom(), atom(), list(), list()) -> term() | no_return().

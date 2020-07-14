@@ -80,7 +80,7 @@ read_snapshot(KeyType, Atom) when is_atom(Atom) -> read_snapshot(KeyType, gingko
 read_snapshot(KeyStructOrKeyType, TxIdOrVts) ->
     Read = {{read, to_key_struct(KeyStructOrKeyType)}, TxIdOrVts},
     Fun = fun() -> gingko_server:perform_request(Read) end,
-    general_utils:bench("Read", Fun).
+    general_utils:benchmark("Read", Fun).
 %%    gingko_server:perform_request(Read).
 
 -spec read_multiple([key_struct() | {key(), type()}], txid() | snapshot_time()) -> {ok | error, [crdt() | {error, reason()}]}.
@@ -108,7 +108,7 @@ read_multiple_snapshots(KeyStructsOrTuples, TxIdOrVts) ->
 update(KeyStructOrKeyType, TypeOp, TxId) ->
     Update = {{update, {to_key_struct(KeyStructOrKeyType), TypeOp}}, TxId},
     Fun = fun() -> gingko_server:perform_request(Update) end,
-    general_utils:bench("Update", Fun).
+    general_utils:benchmark("Update", Fun).
 %%    gingko_server:perform_request(Update).
 
 -spec update_multiple([{key_struct() | {key(), type()}, type_op()}], txid()) -> ok | {error, reason()}.
@@ -151,7 +151,7 @@ update_txn(KeyStructTypeOpTuples, Clock) when is_list(KeyStructTypeOpTuples) ->
                 {to_key_struct(KeyStructOrTuple), TypeOp} end, KeyStructTypeOpTuples),
             Transaction = {{transaction, {BeginVts, KeyStructs}}, TxId},
             Fun = fun() -> gingko_server:perform_request(Transaction) end,
-            general_utils:bench("Transaction", Fun)
+            general_utils:benchmark("Transaction", Fun)
     end;
 %%    gingko_server:perform_request(Transaction);
 update_txn(KeyStructTypeOpTuple, Clock) -> update_txn([KeyStructTypeOpTuple], Clock).
@@ -175,14 +175,14 @@ begin_txn(DependencyVts) ->
 begin_txn(DependencyVts, TxId) ->
     BeginTxn = {{begin_txn, DependencyVts}, TxId},
     Fun = fun() -> gingko_server:perform_request(BeginTxn) end,
-    general_utils:bench("BeginTxn", Fun).
+    general_utils:benchmark("BeginTxn", Fun).
 %%    gingko_server:perform_request(BeginTxn).
 
 -spec prepare_txn(txid()) -> ok | {error, reason()}.
 prepare_txn(TxId) ->
     PrepareTxn = {{prepare_txn, none}, TxId},
     Fun = fun() -> gingko_server:perform_request(PrepareTxn) end,
-    general_utils:bench("PrepareTxn", Fun).
+    general_utils:benchmark("PrepareTxn", Fun).
 %%    gingko_server:perform_request(PrepareTxn).
 
 -spec commit_txn(txid()) -> {ok, vectorclock()} | {error, reason()}.
@@ -195,7 +195,7 @@ commit_txn(TxId) ->
 commit_txn(CommitVts, TxId) ->
     CommitTxn = {{commit_txn, CommitVts}, TxId},
     Fun = fun() -> gingko_server:perform_request(CommitTxn) end,
-    general_utils:bench("CommitTxn", Fun).
+    general_utils:benchmark("CommitTxn", Fun).
 %%    case gingko_server:perform_request(CommitTxn) of
 %%        ok -> {ok, CommitVts};
 %%        Error -> Error

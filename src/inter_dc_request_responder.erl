@@ -98,8 +98,8 @@ process_request(RequestRecord = #request_record{request_type = ?DCSF_MSG, reques
     inter_dc_state_service:update_dc_state(RequestArgs),
     send_response(?OK_MSG, RequestRecord, ZmqSenderId, Socket);
 process_request(RequestRecord = #request_record{request_type = ?JOURNAL_READ_REQUEST, target_partition = TargetPartition, request_args = RequestArgs}, ZmqSenderId, Socket) ->
-    TxIdList = RequestArgs,
-    {ok, JournalEntryList} = gingko_utils:call_gingko_sync(TargetPartition, ?GINGKO_LOG, {get_txns, TxIdList}),
+    TxnTrackingNumList = RequestArgs,
+    {ok, JournalEntryList} = gingko_utils:call_gingko_sync(TargetPartition, ?GINGKO_LOG, {get_txns, TxnTrackingNumList}),
     send_response(JournalEntryList, RequestRecord, ZmqSenderId, Socket);
 process_request(RequestRecord = #request_record{request_type = ?BCOUNTER_REQUEST, request_args = RequestArgs}, ZmqSenderId, Socket) ->
     {transfer, {_Key, _Amount, _RemoteDCID}} = RequestArgs,

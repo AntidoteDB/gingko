@@ -70,12 +70,27 @@ handle_command(Request = {journal_entry, JournalEntry = #journal_entry{tx_id = T
     default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
     NewTxIdToJournalEntryListMap = general_utils:maps_append(TxId, JournalEntry, TxIdToJournalEntryListMap),
     FinalTxIdToJournalEntryListMap =
-        case Type == commit_txn of
-            true -> %%TODO find right handling (maybe gather and send later)
+        case Type of
+            commit_txn -> %%TODO find right handling (maybe gather and send later)
                 TxJournalEntryList = maps:get(TxId, NewTxIdToJournalEntryListMap),
                 inter_dc_txn_sender:broadcast_txn(Partition, TxJournalEntryList),
                 maps:remove(TxId, NewTxIdToJournalEntryListMap);
-            false ->
+            _ ->
+                NewTxIdToJournalEntryListMap
+        end,
+    {reply, ok, State#state{txid_to_journal_entry_list_map = FinalTxIdToJournalEntryListMap}};
+
+handle_command(Request = {request_remote_txns, JournalEntry = #journal_entry{tx_id = TxId, type = Type}}, Sender, State = #state{partition = Partition, txid_to_journal_entry_list_map = TxIdToJournalEntryListMap}) ->
+    %%TODO extra checks
+    default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
+    NewTxIdToJournalEntryListMap = general_utils:maps_append(TxId, JournalEntry, TxIdToJournalEntryListMap),
+    FinalTxIdToJournalEntryListMap =
+        case Type of
+            commit_txn -> %%TODO find right handling (maybe gather and send later)
+                TxJournalEntryList = maps:get(TxId, NewTxIdToJournalEntryListMap),
+                inter_dc_txn_sender:broadcast_txn(Partition, TxJournalEntryList),
+                maps:remove(TxId, NewTxIdToJournalEntryListMap);
+            _ ->
                 NewTxIdToJournalEntryListMap
         end,
     {reply, ok, State#state{txid_to_journal_entry_list_map = FinalTxIdToJournalEntryListMap}};
@@ -102,3 +117,16 @@ handle_overload_info(Request, Partition) -> default_vnode_behaviour:handle_overl
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+
+-spec request_remote_txns(dcid(), [txid()], state()) -> ok.
+request_remote_txns(TargetDcId, TxnNumList, #state{partition = TargetPartition}) ->
+    inter_dc_request_sender:perform_journal_read_request({TargetDcId, TargetPartition}, TxnNumList,
+        %%TODO dangerous when handoff happens
+        fun(JournalEntryList, _) ->
+            %%Assume correctness here
+            JournalEntryListByTxIdList = maps:values(general_utils:group_by_map(fun(#journal_entry{tx_id = TxId}) -> TxId end, JournalEntryList)),
+            lists:foreach(
+                fun(JournalEntryTxnList) ->
+                    gingko_utils:call_gingko_async(TargetPartition, ?GINGKO_LOG, {add_remote_txn, gingko_utils:sort_journal_entries_of_same_tx(JournalEntryTxnList)})
+                end, JournalEntryListByTxIdList)
+        end).

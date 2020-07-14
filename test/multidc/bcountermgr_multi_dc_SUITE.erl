@@ -101,7 +101,7 @@ test_dec_success(Config) ->
     {ok, CommitTime} = execute_op(Node1, decrement, Key, 4, Actor, Bucket),
 
     % FIXME why is this not working?
-    %{Value, _} = antidote_utils:read_b_counter_commit(Node2, Key, Bucket, CommitTime),
+    %{Value, _} = antidote_test_utils:read_b_counter_commit(Node2, Key, Bucket, CommitTime),
     %?assertEqual(6, Value).
     check_read(Node2, Key, 6, CommitTime, Bucket).
 
@@ -179,7 +179,7 @@ conditional_write_test_run(Config) ->
     end.
 
 
-%% TODO move to antidote_utils
+%% TODO move to antidote_test_utils
 
 execute_op(Node, Op, Key, Amount, Actor, Bucket) ->
     execute_op_success(Node, Op, Key, Amount, Actor, ?RETRY_COUNT, Bucket).

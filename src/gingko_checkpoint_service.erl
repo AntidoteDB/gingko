@@ -21,7 +21,7 @@
 -include("gingko.hrl").
 -behaviour(gen_server).
 
--export([update_checkpoint_service/2]).
+-export([update_checkpoint_service/2, get_checkpoint_interval_millis/0]).
 
 -export([start_link/0,
     init/1,
@@ -46,6 +46,10 @@
 update_checkpoint_service(Active, CheckpointIntervalMillis) ->
     gen_server:cast(?MODULE, {update_checkpoint_service, Active, CheckpointIntervalMillis}).
 
+-spec get_checkpoint_interval_millis() -> millisecond().
+get_checkpoint_interval_millis() ->
+    gen_server:call(?MODULE, get_checkpoint_interval_millis).
+
 %%%===================================================================
 %%% Spawning and gen_server implementation
 %%%===================================================================
@@ -59,6 +63,10 @@ init([]) ->
 handle_call(Request = hello, From, State) ->
     default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
     {reply, ok, State};
+
+handle_call(Request = get_checkpoint_interval_millis, From, State = #state{checkpoint_interval_millis = CheckpointIntervalMillis}) ->
+    default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
+    {reply, CheckpointIntervalMillis, State};
 
 handle_call(Request, From, State) -> default_gen_server_behaviour:handle_call_crash(?MODULE, Request, From, State).
 

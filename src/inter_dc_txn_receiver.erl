@@ -91,7 +91,7 @@ handle_info(Info = {zmq, _Socket, InterDcTxnBinary, _Flags}, State) ->
     Partition = InterDcTxn#inter_dc_txn.partition,
     JournalEntryList = InterDcTxn#inter_dc_txn.journal_entries,
     SortedJournalEntryList = gingko_utils:sort_journal_entries_of_same_tx(JournalEntryList),
-    gingko_utils:call_gingko_async(Partition, ?GINGKO_LOG, {add_remote_txn, SortedJournalEntryList, InterDcTxn#inter_dc_txn.source_dcid}),
+    gingko_utils:call_gingko_async(Partition, ?GINGKO_LOG, {add_remote_txn, SortedJournalEntryList}),
     {noreply, State};
 
 handle_info(Info, State) -> default_gen_server_behaviour:handle_info_crash(?MODULE, Info, State).

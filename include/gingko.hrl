@@ -1,9 +1,10 @@
 -include_lib("riak_core/include/riak_core_vnode.hrl").
 -define(BUCKET, <<"gingko">>).
 -define(USE_SINGLE_SERVER, true).
--define(USE_EXPERIMENTAL_TIMESTAMP, true).
+-define(USE_GINGKO_TIMESTAMP, true).
 -define(EXPERIMENTAL_TIMESTAMP_USE_MONOTONIC_TIME, false).
 -define(SINGLE_SERVER_PARTITION, 0).
+-define(JOURNAL_TRIMMING_MODE, keep_all_checkpoints). %keep_two_checkpoints / keep_one_checkpoint
 
 -define(GINGKO_APP_NAME, gingko_app).
 -define(GINGKO_LOG_VNODE_MASTER, gingko_log_vnode_master).
@@ -123,7 +124,9 @@
 -type commit_txn_args() :: #commit_txn_args{}.
 -record(abort_txn_args, {}).
 -type abort_txn_args() :: #abort_txn_args{}.
--record(checkpoint_args, {dependency_vts :: vectorclock(), dcid_to_last_txn_tracking_num :: #{dcid() => txn_tracking_num()}}).
+-record(checkpoint_args, {
+    dependency_vts :: vectorclock(),
+    dcid_to_last_txn_tracking_num :: #{dcid() => txn_tracking_num()}}).
 -type checkpoint_args() :: #checkpoint_args{}.
 
 -record(update_args, {
@@ -136,7 +139,7 @@
 -type journal_entry_args() :: begin_txn_args() | prepare_txn_args() | commit_txn_args() | abort_txn_args() | checkpoint_args() | update_args().
 
 -type jsn() :: non_neg_integer().
--type journal_entry_type() :: begin_txn | prepare_txn | commit_txn | abort_txn | checkpoint | checkpoint_commit | checkpoint_abort | update.
+-type journal_entry_type() :: begin_txn | prepare_txn | commit_txn | abort_txn | checkpoint | checkpoint_commit | update.
 -type operation_type() :: journal_entry_type() | read | transaction.
 
 -record(journal_entry, {

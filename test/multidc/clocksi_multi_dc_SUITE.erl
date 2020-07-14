@@ -98,14 +98,14 @@ clocksi_multiple_test_certification_check_run(Nodes) ->
     %% Start a new tx,  perform an update on three keys.
 
     {ok, TxId} = rpc:call(FirstNode, antidote, start_transaction, [ignore, []]),
-    antidote_utils:update_counters(FirstNode, [Key1], [1], ignore, TxId, Bucket),
-    antidote_utils:update_counters(FirstNode, [Key2], [1], ignore, TxId, Bucket),
-    antidote_utils:update_counters(FirstNode, [Key3], [1], ignore, TxId, Bucket),
+    antidote_test_utils:update_counters(FirstNode, [Key1], [1], ignore, TxId, Bucket),
+    antidote_test_utils:update_counters(FirstNode, [Key2], [1], ignore, TxId, Bucket),
+    antidote_test_utils:update_counters(FirstNode, [Key3], [1], ignore, TxId, Bucket),
 
     %% Start a new tx,  perform an update over key1.
 
     {ok, TxId1} = rpc:call(LastNode, antidote, start_transaction, [ignore, []]),
-    antidote_utils:update_counters(LastNode, [Key1], [2], ignore, TxId1, Bucket),
+    antidote_test_utils:update_counters(LastNode, [Key1], [2], ignore, TxId1, Bucket),
     {ok, _CT} = rpc:call(LastNode, antidote, commit_transaction, [TxId1]),
 
     %% Try to commit the first tx.
@@ -121,16 +121,16 @@ clocksi_prepare_test(Config) ->
     Nodes = proplists:get_value(nodes, Config),
     FirstNode = hd(Nodes),
     Key = clocksi_test_prepare_keydscsv1,
-    Preflist = rpc:call(FirstNode, antidote_utilities, get_preflist_from_key, [aaa]),
+    Preflist = rpc:call(FirstNode, antidote_utils, get_preflist_from_key, [aaa]),
     IndexNode = hd(Preflist),
 
-    Key2 = antidote_utils:find_key_same_node(FirstNode, IndexNode, 1),
+    Key2 = antidote_test_utils:find_key_same_node(FirstNode, IndexNode, 1),
 
     {ok, TxId} = rpc:call(FirstNode, antidote, start_transaction, [ignore, []]),
-    antidote_utils:check_read_key(FirstNode, Key, antidote_crdt_counter_pn, 0, ignore, TxId, Bucket),
+    antidote_test_utils:check_read_key(FirstNode, Key, antidote_crdt_counter_pn, 0, ignore, TxId, Bucket),
 
-    antidote_utils:update_counters(FirstNode, [Key], [1], ignore, TxId, Bucket),
-    antidote_utils:check_read_key(FirstNode, Key, antidote_crdt_counter_pn, 1, ignore, TxId, Bucket),
+    antidote_test_utils:update_counters(FirstNode, [Key], [1], ignore, TxId, Bucket),
+    antidote_test_utils:check_read_key(FirstNode, Key, antidote_crdt_counter_pn, 1, ignore, TxId, Bucket),
 
     %% Start 2 phase commit, but do not commit
     ok=rpc:call(FirstNode, gingko, prepare_txn, [TxId]),
@@ -142,18 +142,18 @@ clocksi_prepare_test(Config) ->
     timer:sleep(3000),
     %% start another transaction that updates the same partition
     {ok, TxId1 } = rpc:call(FirstNode, antidote, start_transaction, [ignore, []]),
-    antidote_utils:update_counters(FirstNode, [Key2], [1], ignore, TxId1, Bucket),
-    antidote_utils:check_read_key(FirstNode, Key2, antidote_crdt_counter_pn, 1, ignore, TxId1, Bucket),
+    antidote_test_utils:update_counters(FirstNode, [Key2], [1], ignore, TxId1, Bucket),
+    antidote_test_utils:check_read_key(FirstNode, Key2, antidote_crdt_counter_pn, 1, ignore, TxId1, Bucket),
 
     %% Start 2 phase commit for second transaction, but do not commit.
     rpc:call(FirstNode, gingko, prepare_txn, [TxId1]),
 
     %% Commit transaction after a delay, 1 in parallel,
-    spawn_link(antidote_utils, spawn_com, [FirstNode, TxId]),
+    spawn_link(antidote_test_utils, spawn_com, [FirstNode, TxId]),
 
     %% Read should return the value committed by transaction 1. But should not be
     %% blocked by the transaction 2 which is in commit phase, because it updates a different key.
-    antidote_utils:check_read_key(FirstNode, Key, antidote_crdt_counter_pn, 1, ignore, TxIdRead, Bucket),
+    antidote_test_utils:check_read_key(FirstNode, Key, antidote_crdt_counter_pn, 1, ignore, TxIdRead, Bucket),
 
     End1 = rpc:call(FirstNode, ginkgo, commit_txn, [TxId1]),
     ?assertMatch({ok, _CausalSnapshot}, End1),
@@ -179,7 +179,7 @@ clocksi_read_time_test(Config) ->
     {ok, TxId1} = rpc:call(LastNode, antidote, start_transaction, [ignore, []]),
 
     ct:log("Tx2 Started, id : ~p", [TxId1]),
-    antidote_utils:update_counters(FirstNode, [Key1], [1], ignore, TxId, Bucket),
+    antidote_test_utils:update_counters(FirstNode, [Key1], [1], ignore, TxId, Bucket),
     ok = rpc:call(FirstNode, gingko, prepare_txn, [TxId]),
     %% try to read key read_time.
     %% commit the first tx.
@@ -188,7 +188,7 @@ clocksi_read_time_test(Config) ->
     ct:log("Tx1 Committed."),
 
     ct:log("Tx2 Reading..."),
-    antidote_utils:check_read_key(FirstNode, Key1, antidote_crdt_counter_pn, 0, ignore, TxId1, Bucket),
+    antidote_test_utils:check_read_key(FirstNode, Key1, antidote_crdt_counter_pn, 0, ignore, TxId1, Bucket),
 
     %% prepare and commit the second transaction.
     {ok, _CommitTime} = rpc:call(FirstNode, antidote, commit_transaction, [TxId1]),
@@ -236,12 +236,12 @@ clocksi_test_certification_check_run(Nodes, DisableCert, Bucket) ->
 
     {ok, TxId} = rpc:call(FirstNode, antidote, start_transaction, [ignore, Properties]),
     ct:log("Tx1 Started, id : ~p", [TxId]),
-    antidote_utils:update_counters(FirstNode, [Key1], [1], ignore, TxId, Bucket),
+    antidote_test_utils:update_counters(FirstNode, [Key1], [1], ignore, TxId, Bucket),
 
     %% Start a new tx on last node, perform an update on the same key.
     {ok, TxId1} = rpc:call(LastNode, antidote, start_transaction, [ignore, []]),
     ct:log("Tx2 Started, id : ~p", [TxId1]),
-    antidote_utils:update_counters(FirstNode, [Key1], [1], ignore, TxId1, Bucket),
+    antidote_test_utils:update_counters(FirstNode, [Key1], [1], ignore, TxId1, Bucket),
 
     {ok, _CT}= rpc:call(LastNode, antidote, commit_transaction, [TxId1]),
 

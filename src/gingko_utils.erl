@@ -63,10 +63,10 @@
 
     get_keys_from_updates/1,
     sort_by_jsn_number/1,
+    sort_same_journal_entry_type_list_by_vts/1,
     sort_journal_entries_of_same_tx/1,
     remove_existing_journal_entries_handoff/2,
 
-    get_latest_vts/1,
     get_default_txn_tracking_num/0,
     generate_downstream_op/4,
 
@@ -75,6 +75,8 @@
     call_gingko_async_with_key/3,
     call_gingko_sync_with_key/3,
     bcast_local_gingko_async/2,
+    bcast_local_gingko_sync/2,
+    bcast_local_gingko_sync_only_values/2,
     bcast_gingko_async/2,
     bcast_gingko_sync/2,
     bcast_gingko_sync_only_values/2,
@@ -82,10 +84,9 @@
     get_key_partition/1]).
 
 %% Gets the current erlang timestamp and returns it as an integer that represents microseconds
-%% Experimental: Uses the experimental_time_manager to get a positive representation of erlang monotonic time which is guaranteed to be monotonically increasing unlike the regular erlang timestamp
 -spec get_timestamp() -> non_neg_integer().
 get_timestamp() ->
-    case ?USE_EXPERIMENTAL_TIMESTAMP of
+    case ?USE_GINGKO_TIMESTAMP of
         true ->
             case ?EXPERIMENTAL_TIMESTAMP_USE_MONOTONIC_TIME of
                 true -> gingko_time_manager:get_positive_monotonic_time();
@@ -101,7 +102,7 @@ get_timestamp() ->
 get_my_dcid() ->
     case ?USE_SINGLE_SERVER of
         true -> node();
-        false -> antidote_utilities:get_my_dc_id()
+        false -> antidote_utils:get_my_dc_id()
     end.
 
 %% Gets the connected DCIDs
@@ -115,7 +116,7 @@ get_connected_dcids() ->
 get_my_dc_nodes() ->
     case ?USE_SINGLE_SERVER of
         true -> [node()];
-        false -> antidote_utilities:get_my_dc_nodes()
+        false -> antidote_utils:get_my_dc_nodes()
     end.
 
 -spec get_DCSf_vts() -> vectorclock().
@@ -133,7 +134,7 @@ get_GCSt_vts() ->
 get_my_partitions() ->
     case ?USE_SINGLE_SERVER of
         true -> [?SINGLE_SERVER_PARTITION];
-        false -> antidote_utilities:get_my_partitions()
+        false -> antidote_utils:get_my_partitions()
     end.
 
 %% Gets all partitions of the DC
@@ -142,7 +143,7 @@ get_my_partitions() ->
 get_all_partitions() ->
     case ?USE_SINGLE_SERVER of
         true -> [?SINGLE_SERVER_PARTITION];
-        false -> antidote_utilities:get_all_partitions()
+        false -> antidote_utils:get_all_partitions()
     end.
 
 %% Gets the number of all partitions of the DC
@@ -151,7 +152,7 @@ get_all_partitions() ->
 get_number_of_partitions() ->
     case ?USE_SINGLE_SERVER of
         true -> 1;
-        false -> antidote_utilities:get_number_of_partitions()
+        false -> antidote_utils:get_number_of_partitions()
     end.
 
 -spec gingko_send_after(millisecond(), term()) -> reference().
@@ -184,16 +185,16 @@ update_timer(CurrentTimerOrNone, UpdateExistingTimer, TimeMillis, Request, IsPot
 
 
 %% Waits until a process/vnode name is registered in erlang
-        - spec check_registered({atom(), atom()} | atom()) -> ok.
+-spec check_registered({atom(), atom()} | atom()) -> ok.
 check_registered({ServerName, VMaster}) ->
     case ?USE_SINGLE_SERVER of
         true ->
-            antidote_utilities:check_registered(ServerName);
+            antidote_utils:check_registered(ServerName);
         false ->
-            antidote_utilities:check_registered(VMaster)
+            antidote_utils:check_registered(VMaster)
     end;
 check_registered(ServerName) ->
-    antidote_utilities:check_registered(ServerName).
+    antidote_utils:check_registered(ServerName).
 
 -spec ensure_local_gingko_instance_running({atom(), atom()} | atom()) -> ok.
 ensure_local_gingko_instance_running({ServerName, VMaster}) ->
@@ -365,6 +366,21 @@ get_keys_from_updates(JournalEntryList) ->
 sort_by_jsn_number(JournalEntryList) ->
     lists:sort(fun(#journal_entry{jsn = Jsn1}, #journal_entry{jsn = Jsn2}) -> Jsn1 < Jsn2 end, JournalEntryList).
 
+-spec sort_same_journal_entry_type_list_by_vts([journal_entry()]) -> [journal_entry()].
+sort_same_journal_entry_type_list_by_vts(JournalEntryList) ->
+    lists:sort(
+        fun(#journal_entry{args = Args1}, #journal_entry{args = Args2}) ->
+            {Vts1, Vts2} =
+                case {Args1, Args2} of
+                    {#begin_txn_args{dependency_vts = DependencyVts1}, #begin_txn_args{dependency_vts = DependencyVts2}} ->
+                        {DependencyVts1, DependencyVts2};
+                    {#commit_txn_args{commit_vts = CommitVts1}, #commit_txn_args{commit_vts = CommitVts2}} ->
+                        {CommitVts1, CommitVts2};
+                    {#checkpoint_args{dependency_vts = CheckpointVts1}, #checkpoint_args{dependency_vts = CheckpointVts2}} -> {CheckpointVts1, CheckpointVts2}
+                end,
+            vectorclock:le(Vts1, Vts2)
+        end, JournalEntryList).
+
 -spec sort_journal_entries_of_same_tx([journal_entry()]) -> [journal_entry()].
 sort_journal_entries_of_same_tx(JournalEntryList) ->
     lists:sort(fun tx_sort_fun/2, JournalEntryList).
@@ -384,7 +400,11 @@ op_type_sort(_, prepare_txn) -> false;
 op_type_sort(commit_txn, _) -> true;
 op_type_sort(_, commit_txn) -> false;
 op_type_sort(abort_txn, _) -> true;
-op_type_sort(_, abort_txn) -> false. %%TODO checkpoint is not needed
+op_type_sort(_, abort_txn) -> false;
+op_type_sort(checkpoint, _) -> true;
+op_type_sort(_, checkpoint) -> false;
+op_type_sort(checkpoint_commit, _) -> true;
+op_type_sort(_, checkpoint_commit) -> false.
 
 -spec get_op_type(journal_entry()) -> atom() | non_neg_integer().
 get_op_type(#journal_entry{args = #update_args{tx_op_num = TxOpNum}}) -> TxOpNum;
@@ -401,13 +421,14 @@ remove_existing_journal_entries_handoff(NewJournalEntryList, ExistingJournalEntr
     FinalCommit = remove_existing_journal_entry_handoff(NewJournalEntryList, ExistingJournalEntryList, commit_txn),
     FinalAbort = remove_existing_journal_entry_handoff(NewJournalEntryList, ExistingJournalEntryList, abort_txn),
     FinalCheckpoint = remove_existing_journal_entry_handoff(NewJournalEntryList, ExistingJournalEntryList, checkpoint),
+    FinalCheckpointCommits = remove_existing_journal_entry_handoff(NewJournalEntryList, ExistingJournalEntryList, checkpoint_commit),
     NewObjectJs = get_updates(NewJournalEntryList),
     ExistingObjectJs = get_updates(ExistingJournalEntryList),
     ExistingTxOpNum = lists:map(fun(#journal_entry{args = #update_args{tx_op_num = TxOpNum}}) ->
         TxOpNum end, ExistingObjectJs),
     FinalObjectJs = lists:filter(fun(#journal_entry{args = #update_args{tx_op_num = TxOpNum}}) ->
         not lists:member(TxOpNum, ExistingTxOpNum) end, NewObjectJs),
-    FinalBegin ++ FinalObjectJs ++ FinalPrepare ++ FinalCommit ++ FinalAbort ++ FinalCheckpoint.
+    FinalBegin ++ FinalObjectJs ++ FinalPrepare ++ FinalCommit ++ FinalAbort ++ FinalCheckpoint ++ FinalCheckpointCommits.
 
 -spec remove_existing_journal_entry_handoff([journal_entry()], [journal_entry()], journal_entry_type()) -> [journal_entry()].
 remove_existing_journal_entry_handoff(NewJournalEntryList, ExistingJournalEntryList, SystemOperation) ->
@@ -416,26 +437,6 @@ remove_existing_journal_entry_handoff(NewJournalEntryList, ExistingJournalEntryL
         true -> [];
         false -> get_journal_entries_of_type(NewJournalEntryList, SystemOperation)
     end.
-
-%%TODO reimplement since this is invalid for outside journal entries
--spec get_latest_vts([journal_entry()]) -> vectorclock().
-get_latest_vts([]) -> vectorclock:new();
-get_latest_vts(SortedJournalEntryList) ->
-    ReversedSortedJournalEntryList = lists:reverse(SortedJournalEntryList),
-    %LastJournalEntry = hd(ReversedSortedJournalEntryList),
-    LastJournalEntryWithVts = hd(
-        lists:filter(
-            fun(JournalEntry) ->
-                is_journal_entry_type(JournalEntry, begin_txn) orelse is_journal_entry_type(JournalEntry, commit_txn)
-            end, ReversedSortedJournalEntryList)),
-    LastVts =
-        case is_journal_entry_type(LastJournalEntryWithVts, begin_txn) of
-            true ->
-                LastJournalEntryWithVts#journal_entry.args#begin_txn_args.dependency_vts;
-            false ->
-                LastJournalEntryWithVts#journal_entry.args#commit_txn_args.commit_vts
-        end,
-    LastVts.
 
 -spec get_default_txn_tracking_num() -> txn_tracking_num().
 get_default_txn_tracking_num() -> {0, none, 0}.
@@ -468,43 +469,54 @@ generate_downstream_op(KeyStruct = #key_struct{key = Key, type = Type}, TypeOp, 
 call_gingko_async(Partition, {ServerName, VMaster}, Request) ->
     case ?USE_SINGLE_SERVER of
         true -> gen_server:cast(ServerName, Request);
-        false -> antidote_utilities:call_vnode_async(Partition, VMaster, Request)
+        false -> antidote_utils:call_vnode_async(Partition, VMaster, Request)
     end.
 
 -spec call_gingko_sync(partition_id(), {atom(), atom()}, any()) -> any().
 call_gingko_sync(Partition, {ServerName, VMaster}, Request) ->
     case ?USE_SINGLE_SERVER of
         true -> gen_server:call(ServerName, Request);
-        false -> antidote_utilities:call_vnode_sync(Partition, VMaster, Request)
+        false -> antidote_utils:call_vnode_sync(Partition, VMaster, Request)
     end.
 
 -spec call_gingko_async_with_key(key(), {atom(), atom()}, any()) -> ok.
 call_gingko_async_with_key(Key, {ServerName, VMaster}, Request) ->
     case ?USE_SINGLE_SERVER of
         true -> gen_server:cast(ServerName, Request);
-        false -> antidote_utilities:call_vnode_async_with_key(Key, VMaster, Request)
+        false -> antidote_utils:call_vnode_async_with_key(Key, VMaster, Request)
     end.
 
 -spec call_gingko_sync_with_key(key(), {atom(), atom()}, any()) -> any().
 call_gingko_sync_with_key(Key, {ServerName, VMaster}, Request) ->
     case ?USE_SINGLE_SERVER of
         true -> gen_server:call(ServerName, Request);
-        false -> antidote_utilities:call_vnode_sync_with_key(Key, VMaster, Request)
+        false -> antidote_utils:call_vnode_sync_with_key(Key, VMaster, Request)
     end.
 
 -spec bcast_local_gingko_async({atom(), atom()}, any()) -> ok.
 bcast_local_gingko_async({ServerName, VMaster}, Request) ->
     case ?USE_SINGLE_SERVER of
         true -> gen_server:cast(ServerName, Request);
-        false -> antidote_utilities:bcast_local_vnode_async(VMaster, Request)
+        false -> antidote_utils:bcast_local_vnode_async(VMaster, Request)
     end.
+
+-spec bcast_local_gingko_sync({atom(), atom()}, any()) -> [{partition_id(), term()}].
+bcast_local_gingko_sync({ServerName, VMaster}, Request) ->
+    case ?USE_SINGLE_SERVER of
+        true -> gen_server:cast(ServerName, Request);
+        false -> antidote_utils:bcast_local_vnode_sync(VMaster, Request)
+    end.
+
+-spec bcast_local_gingko_sync_only_values({atom(), atom()}, any()) -> [term()].
+bcast_local_gingko_sync_only_values({ServerName, VMaster}, Request) ->
+    general_utils:get_values(bcast_local_gingko_sync({ServerName, VMaster}, Request)).
 
 %% Sends the same (asynchronous) command to all vnodes of a given type.
 -spec bcast_gingko_async({atom(), atom()}, any()) -> ok.
 bcast_gingko_async({ServerName, VMaster}, Request) ->
     case ?USE_SINGLE_SERVER of
         true -> gen_server:cast(ServerName, Request);
-        false -> antidote_utilities:bcast_vnode_async(VMaster, Request)
+        false -> antidote_utils:bcast_vnode_async(VMaster, Request)
     end.
 
 %% Sends the same (synchronous) command to all vnodes of a given type.
@@ -512,7 +524,7 @@ bcast_gingko_async({ServerName, VMaster}, Request) ->
 bcast_gingko_sync({ServerName, VMaster}, Request) ->
     case ?USE_SINGLE_SERVER of
         true -> [{0, gen_server:call(ServerName, Request)}];
-        false -> antidote_utilities:bcast_vnode_sync(VMaster, Request)
+        false -> antidote_utils:bcast_vnode_sync(VMaster, Request)
     end.
 
 %% Sends the same (synchronous) command to all vnodes of a given type.
@@ -524,7 +536,7 @@ bcast_gingko_sync_only_values({ServerName, VMaster}, Request) ->
 get_key_partition(Key) ->
     case ?USE_SINGLE_SERVER of
         true -> {0, node()};
-        false -> antidote_utilities:get_key_partition(Key)
+        false -> antidote_utils:get_key_partition(Key)
     end.
 
 

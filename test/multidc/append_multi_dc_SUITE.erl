@@ -72,7 +72,7 @@ append_failure_test(Config) ->
     Key = append_failure,
 
     %% Identify preference list for a given key.
-    Preflist = rpc:call(N, antidote_utilities, get_preflist_from_key, [Key]),
+    Preflist = rpc:call(N, antidote_utils, get_preflist_from_key, [Key]),
     ct:log("Preference list: ~p", [Preflist]),
 
     NodeList = [Node || {_Index, Node} <- Preflist],
@@ -82,8 +82,8 @@ append_failure_test(Config) ->
     First = hd(A),
 
     %% Perform successful write and read.
-    antidote_utils:increment_pn_counter(First, Key, Bucket),
-    {Val1, _} = antidote_utils:read_pn_counter(First, Key, Bucket),
+    antidote_test_utils:increment_pn_counter(First, Key, Bucket),
+    {Val1, _} = antidote_test_utils:read_pn_counter(First, Key, Bucket),
     ?assertEqual(1, Val1),
 
     %% Partition the network.
@@ -94,5 +94,5 @@ append_failure_test(Config) ->
     test_utils:heal_cluster(A, Nodes -- A),
 
     %% Read after the partition has been healed.
-    {Val2, _} = antidote_utils:read_pn_counter(First, Key, Bucket),
+    {Val2, _} = antidote_test_utils:read_pn_counter(First, Key, Bucket),
     ?assertEqual(1, Val2).

@@ -154,12 +154,15 @@ update_timers(State = #state{reset_used_timer = CurrentResetUsedTimer, reset_use
     NewEvictionTimer = gingko_utils:update_timer(CurrentEvictionTimer, UpdateEvictionTimer, EvictionIntervalMillis, eviction_event, true),
     State#state{reset_used_timer = NewResetUsedTimer, eviction_timer = NewEvictionTimer}.
 
--spec get(key_struct(), vectorclock(), load_from_log | [journal_entry()], state()) -> {{ok, snapshot()}, state()}.
+-spec get(key_struct(), vectorclock(), load_from_log | [journal_entry()], state()) -> {{ok, snapshot()}, state()} | {{error, reason()}, state()}.
 get(KeyStruct, DependencyVts, ValidJournalEntryListOrLoadFromLog, State) ->
-    {#cache_entry{snapshot = Snapshot}, NewState} = get_or_load_cache_entry(KeyStruct, DependencyVts, ValidJournalEntryListOrLoadFromLog, State),
-    {{ok, Snapshot}, NewState}.
+    GetResult = get_or_load_cache_entry(KeyStruct, DependencyVts, ValidJournalEntryListOrLoadFromLog, State),
+    case GetResult of
+        {ok, #cache_entry{snapshot = Snapshot}, NewState} -> {{ok, Snapshot}, NewState};
+        Error -> {Error, State}
+    end.
 
--spec get_or_load_cache_entry(key_struct(), vectorclock(), load_from_log | [journal_entry()], state()) -> {cache_entry(), state()}.
+-spec get_or_load_cache_entry(key_struct(), vectorclock(), load_from_log | [journal_entry()], state()) -> {ok, cache_entry(), state()} | {error, reason()}.
 get_or_load_cache_entry(KeyStruct, DependencyVts, ValidJournalEntryListOrLoadFromLog, State = #state{key_cache_entry_map = KeyCacheEntryMap}) ->
     FoundCommitVtsCacheEntryMap = maps:find(KeyStruct, KeyCacheEntryMap),
     case FoundCommitVtsCacheEntryMap of
@@ -169,65 +172,69 @@ get_or_load_cache_entry(KeyStruct, DependencyVts, ValidJournalEntryListOrLoadFro
             MatchingCacheEntryList =
                 lists:filter(
                     fun(#cache_entry{snapshot = #snapshot{commit_vts = CommitVts, snapshot_vts = SnapshotVts}}) ->
-                            gingko_utils:is_in_vts_range(CommitVts, {none, DependencyVts}) andalso gingko_utils:is_in_vts_range(SnapshotVts, {DependencyVts, none})
-                         end, maps:values(CommitVtsCacheEntryMap)),
+                        gingko_utils:is_in_vts_range(CommitVts, {none, DependencyVts}) andalso gingko_utils:is_in_vts_range(SnapshotVts, {DependencyVts, none})
+                    end, maps:values(CommitVtsCacheEntryMap)),
             case MatchingCacheEntryList of
                 [] ->
                     load_key_into_cache(KeyStruct, DependencyVts, ValidJournalEntryListOrLoadFromLog, State);
                 [CacheEntry | _] ->
                     UpdatedCacheEntry = gingko_utils:update_cache_usage(CacheEntry, true),
-                    {UpdatedCacheEntry, update_cache_entry_in_state(UpdatedCacheEntry, State)}
+                    {ok, UpdatedCacheEntry, update_cache_entry_in_state(UpdatedCacheEntry, State)}
             end
     end.
 
--spec load_key_into_cache(key_struct(), vectorclock(), load_from_log | [journal_entry()], state()) -> {cache_entry(), state()}.
+-spec load_key_into_cache(key_struct(), vectorclock(), load_from_log | [journal_entry()], state()) -> {ok, cache_entry(), state()} | {error, reason()}.
 load_key_into_cache(KeyStruct, DependencyVts, ValidJournalEntryListOrLoadFromLog, State = #state{partition = Partition, key_cache_entry_map = KeyCacheEntryMap}) ->
-    {ok, JournalEntryList} =
+    JournalEntryListResult =
         case ValidJournalEntryListOrLoadFromLog of
             load_from_log ->
                 gingko_utils:call_gingko_sync(Partition, ?GINGKO_LOG, {get_valid_journal_entries, DependencyVts});
             ValidJournalEntryList -> {ok, ValidJournalEntryList}
         end,
-    CheckpointJournalEntryList = gingko_utils:get_journal_entries_of_type(JournalEntryList, checkpoint_commit),
-    SortCheckpointByVts = fun(#journal_entry{args = #checkpoint_args{dependency_vts = Vts1}}, #journal_entry{args = #checkpoint_args{dependency_vts = Vts2}}) ->
-        vectorclock:le(Vts2, Vts1) end,
-    ReverseVtsSortedCheckpointJournalEntryList = lists:sort(SortCheckpointByVts, CheckpointJournalEntryList),
-    CheckpointVtsOrNone =
-        case ReverseVtsSortedCheckpointJournalEntryList of
-            [] -> none;
-            [#journal_entry{args = #checkpoint_args{dependency_vts = CheckpointVts}} | _] -> CheckpointVts
-        end,
-    FoundCommitVtsCacheEntryMap = maps:find(KeyStruct, KeyCacheEntryMap),
-    {ReadCheckpoint, MostRecentSnapshot} =
-        case {CheckpointVtsOrNone, FoundCommitVtsCacheEntryMap} of
-            {none, error} ->
-                {false, gingko_utils:create_new_snapshot(KeyStruct, vectorclock:new())};
-            {CheckpointVts1, error} ->
-                {true, gingko_log_utils:read_checkpoint_entry(KeyStruct, CheckpointVts1)};
-            {_, {ok, CommitVtsCacheEntryMap}} ->
-                ValidCommitVtsCacheEntryList =
-                    maps:to_list(maps:filter(
-                        fun(FoundCommitVts, #cache_entry{snapshot = #snapshot{commit_vts = FoundCommitVts, snapshot_vts = FoundSnapshotVts}}) ->
-                            gingko_utils:is_in_vts_range(FoundCommitVts, {none, DependencyVts}) andalso gingko_utils:is_in_vts_range(FoundSnapshotVts, {CheckpointVtsOrNone, none})
-                        end, CommitVtsCacheEntryMap)),
-                case {CheckpointVtsOrNone, ValidCommitVtsCacheEntryList} of
-                    {none, []} ->
+    case JournalEntryListResult of
+        {ok, JournalEntryList} ->
+            CheckpointJournalEntryList = gingko_utils:get_journal_entries_of_type(JournalEntryList, checkpoint_commit),
+            SortCheckpointByVts = fun(#journal_entry{args = #checkpoint_args{dependency_vts = Vts1}}, #journal_entry{args = #checkpoint_args{dependency_vts = Vts2}}) ->
+                vectorclock:le(Vts2, Vts1) end,
+            ReverseVtsSortedCheckpointJournalEntryList = lists:sort(SortCheckpointByVts, CheckpointJournalEntryList),
+            CheckpointVtsOrNone =
+                case ReverseVtsSortedCheckpointJournalEntryList of
+                    [] -> none;
+                    [#journal_entry{args = #checkpoint_args{dependency_vts = CheckpointVts}} | _] -> CheckpointVts
+                end,
+            FoundCommitVtsCacheEntryMap = maps:find(KeyStruct, KeyCacheEntryMap),
+            {ReadCheckpoint, MostRecentSnapshot} =
+                case {CheckpointVtsOrNone, FoundCommitVtsCacheEntryMap} of
+                    {none, error} ->
                         {false, gingko_utils:create_new_snapshot(KeyStruct, vectorclock:new())};
-                    {CheckpointVts2, []} ->
-                        {true, gingko_log_utils:read_checkpoint_entry(KeyStruct, CheckpointVts2)};
-                    {_, [{_, ValidCacheEntry} | _]} ->
-                        %%TODO can be optimized by picking the best commit vts
-                        {false, gingko_utils:create_snapshot_from_cache_entry(ValidCacheEntry)}
-                end
-        end,
-    NewState = %%This is a optimization as we want to avoid reading checkpoints if possible since we don't know the performance characteristics later
-        case ReadCheckpoint of
-            true -> update_cache_entry_in_state(gingko_utils:create_cache_entry(MostRecentSnapshot), State);
-            false -> State
-        end,
-    {ok, Snapshot} = gingko_materializer:materialize_snapshot(MostRecentSnapshot, JournalEntryList, DependencyVts),
-    CacheEntry = gingko_utils:create_cache_entry(Snapshot),
-    {CacheEntry, update_cache_entry_in_state(CacheEntry, NewState)}.
+                    {CheckpointVts1, error} ->
+                        {true, gingko_log_utils:read_checkpoint_entry(KeyStruct, CheckpointVts1)};
+                    {_, {ok, CommitVtsCacheEntryMap}} ->
+                        ValidCommitVtsCacheEntryList =
+                            maps:to_list(maps:filter(
+                                fun(FoundCommitVts, #cache_entry{snapshot = #snapshot{commit_vts = FoundCommitVts, snapshot_vts = FoundSnapshotVts}}) ->
+                                    gingko_utils:is_in_vts_range(FoundCommitVts, {none, DependencyVts}) andalso gingko_utils:is_in_vts_range(FoundSnapshotVts, {CheckpointVtsOrNone, none})
+                                end, CommitVtsCacheEntryMap)),
+                        case {CheckpointVtsOrNone, ValidCommitVtsCacheEntryList} of
+                            {none, []} ->
+                                {false, gingko_utils:create_new_snapshot(KeyStruct, vectorclock:new())};
+                            {CheckpointVts2, []} ->
+                                {true, gingko_log_utils:read_checkpoint_entry(KeyStruct, CheckpointVts2)};
+                            {_, [{_, ValidCacheEntry} | _]} ->
+                                %%TODO can be optimized by picking the best commit vts
+                                {false, gingko_utils:create_snapshot_from_cache_entry(ValidCacheEntry)}
+                        end
+                end,
+            NewState = %%This is a optimization as we want to avoid reading checkpoints if possible since we don't know the performance characteristics later
+            case ReadCheckpoint of
+                true -> update_cache_entry_in_state(gingko_utils:create_cache_entry(MostRecentSnapshot), State);
+                false -> State
+            end,
+            {ok, Snapshot} = gingko_materializer:materialize_snapshot(MostRecentSnapshot, JournalEntryList, DependencyVts),
+            CacheEntry = gingko_utils:create_cache_entry(Snapshot),
+            {ok, CacheEntry, update_cache_entry_in_state(CacheEntry, NewState)};
+        Error -> Error
+    end.
 
 -spec update_cache_entry_in_state(cache_entry(), state()) -> state().
 update_cache_entry_in_state(CacheEntry = #cache_entry{snapshot = #snapshot{key_struct = KeyStruct, commit_vts = CommitVts, snapshot_vts = SnapshotVts}, usage = NewUsage}, State = #state{key_cache_entry_map = KeyCacheEntryMap}) ->
@@ -252,7 +259,8 @@ update_cache_entry_in_state(CacheEntry = #cache_entry{snapshot = #snapshot{key_s
 -spec start_eviction_process(state()) -> state().
 start_eviction_process(State = #state{max_occupancy = MaxOccupancy, key_cache_entry_map = KeyCacheEntryMap, eviction_threshold_in_percent = EvictionThresholdInPercent, target_threshold_in_percent = TargetThresholdInPercent, eviction_strategy = EvictionStrategy}) ->
     CurrentOccupancy =
-        maps:fold(fun(_Key, CommitVtsCacheEntryMap, Number) -> Number + maps:size(CommitVtsCacheEntryMap) end, 0, KeyCacheEntryMap),
+        maps:fold(fun(_Key, CommitVtsCacheEntryMap, Number) ->
+            Number + maps:size(CommitVtsCacheEntryMap) end, 0, KeyCacheEntryMap),
     EvictionThreshold = EvictionThresholdInPercent * MaxOccupancy div 100,
     TargetThreshold = TargetThresholdInPercent * EvictionThreshold div 100,
     EvictionNeeded = CurrentOccupancy > EvictionThreshold,

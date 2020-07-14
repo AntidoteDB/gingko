@@ -90,12 +90,12 @@ simple_replication_test(Config) ->
     Key = simple_replication_test,
     Type = antidote_crdt_counter_pn,
 
-    antidote_utils:update_counters(Node1, [Key], [1], ignore, static, Bucket, antidote),
-    antidote_utils:update_counters(Node1, [Key], [1], ignore, static, Bucket, antidote),
-    {ok, CommitTime} = antidote_utils:update_counters(Node1, [Key], [1], ignore, static, Bucket, antidote),
+    antidote_test_utils:update_counters(Node1, [Key], [1], ignore, static, Bucket, antidote),
+    antidote_test_utils:update_counters(Node1, [Key], [1], ignore, static, Bucket, antidote),
+    {ok, CommitTime} = antidote_test_utils:update_counters(Node1, [Key], [1], ignore, static, Bucket, antidote),
 
-    antidote_utils:check_read_key(Node1, Key, Type, 3, CommitTime, static, Bucket),
-    antidote_utils:check_read_key(Node2, Key, Type, 3, CommitTime, static, Bucket),
+    antidote_test_utils:check_read_key(Node1, Key, Type, 3, CommitTime, static, Bucket),
+    antidote_test_utils:check_read_key(Node2, Key, Type, 3, CommitTime, static, Bucket),
     pass.
 
 
@@ -110,7 +110,7 @@ multiple_keys_test(Config) ->
                            multiple_writes(Node1, Key, Type, 1, 10, rpl, Bucket)
                    end,
                    lists:seq(1, 10)),
-    {ok, CommitTime} = antidote_utils:update_counters(Node1, [Key], [1], ignore, static, Bucket, antidote),
+    {ok, CommitTime} = antidote_test_utils:update_counters(Node1, [Key], [1], ignore, static, Bucket, antidote),
 
     multiple_reads(Node1, Key, Type, 1, 10, 10, CommitTime, Bucket),
     multiple_reads(Node2, Key, Type, 1, 10, 10, CommitTime, Bucket),
@@ -129,12 +129,12 @@ causality_test(Config) ->
     %% remove element e from other DC
     %% result set should not contain e
     ct:log("Adding and removing elements"),
-    {ok, CommitTime1} = antidote_utils:update_sets_clock(Node1, [Key], [{add, first}], ignore, Bucket),
-    {ok, CommitTime2} = antidote_utils:update_sets_clock(Node1, [Key], [{add, second}], CommitTime1, Bucket),
-    {ok, CommitTime3} = antidote_utils:update_sets_clock(Node2, [Key], [{remove, first}], CommitTime2, Bucket),
+    {ok, CommitTime1} = antidote_test_utils:update_sets_clock(Node1, [Key], [{add, first}], ignore, Bucket),
+    {ok, CommitTime2} = antidote_test_utils:update_sets_clock(Node1, [Key], [{add, second}], CommitTime1, Bucket),
+    {ok, CommitTime3} = antidote_test_utils:update_sets_clock(Node2, [Key], [{remove, first}], CommitTime2, Bucket),
 
     ct:log("Read result"),
-    antidote_utils:check_read_key(Node2, Key, Type, [second], CommitTime3, static, Bucket, antidote),
+    antidote_test_utils:check_read_key(Node2, Key, Type, [second], CommitTime3, static, Bucket, antidote),
     pass.
 
 
@@ -153,7 +153,7 @@ atomicity_test(Config) ->
     ContWrite = fun() ->
                         lists:foreach(
                           fun(_) ->
-                                  antidote_utils:atomic_write_txn(Node1, Key1, Key2, Key3, Type, Bucket)
+                                  antidote_test_utils:atomic_write_txn(Node1, Key1, Key2, Key3, Type, Bucket)
                           end, lists:seq(1, 10)),
                         Caller ! writedone,
                         ct:log("Atomic writes done")
@@ -163,7 +163,7 @@ atomicity_test(Config) ->
                        Delay = 100,
                        Retry = 360000 div Delay, %wait for max 1 min
                        ok = time_utils:wait_until_result(fun() ->
-                                                      antidote_utils:atomic_read_txn(Node2, Key1, Key2, Key3, Type, Bucket)
+                                                      antidote_test_utils:atomic_read_txn(Node2, Key1, Key2, Key3, Type, Bucket)
                                                     end,
                                                     10,
                                                     Retry,
@@ -199,7 +199,7 @@ multiple_writes(Node, PreKey, _Type, Start, End, _Actor, Bucket)->
 multiple_reads(Node, PreKey, Type, Start, End, Total, CommitTime, Bucket) ->
     F = fun(N, Acc) ->
         Key = list_to_atom(atom_to_list(PreKey) ++ [N]),
-        antidote_utils:check_read_key(Node, Key, Type, Total, CommitTime, static, Bucket, antidote),
+        antidote_test_utils:check_read_key(Node, Key, Type, Total, CommitTime, static, Bucket, antidote),
         Acc
         end,
     lists:foldl(F, [], lists:seq(Start, End)).

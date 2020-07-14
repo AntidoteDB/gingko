@@ -49,10 +49,10 @@
 %%% Public API
 %%%===================================================================
 
--spec perform_journal_read_request({dcid(), partition_id()}, {atom(), term()}, fun((term(), request_entry()) -> ok))
+-spec perform_journal_read_request({dcid(), partition_id()}, [txid()], fun((term(), request_entry()) -> ok))
         -> ok.
-perform_journal_read_request({TargetDCID, TargetPartition}, {JournalEntryFilterFuncName, JournalEntryFilterFuncArgs}, ReturnToSenderFunc) ->
-    gen_server:cast(?MODULE, {request, ?JOURNAL_READ_REQUEST, {TargetDCID, TargetPartition}, {JournalEntryFilterFuncName, JournalEntryFilterFuncArgs}, ReturnToSenderFunc}).
+perform_journal_read_request({TargetDCID, TargetPartition}, TxnNumList, ReturnToSenderFunc) ->
+    gen_server:cast(?MODULE, {request, ?JOURNAL_READ_REQUEST, {TargetDCID, TargetPartition}, TxnNumList, ReturnToSenderFunc}).
 
 -spec perform_bcounter_permissions_request({dcid(), partition_id()}, {atom(), {key(), non_neg_integer(), dcid()}})
         -> ok.

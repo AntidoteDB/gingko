@@ -26,7 +26,7 @@
 %% Description and complete License: see LICENSE file.
 %% -------------------------------------------------------------------
 
--module(antidote_utils).
+-module(antidote_test_utils).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -179,7 +179,7 @@ get_random_key() ->
 
 find_key_same_node(FirstNode, IndexNode, Num) ->
     NewKey = list_to_atom(atom_to_list(aaa) ++ integer_to_list(Num)),
-    Preflist = rpc:call(FirstNode, antidote_utilities, get_preflist_from_key, [aaa]),
+    Preflist = rpc:call(FirstNode, antidote_utils, get_preflist_from_key, [aaa]),
     case hd(Preflist) == IndexNode of
         true ->
             NewKey;
@@ -192,7 +192,7 @@ find_key_same_node(FirstNode, IndexNode, Num) ->
 %% inter dc utils
 
 atomic_write_txn(Node, Key1, Key2, Key3, _Type, Bucket) ->
-    antidote_utils:update_counters(Node, [Key1, Key2, Key3], [1, 1, 1], ignore, static, Bucket, antidote).
+    antidote_test_utils:update_counters(Node, [Key1, Key2, Key3], [1, 1, 1], ignore, static, Bucket, antidote).
 
 
 atomic_read_txn(Node, Key1, Key2, Key3, Type, Bucket) ->

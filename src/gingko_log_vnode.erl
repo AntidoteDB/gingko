@@ -49,8 +49,8 @@
 -record(state, {
     partition = 0 :: partition_id(),
     table_name :: atom(),
-    latest_vts = vectorclock:new() :: vectorclock(),
     next_jsn = 0 :: non_neg_integer(),
+    latest_vts = vectorclock:new() :: vectorclock(),
     dcid_to_dc_txn_tracking_state = #{} :: #{dcid() => dc_txn_tracking_state()},
     %%TODO truncate lists
     initialized = false :: boolean()
@@ -111,12 +111,23 @@ handle_command(Request = initialize, Sender, State) ->
     {Reply, NewState} = initialize_or_repair(State),
     {reply, Reply, NewState};
 
-handle_command(Request = {get_txns, TxIdList}, Sender, State = #state{table_name = TableName, initialized = Initialized}) ->
+handle_command(Request = {get_txns, TxnNumList}, Sender, State = #state{table_name = TableName, initialized = Initialized, dcid_to_dc_txn_tracking_state = DcIdToDcTxnTrackingState}) ->
     default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
     Reply =
         case Initialized of
             false -> {error, not_initialized};
             true ->
+                MyDcId = gingko_utils:get_my_dcid(),
+                %%TODO not optimized at all
+                #dc_txn_tracking_state{valid_txn_tracking_num_gb_set = ValidSet} = maps:get(MyDcId, DcIdToDcTxnTrackingState, #dc_txn_tracking_state{}),
+                TxIdList = lists:filtermap(
+                    fun({TxnNum, TxId, _}) ->
+                        case lists:member(TxnNum, TxnNumList) of
+                            true -> {true, TxId};
+                            false -> false
+                        end
+                    end, gb_sets:to_list(ValidSet)),
+                %%TODO possible problem if transactions are requested that don't exist (shoud not happen though)
                 JournalEntryList = gingko_log_utils:read_journal_entries_with_multiple_tx_ids(TxIdList, TableName),
                 {ok, JournalEntryList}
         end,
@@ -127,15 +138,15 @@ handle_command(Request = {get_valid_journal_entries, DependencyVts}, Sender, Sta
     Reply =
         case Initialized of
             false -> {error, not_initialized};
-            true -> {ok, get_valid_journal_entries(DependencyVts, State)}
+            true -> get_valid_journal_entries(DependencyVts, State)
         end,
     {reply, Reply, State};
 
-handle_command(Request = {add_remote_txn, SortedTxJournalEntryList, DcId}, Sender, State = #state{initialized = Initialized}) ->
+handle_command(Request = {add_remote_txn, SortedTxJournalEntryList}, Sender, State = #state{initialized = Initialized}) ->
     default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
     {Reply, NewState} = case Initialized of
                             false -> {{error, not_initialized}, State};
-                            true -> {ok, add_remote_txn(SortedTxJournalEntryList, DcId, State)}
+                            true -> {ok, add_remote_txn(SortedTxJournalEntryList, State)}
                         end,
     {reply, Reply, NewState};
 
@@ -332,10 +343,10 @@ process_command({{abort_txn, none}, TxId}, State) ->
     create_and_add_local_journal_entry(JsnState, TxId, Type, Args, NewState),
     {ok, NewState};
 
-process_command({{checkpoint, DependencyVts}, TxId}, State = #state{table_name = TableName}) ->
+process_command({{checkpoint, DependencyVts}, TxId}, State = #state{partition = Partition, table_name = TableName}) ->
     {BeginJsnState, BeginState} = next_jsn(State),
     NewCheckpointDcIdToLastTxnTrackingNumMap = get_new_checkpoint_dcid_to_txn_tracking_num_map(DependencyVts, BeginState),
-    ValidJournalEntryListBeforeCheckpoint = get_valid_journal_entries(DependencyVts, BeginState),
+    {ok, ValidJournalEntryListBeforeCheckpoint} = get_valid_journal_entries(DependencyVts, BeginState),
     {Type, Args} = gingko_journal_utils:create_checkpoint_operation(DependencyVts, NewCheckpointDcIdToLastTxnTrackingNumMap),
     create_and_add_local_journal_entry(BeginJsnState, TxId, Type, Args, BeginState),
     ok = gingko_log_utils:persist_journal_entries(TableName),
@@ -344,12 +355,11 @@ process_command({{checkpoint, DependencyVts}, TxId}, State = #state{table_name =
     case CheckpointResult of
         ok ->
             create_and_add_local_journal_entry(ResultJsnState, TxId, checkpoint_commit, Args, ResultState),
+            {ok, TrimState} = perform_journal_log_trimming_and_add_checkpoint_to_state(NewCheckpointDcIdToLastTxnTrackingNumMap, ResultState),
             ok = gingko_log_utils:persist_journal_entries(TableName),
-            %%TODO trim everything
-            {ok, add_checkpoint_to_state(NewCheckpointDcIdToLastTxnTrackingNumMap, ResultState)};
+            gingko_utils:call_gingko_sync(Partition, ?GINGKO_CACHE, {checkpoint_cache_cleanup, DependencyVts}),
+            {ok, TrimState};
         Error ->
-            create_and_add_local_journal_entry(ResultJsnState, TxId, checkpoint_abort, Args, ResultState),
-            ok = gingko_log_utils:persist_journal_entries(TableName),
             {Error, ResultState}
     end.
 %%Must succeed otherwise crash
@@ -362,21 +372,22 @@ create_and_add_local_journal_entry(JsnState, TxId, Type, Args, #state{partition 
     ok = gingko_utils:call_gingko_sync(Partition, ?INTER_DC_LOG, {journal_entry, JournalEntry}),
     JournalEntry.
 
--spec add_remote_txn([journal_entry()], dcid(), state()) -> state().
-add_remote_txn([], DcId, State) -> State;
-add_remote_txn(SortedTxJournalEntryList = [BeginJournalEntry = #journal_entry{dcid = DcId} | _], DcId, State = #state{next_jsn = NextJsn, table_name = TableName}) ->
+-spec add_remote_txn([journal_entry()], state()) -> state().
+add_remote_txn([], State) -> State;
+add_remote_txn(SortedTxJournalEntryList = [BeginJournalEntry | _], State = #state{next_jsn = NextJsn, table_name = TableName}) ->
     CommitJournalEntry = lists:last(SortedTxJournalEntryList),
     case transaction_already_exists(CommitJournalEntry, State) of
         true -> State;
         false ->
             NewNextJsn = NextJsn + length(SortedTxJournalEntryList),
-            FixedJournalEntries =
-                lists:foldl(
-                    fun(JournalEntry, CurrentNextJsn) ->
-                        JournalEntry#journal_entry{jsn = CurrentNextJsn},
-                        CurrentNextJsn + 1
-                    end, NextJsn, SortedTxJournalEntryList),
+            {_, FixedJournalEntries} =
+                lists:reverse( %%Keep it sorted
+                    lists:foldl(
+                        fun(JournalEntry, {CurrentNextJsn, CurrentJournalEntryList}) ->
+                            {CurrentNextJsn + 1, [JournalEntry#journal_entry{jsn = CurrentNextJsn} | CurrentJournalEntryList]}
+                        end, NextJsn, SortedTxJournalEntryList)),
             ok = gingko_log_utils:add_journal_entry_list(FixedJournalEntries, TableName),
+            ok = gingko_log_utils:persist_journal_entries(TableName), %%TODO currently necessary to avoid potential GCSt bug in an extreme edge case
             add_commit(BeginJournalEntry, CommitJournalEntry, State#state{next_jsn = NewNextJsn})
     end.
 
@@ -453,7 +464,7 @@ update_dc_txn_states_and_latest_vts(State = #state{dcid_to_dc_txn_tracking_state
 -spec initialize_state(state()) -> state().
 initialize_state(State = #state{table_name = TableName}) ->
     MyDcId = gingko_utils:get_my_dcid(),
-    JournalEntryList = gingko_log_utils:read_all_journal_entries(TableName),
+    JournalEntryList = gingko_log_utils:remove_unresolved_or_aborted_transactions_and_return_remaining_journal_entry_list(TableName),
     NextJsn =
         case JournalEntryList of
             [] -> 1;
@@ -464,7 +475,7 @@ initialize_state(State = #state{table_name = TableName}) ->
         end,
     DcIdToJournalEntryListMap = general_utils:group_by_map(fun(#journal_entry{dcid = DcId}) ->
         DcId end, JournalEntryList),
-    LatestCheckpoints = gingko_utils:get_journal_entries_of_type(JournalEntryList, checkpoint),
+    LatestCheckpoints = gingko_utils:get_journal_entries_of_type(JournalEntryList, checkpoint_commit),
     SortedCheckpoints =
         lists:sort(
             fun(#journal_entry{args = #checkpoint_args{dependency_vts = DependencyVts1}}, #journal_entry{args = #checkpoint_args{dependency_vts = DependencyVts2}}) ->
@@ -548,8 +559,13 @@ find_checkpoint_txn_tracking_num(LastValidTxnTrackingNum, DcTimestamp, [{_, _, T
 find_checkpoint_txn_tracking_num(_, DcTimestamp, [DcTxnTrackingNum | OtherDcTxnTrackingNum]) ->
     find_checkpoint_txn_tracking_num(DcTxnTrackingNum, DcTimestamp, OtherDcTxnTrackingNum). %Previous pattern assures DcTimestamp > Timestamp
 
--spec add_checkpoint_to_state(#{dcid() => txn_tracking_num()}, state()) -> state().
-add_checkpoint_to_state(DcIdToLastTxnTrackingNumMap, State = #state{dcid_to_dc_txn_tracking_state = DcIdToDcTxnTrackingState}) ->
+-spec perform_journal_log_trimming_and_add_checkpoint_to_state(#{dcid() => txn_tracking_num()}, state()) -> state().
+perform_journal_log_trimming_and_add_checkpoint_to_state(DcIdToLastTxnTrackingNumMap, State = #state{dcid_to_dc_txn_tracking_state = DcIdToDcTxnTrackingState}) ->
+    ok =
+        case ?JOURNAL_TRIMMING_MODE of
+            keep_all_checkpoints -> ok;
+            _ -> gingko_log_utils:perform_journal_log_trimming(State)
+        end,
     NewDcIdToDcTxnTrackingState =
         maps:map(
             fun(DcId, DcTxnTrackingState = #dc_txn_tracking_state{valid_txn_tracking_num_gb_set = ValidTxnTrackingNumSet}) ->
@@ -572,24 +588,29 @@ add_commit(#journal_entry{dcid = DcId, args = #begin_txn_args{dependency_vts = D
         end,
     update_dc_txn_states_and_latest_vts(State#state{dcid_to_dc_txn_tracking_state = DcIdToDcTxnTrackingState#{DcId => NewDcTxnTrackingState}}).
 
--spec get_valid_journal_entries(vectorclock(), state()) -> [journal_entry()].
-get_valid_journal_entries(DependencyVts, #state{table_name = TableName, dcid_to_dc_txn_tracking_state = DcIdToDcTxnTrackingState}) ->
-    ValidTxIdList =
-        lists:append(
-            maps:fold(
-                fun(DcId, #dc_txn_tracking_state{valid_txn_tracking_num_gb_set = ValidTxnTrackingNumSet}, ValidTxIdListListAcc) ->
-                    DcIdValidTxIdList =
-                        case vectorclock:get(DcId, DependencyVts) of
-                            0 -> [];
-                            Timestamp ->
-                                gb_sets:fold(
-                                    fun({_, TxId, DcTimestamp}, ValidTxIdListAcc) ->
-                                        case DcTimestamp =< Timestamp of
-                                            true -> [TxId | ValidTxIdListAcc];
-                                            false -> ValidTxIdListAcc
-                                        end
-                                    end, [], ValidTxnTrackingNumSet)
-                        end,
-                    [DcIdValidTxIdList | ValidTxIdListListAcc]
-                end, [], DcIdToDcTxnTrackingState)),
-    gingko_log_utils:read_journal_entries_with_multiple_tx_ids(ValidTxIdList, TableName).
+-spec get_valid_journal_entries(vectorclock(), state()) -> {ok, [journal_entry()]} | {error, reason()}.
+get_valid_journal_entries(DependencyVts, #state{table_name = TableName, dcid_to_dc_txn_tracking_state = DcIdToDcTxnTrackingState, latest_vts = LatestVts}) ->
+    case gingko_utils:is_in_vts_range(DependencyVts, {none, LatestVts}) of
+        true ->
+            ValidTxIdList =
+                lists:append(
+                    maps:fold(
+                        fun(DcId, #dc_txn_tracking_state{valid_txn_tracking_num_gb_set = ValidTxnTrackingNumSet}, ValidTxIdListListAcc) ->
+                            DcIdValidTxIdList =
+                                case vectorclock:get(DcId, DependencyVts) of
+                                    0 -> [];
+                                    Timestamp ->
+                                        gb_sets:fold(
+                                            fun({_, TxId, DcTimestamp}, ValidTxIdListAcc) ->
+                                                case DcTimestamp =< Timestamp of
+                                                    true -> [TxId | ValidTxIdListAcc];
+                                                    false -> ValidTxIdListAcc
+                                                end
+                                            end, [], ValidTxnTrackingNumSet)
+                                end,
+                            [DcIdValidTxIdList | ValidTxIdListListAcc]
+                        end, [], DcIdToDcTxnTrackingState)),
+            gingko_log_utils:read_journal_entries_with_multiple_tx_ids(ValidTxIdList, TableName);
+        false ->
+            {error, "Partition Vts older than Dependency Vts"} %%We cannot allow this otherwise the reads may be inconsistent
+    end.

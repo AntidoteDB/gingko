@@ -96,7 +96,8 @@ add_new_nodes_to_mnesia(ExistingNode, NewNodes) ->
         fun(NewNode) ->
             rpc:call(ExistingNode, mnesia, change_table_copy_type, [schema, NewNode, disc_copies]),
             {atomic, ok} = mnesia:add_table_copy(checkpoint_entry, NewNode, disk_copies),
-            {atomic, ok} = mnesia:add_table_copy(dc_info_entry, NewNode, disk_copies)
+            {atomic, ok} = mnesia:add_table_copy(dc_info_entry, NewNode, disk_copies),
+            {atomic, ok} = mnesia:add_table_copy(distributed_vts, NewNode, ram_copies)
         end, NewNodes).
 
 %%TODO startup is currently fail directly
@@ -114,11 +115,10 @@ initial_startup_nodes(Nodes) ->
                 [] ->
                     ok = mnesia:create_schema(Nodes),
                     rpc:multicall(Nodes, application, start, [mnesia]),
-                    ok = make_sure_global_stores_are_running([dc_info_entry, checkpoint_entry], Nodes),
-                    ok = mnesia:wait_for_tables([dc_info_entry, checkpoint_entry], 5000), %TODO error handling
+                    ok = make_sure_global_stores_are_running([dc_info_entry, checkpoint_entry, distributed_vts], Nodes),
                     true = general_utils:list_all_equal(ok, gingko_utils:bcast_gingko_sync_only_values(?GINGKO_LOG, initialize)),
                     ok;
-                    %TODO setup fresh
+                %TODO setup fresh
                 _ ->
                     NodesWithoutSchema = general_utils:list_without_elements_from_other_list(Nodes, NodesWithSchema),
                     {MnesiaNodesList, BadNodes} = rpc:multicall(NodesWithSchema, mnesia, system_info, [db_nodes]),
@@ -140,13 +140,13 @@ initial_startup_nodes(Nodes) ->
                                                 [] -> ok;
                                                 _ -> add_new_nodes_to_mnesia(hd(NodesWithSchema), NodesWithoutSchema)
                                             end,
-                                            ok = make_sure_global_stores_are_running([dc_info_entry, checkpoint_entry], Nodes),
+                                            ok = make_sure_global_stores_are_running([dc_info_entry, checkpoint_entry, distributed_vts], Nodes),
                                             gingko_utils:bcast_gingko_sync(?GINGKO_LOG, initialize),
                                             ok; %TODO checkpoint setup and inform all vnodes
                                         false ->
                                             PartiallyPerfect = lists:all(
                                                 fun(MnesiaNodes) ->
-                                                ordsets:is_subset(ordsets:from_list(MnesiaNodes), NodesWithSchemaOrdSet) end, MnesiaNodesList),
+                                                    ordsets:is_subset(ordsets:from_list(MnesiaNodes), NodesWithSchemaOrdSet) end, MnesiaNodesList),
                                             case PartiallyPerfect of
                                                 true ->
                                                     %TODO fix setup (partially broken mnesia cluster)
@@ -175,14 +175,26 @@ make_sure_global_stores_are_running(TableNames, SetupMnesiaNodes) ->
         fun(TableName) ->
             case lists:member(TableName, Tables) of
                 true ->
+                    ValidType =
+                        case TableName of
+                            distributed_vts -> ram_copies;
+                            _ -> disk_copies
+                        end,
                     RamCopiesNodes = mnesia:table_info(TableName, ram_copies),
+                    DiscCopiesNodes = mnesia:table_info(TableName, disc_copies),
                     DiscOnlyNodes = mnesia:table_info(TableName, disc_only_copies),
+                    ListOfBadTypeNodes =
+                    case ValidType of
+                        ram_copies -> DiscCopiesNodes ++ DiscOnlyNodes;
+                        disc_copies -> RamCopiesNodes ++ DiscOnlyNodes;
+                        disc_only_copies -> RamCopiesNodes ++ DiscCopiesNodes
+                    end,
                     lists:foreach(
                         fun(Node) ->
-                            {atomic, ok} = mnesia:change_table_copy_type(TableName, Node, disc_copies)
-                        end, RamCopiesNodes ++ DiscOnlyNodes),
+                            {atomic, ok} = mnesia:change_table_copy_type(TableName, Node, ValidType)
+                        end, ListOfBadTypeNodes),
                     %%TODO maybe wait_for_tables?
-                    NodesWhereTableIsSetup = mnesia:table_info(TableName, disc_copies),
+                    NodesWhereTableIsSetup = mnesia:table_info(TableName, ValidType),
                     case length(NodesWhereTableIsSetup) of
                         0 ->
                             ok = create_tables(SetupMnesiaNodes, TableName);
@@ -190,7 +202,7 @@ make_sure_global_stores_are_running(TableNames, SetupMnesiaNodes) ->
                             lists:foreach(
                                 fun(Node) ->
                                     case lists:member(Node, NodesWhereTableIsSetup) of
-                                        false -> {atomic, ok} = mnesia:add_table_copy(TableName, Node, disc_copies);
+                                        false -> {atomic, ok} = mnesia:add_table_copy(TableName, Node, ValidType);
                                         true -> ok
                                     end
                                 end, SetupMnesiaNodes)
@@ -198,17 +210,22 @@ make_sure_global_stores_are_running(TableNames, SetupMnesiaNodes) ->
                 false ->
                     ok = create_tables(SetupMnesiaNodes, TableName)
             end
-        end, TableNames).
+        end, TableNames),
+    ok = mnesia:wait_for_tables(TableNames, 5000). %%TODO error handling
 
 -spec create_tables([node()], table_name()) -> ok | {error, reason()}.
 create_tables(SetupMnesiaNodes, TableName) ->
-    RecordInfo =
-        case TableName of
+    case TableName of
             checkpoint_entry ->
-                record_info(fields, checkpoint_entry);
+                mnesia_utils:get_mnesia_result(mnesia:create_table(TableName,
+                    [{attributes, record_info(fields, checkpoint_entry)},
+                        {disc_copies, SetupMnesiaNodes}]));
             dc_info_entry ->
-                record_info(fields, dc_info_entry)
-        end,
-    mnesia_utils:get_mnesia_result(mnesia:create_table(TableName,
-        [{attributes, RecordInfo},
-            {disc_copies, SetupMnesiaNodes}])).
+                mnesia_utils:get_mnesia_result(mnesia:create_table(TableName,
+                    [{attributes, record_info(fields, dc_info_entry)},
+                        {disc_copies, SetupMnesiaNodes}]));
+            distributed_vts ->
+                mnesia_utils:get_mnesia_result(mnesia:create_table(TableName,
+                    [{attributes, record_info(fields, distributed_vts)},
+                        {ram_copies, SetupMnesiaNodes}]))
+        end.

@@ -207,8 +207,6 @@ pref_list(BCounter) ->
     OtherDCPermissions = [{OtherDCID, ?DATA_TYPE:localPermissions(OtherDCID, BCounter)} || OtherDCID <- OtherDCIDs],
     lists:sort(fun({_, A}, {_, B}) -> A =< B end, OtherDCPermissions).
 
-
-
 -spec cancel_consecutive_request(last_transfers(), microsecond()) -> last_transfers().
 cancel_consecutive_request(LastTransfers, Period) ->
     CurrentTime = erlang:timestamp(),

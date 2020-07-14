@@ -80,14 +80,6 @@ transform_to_update_payload(#journal_entry{args = #commit_txn_args{commit_vts = 
         snapshot_vts = CommitVts
     }.
 
-%%Relevant Journal Entries:
-%% [{{journal_entry,8,dev1@KevinSB2,1594028250715554,{tx_id,1594028250687459,<0.306.0>},commit_txn,{commit_txn_args,#{dev1@KevinSB2 => 1594028250715439},{2,{tx_id,1594028250687459,<0.306.0>},1594028250715439}}},
-%% [{journal_entry,6,dev1@KevinSB2,1594028250688791,{tx_id,1594028250687459,<0.306.0>},update,{update_args,{key_struct,antidote_key_static2,antidote_crdt_counter_pn},1,1}}]},
-%% {{journal_entry,12,dev1@KevinSB2,1594028250774653,{tx_id,1594028250743531,<0.311.0>},commit_txn,{commit_txn_args,#{dev1@KevinSB2 => 1594028250774489},{3,{tx_id,1594028250743531,<0.311.0>},1594028250774489}}},
-%% [{journal_entry,10,dev1@KevinSB2,1594028250744977,{tx_id,1594028250743531,<0.311.0>},update,{update_args,{key_struct,antidote_key_static2,antidote_crdt_counter_pn},1,1}}]}] |
-%% Initial Snapshot: {snapshot,{key_struct,antidote_key_static2,antidote_crdt_counter_pn},#{dev1@KevinSB2 => 1594028250715439},#{dev1@KevinSB2 => 1594028250715439},1}
-%%2020-07-06T11:37:30.798970+02:00 error: BenchTim
-
 -spec materialize_snapshot(snapshot(), [journal_entry()], vectorclock()) -> {ok, snapshot()} | {error, reason()}.
 materialize_snapshot(Snapshot = #snapshot{key_struct = KeyStruct, snapshot_vts = SnapshotVts}, JournalEntryList, DependencyVts) ->
     case gingko_utils:is_in_vts_range(SnapshotVts, {DependencyVts, none}) of
@@ -99,7 +91,6 @@ materialize_snapshot(Snapshot = #snapshot{key_struct = KeyStruct, snapshot_vts =
                     fun({#journal_entry{args = #commit_txn_args{commit_vts = CommitVts}}, _UpdateJournalEntryList}) ->
                         vectorclock:gt(CommitVts, SnapshotVts) andalso gingko_utils:is_in_vts_range(CommitVts, {SnapshotVts, DependencyVts})
                     end, CommittedJournalEntryList),
-            logger:error("Relevant Journal Entries: ~p | Initial Snapshot: ~p", [RelevantCommittedJournalEntryList, Snapshot]),
             UpdatePayloadListList =
                 lists:map(
                     fun({CommitJournalEntry, UpdateJournalEntryList}) ->

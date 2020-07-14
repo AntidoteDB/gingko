@@ -23,12 +23,15 @@
 -export([
     perform_tx_read/3,
     checkpoint/3,
+    perform_journal_log_trimming/1,
+    remove_unresolved_or_aborted_transactions_and_return_remaining_journal_entry_list/1,
 
     create_journal_mnesia_table/1,
     persist_journal_entries/1,
     clear_journal_entries/1,
     add_journal_entry/2,
     add_journal_entry_list/2,
+    delete_jsn_list/2,
     read_journal_entry/2,
     read_all_journal_entries/1,
     read_journal_entries_with_tx_id/2,
@@ -105,6 +108,72 @@ checkpoint(ValidJournalEntryListBeforeCheckpoint, DependencyVts, NewCheckpointDc
 %TODO cache cleanup
 %%TODO txn tracking cleanup
 
+-spec perform_journal_log_trimming(table_name()) -> ok.
+perform_journal_log_trimming(TableName) ->
+    AllJournalEntries = gingko_log_utils:read_all_journal_entries(TableName),
+    AllCommittedCheckpoints = gingko_utils:get_journal_entries_of_type(AllJournalEntries, checkpoint_commit),
+    SortedByVts = gingko_utils:sort_same_journal_entry_type_list_by_vts(AllCommittedCheckpoints),
+    case lists:reverse(SortedByVts) of
+        [] -> ok;
+        [_] -> ok;
+        [#checkpoint_args{dependency_vts = CheckpointVts1}, #checkpoint_args{dependency_vts = CheckpointVts2} | _] ->
+            JournalEntriesByTxId = maps:values(general_utils:group_by_map(fun(#journal_entry{tx_id = TxId}) ->
+                TxId end, AllJournalEntries)),
+            RelevantCheckpointVts = case ?JOURNAL_TRIMMING_MODE of
+                      keep_two_checkpoints -> CheckpointVts2;
+                      _ -> CheckpointVts1
+                  end,
+            JsnListToRemove =
+                lists:append(lists:filtermap(
+                    fun(JournalEntryList) ->
+                        SortedTxnJournalEntryList = gingko_utils:sort_journal_entries_of_same_tx(JournalEntryList),
+                        LastJournalEntryOfTxn = lists:last(SortedTxnJournalEntryList),
+                        Result =
+                            case LastJournalEntryOfTxn of
+                                #journal_entry{type = abort_txn} -> true; %%Aborts can be always trimmed
+                                #journal_entry{args = #commit_txn_args{commit_vts = CommitVts}} ->
+                                    vectorclock:lt(CommitVts, RelevantCheckpointVts);
+                                #journal_entry{args = #checkpoint_args{dependency_vts = CheckpointVts}} ->
+                                    vectorclock:lt(CheckpointVts, RelevantCheckpointVts);
+                                _ -> false %%Unfinished transactions are not trimmed
+                            end,
+                        case Result of
+                            false -> false;
+                            true -> {true, lists:map(fun(#journal_entry{jsn = Jsn}) -> Jsn end, JournalEntryList)}
+                        end
+                    end, JournalEntriesByTxId)),
+            gingko_log_utils:delete_jsn_list(JsnListToRemove, TableName),
+            gingko_log_utils:persist_journal_entries(TableName)
+    end.
+
+%%TODO Aborted can be kept maybe but are not necessary
+-spec remove_unresolved_or_aborted_transactions_and_return_remaining_journal_entry_list(table_name()) -> [journal_entry()].
+remove_unresolved_or_aborted_transactions_and_return_remaining_journal_entry_list(TableName) ->
+    JournalEntryList = read_all_journal_entries(TableName),
+    JournalEntriesByTxId = maps:values(general_utils:group_by_map(fun(#journal_entry{tx_id = TxId}) ->
+        TxId end, JournalEntryList)),
+    {JsnListToRemove, RemainingJournalEntryList} =
+        lists:foldl(
+            fun(JournalEntryList, {CurrentJsnListToRemove, CurrentRemainingJournalEntryList}) ->
+                SortedTxnJournalEntryList = gingko_utils:sort_journal_entries_of_same_tx(JournalEntryList),
+                LastJournalEntryOfTxn = lists:last(SortedTxnJournalEntryList),
+                ToBeRemoved =
+                    case LastJournalEntryOfTxn of
+                        #journal_entry{type = abort_txn} -> true; %%Aborts can be always trimmed
+                        #journal_entry{args = #commit_txn_args{}} -> false;
+                        #journal_entry{args = #checkpoint_args{}} -> false;
+                        _ -> true
+                    end,
+                case ToBeRemoved of
+                    true -> {lists:map(fun(#journal_entry{jsn = Jsn}) -> Jsn end, SortedTxnJournalEntryList) ++ CurrentJsnListToRemove, CurrentRemainingJournalEntryList};
+                    false -> {CurrentJsnListToRemove, SortedTxnJournalEntryList ++ CurrentRemainingJournalEntryList}
+                end,
+                {ToBeRemoved, SortedTxnJournalEntryList}
+            end, {[], []}, JournalEntriesByTxId),
+    gingko_log_utils:delete_jsn_list(JsnListToRemove, TableName),
+    gingko_log_utils:persist_journal_entries(TableName),
+    RemainingJournalEntryList.
+
 -spec create_journal_mnesia_table(table_name()) -> ok | {error, reason()}.
 create_journal_mnesia_table(TableName) ->
     mnesia_utils:get_mnesia_result(mnesia:create_table(TableName,
@@ -152,6 +221,14 @@ add_journal_entry_list(JournalEntryList, TableName) ->
                             {error, {already_exists, ExistingJournalEntryList}}
                     end
                 end, ok, JournalEntryList)
+        end,
+    mnesia_utils:run_transaction(F).
+
+-spec delete_jsn_list([jsn()], table_name()) -> ok | {error, reason()}.
+delete_jsn_list(JsnList, TableName) ->
+    F =
+        fun() ->
+            lists:foreach(fun(Jsn) -> mnesia:delete({TableName, Jsn}) end, JsnList)
         end,
     mnesia_utils:run_transaction(F).
 
