@@ -38,10 +38,12 @@
     ensure_local_gingko_instance_running/1,
     ensure_gingko_instance_running/1,
 
-
-    is_in_vts_range/2,
-    get_clock_range/2,
-    is_in_clock_range/2,
+    get_smallest_vts/1,
+    get_largest_vts/1,
+    get_smallest_by_vts/2,
+    get_largest_by_vts/2,
+    sort_vts_list/1,
+    sort_by_vts/2,
 
     create_new_snapshot/2,
     create_cache_entry/1,
@@ -55,14 +57,14 @@
     is_journal_entry_type/2,
     contains_journal_entry_type/2,
     get_updates/1,
+    get_updates_of_key/2,
 
-    is_update_of_keys/2,
-    is_update_of_keys_or_commit/2,
+    is_update_of_key/2,
+    is_update_of_key_or_commit/2,
     is_update/1,
     get_journal_entries_of_type/2,
 
     get_keys_from_updates/1,
-    sort_by_jsn_number/1,
     sort_same_journal_entry_type_list_by_vts/1,
     sort_journal_entries_of_same_tx/1,
     remove_existing_journal_entries_handoff/2,
@@ -76,10 +78,8 @@
     call_gingko_sync_with_key/3,
     bcast_local_gingko_async/2,
     bcast_local_gingko_sync/2,
-    bcast_local_gingko_sync_only_values/2,
     bcast_gingko_async/2,
     bcast_gingko_sync/2,
-    bcast_gingko_sync_only_values/2,
 
     get_key_partition/1]).
 
@@ -121,7 +121,7 @@ get_my_dc_nodes() ->
 
 -spec get_DCSf_vts() -> vectorclock().
 get_DCSf_vts() ->
-    Vectorclocks = general_utils:get_values(bcast_gingko_sync_only_values(?GINGKO_LOG, get_current_dependency_vts)),
+    Vectorclocks = general_utils:get_values_times(bcast_gingko_sync(?GINGKO_LOG, get_current_dependency_vts), 2),
     vectorclock:min(Vectorclocks).
 
 -spec get_GCSt_vts() -> vectorclock().
@@ -162,7 +162,7 @@ gingko_send_after(TimeMillis, Request) ->
         false -> riak_core_vnode:send_command_after(TimeMillis, Request)
     end.
 
--spec update_timer(reference(), boolean(), millisecond(), term(), boolean()) -> reference().
+-spec update_timer(none | reference(), boolean(), millisecond(), term(), boolean()) -> reference().
 update_timer(CurrentTimerOrNone, UpdateExistingTimer, TimeMillis, Request, IsPotentialVNode) ->
     UpdateTimerFun =
         fun() ->
@@ -250,32 +250,55 @@ bcast_gingko_instance_check_up(ServerName, [0]) ->
             ok
     end.
 
--spec is_in_vts_range(vectorclock(), vts_range()) -> boolean().
-is_in_vts_range(Vts, VtsRange) ->
-    case VtsRange of
-        {none, none} -> true;
-        {none, MaxVts} -> vectorclock:le(Vts, MaxVts);
-        {MinVts, none} -> vectorclock:le(MinVts, Vts);
-        {MinVts, MaxVts} -> vectorclock:le(MinVts, Vts) andalso vectorclock:le(Vts, MaxVts)
-    end.
+get_smallest_vts(VtsList) ->
+    get_smallest_by_vts(fun(Vts) -> Vts end, VtsList).
 
--spec get_clock_range(dcid(), vts_range()) -> clock_range().
-get_clock_range(DcId, VtsRange) ->
-    case VtsRange of
-        {none, none} -> {none, none};
-        {none, MaxVts} -> {none, vectorclock:get(DcId, MaxVts)};
-        {MinVts, none} -> {vectorclock:get(DcId, MinVts), none};
-        {MinVts, MaxVts} -> {vectorclock:get(DcId, MinVts), vectorclock:get(DcId, MaxVts)}
-    end.
+get_largest_vts(VtsList) ->
+    get_largest_by_vts(fun(Vts) -> Vts end, VtsList).
 
--spec is_in_clock_range(clock_time(), clock_range()) -> boolean().
-is_in_clock_range(ClockTime, ClockRange) ->
-    case ClockRange of
-        {none, none} -> true;
-        {none, MaxClockTime} -> ClockTime =< MaxClockTime;
-        {MinClockTime, none} -> MinClockTime >= ClockTime;
-        {MinClockTime, MaxClockTime} -> MinClockTime >= ClockTime andalso ClockTime =< MaxClockTime
-    end.
+get_smallest_by_vts(FunThatGetsVtsFromElement, ElementThatContainsVtsList) ->
+    general_utils:list_first_match(
+        fun(Vts) ->
+            not lists:any(
+                fun(OtherVts) ->
+                    vectorclock:lt(FunThatGetsVtsFromElement(OtherVts), FunThatGetsVtsFromElement(Vts))
+                end, ElementThatContainsVtsList)
+        end, ElementThatContainsVtsList).
+
+get_largest_by_vts(FunThatGetsVtsFromElement, ElementThatContainsVtsList) ->
+    general_utils:list_first_match(
+        fun(Vts) ->
+            not lists:any(
+                fun(OtherVts) ->
+                    vectorclock:gt(FunThatGetsVtsFromElement(OtherVts), FunThatGetsVtsFromElement(Vts))
+                end, ElementThatContainsVtsList)
+        end, ElementThatContainsVtsList).
+
+sort_vts_list([]) -> [];
+sort_vts_list([Vts]) -> [Vts];
+sort_vts_list(VtsList) ->
+    sort_by_vts(fun(Vts) -> Vts end, VtsList).
+
+sort_by_vts(_, []) -> [];
+sort_by_vts(_, [ElementThatContainsVts]) -> [ElementThatContainsVts];
+sort_by_vts(FunThatGetsVtsFromElement, ElementThatContainsVtsList) ->
+    {SmallestElementThatContainsVtsList, RemainingElementThatContainsVtsList} =
+        lists:foldl(
+            fun(ElementThatContainsVts, {CurrentSmallestElementThatContainsVtsList, CurrentRemainingElementThatContainsVtsList}) ->
+                AnySmaller =
+                    lists:any(
+                        fun(OtherElementThatContainsVts) ->
+                            vectorclock:lt(FunThatGetsVtsFromElement(OtherElementThatContainsVts), FunThatGetsVtsFromElement(ElementThatContainsVts))
+                        end, CurrentRemainingElementThatContainsVtsList),
+                case AnySmaller of
+                    true ->
+                        {CurrentSmallestElementThatContainsVtsList, [ElementThatContainsVts | CurrentRemainingElementThatContainsVtsList]};
+                    false ->
+                        {[ElementThatContainsVts | CurrentSmallestElementThatContainsVtsList], CurrentRemainingElementThatContainsVtsList}
+                end
+            end, {[], []}, ElementThatContainsVtsList),
+    SmallestElementThatContainsVtsList ++ sort_vts_list(RemainingElementThatContainsVtsList).
+
 
 -spec create_new_snapshot(key_struct(), vectorclock()) -> snapshot().
 create_new_snapshot(KeyStruct = #key_struct{type = Type}, DependencyVts) ->
@@ -333,14 +356,17 @@ contains_journal_entry_type(JournalEntryList, OpType) ->
 get_updates(JournalEntryList) ->
     lists:filter(fun(JournalEntry) -> is_update(JournalEntry) end, JournalEntryList).
 
--spec is_update_of_keys(journal_entry(), [key_struct()] | all_keys) -> boolean().
-is_update_of_keys(#journal_entry{type = update, args = #update_args{key_struct = KeyStruct}}, KeyStructFilter) ->
-    KeyStructFilter == all_keys orelse lists:member(KeyStruct, KeyStructFilter);
-is_update_of_keys(_, _) -> false.
+-spec get_updates_of_key([journal_entry()], key_struct()) -> [journal_entry()].
+get_updates_of_key(JournalEntryList, KeyStruct) ->
+    lists:filter(fun(JournalEntry) -> is_update_of_key(JournalEntry, KeyStruct) end, JournalEntryList).
 
--spec is_update_of_keys_or_commit(journal_entry(), [key_struct()] | all_keys) -> boolean().
-is_update_of_keys_or_commit(JournalEntry, KeyStructFilter) ->
-    is_update_of_keys(JournalEntry, KeyStructFilter) orelse is_journal_entry_type(JournalEntry, commit_txn).
+-spec is_update_of_key(journal_entry(), key_struct()) -> boolean().
+is_update_of_key(#journal_entry{type = update, args = #update_args{key_struct = KeyStruct}}, KeyStruct) -> true;
+is_update_of_key(_, _) -> false.
+
+-spec is_update_of_key_or_commit(journal_entry(), key_struct()) -> boolean().
+is_update_of_key_or_commit(JournalEntry, KeyStruct) ->
+    is_update_of_key(JournalEntry, KeyStruct) orelse is_journal_entry_type(JournalEntry, commit_txn).
 
 -spec is_update(journal_entry()) -> boolean().
 is_update(#journal_entry{type = update}) -> true;
@@ -362,23 +388,18 @@ get_keys_from_updates(JournalEntryList) ->
             end
         end, JournalEntryList).
 
--spec sort_by_jsn_number([journal_entry()]) -> [journal_entry()].
-sort_by_jsn_number(JournalEntryList) ->
-    lists:sort(fun(#journal_entry{jsn = Jsn1}, #journal_entry{jsn = Jsn2}) -> Jsn1 < Jsn2 end, JournalEntryList).
-
 -spec sort_same_journal_entry_type_list_by_vts([journal_entry()]) -> [journal_entry()].
 sort_same_journal_entry_type_list_by_vts(JournalEntryList) ->
-    lists:sort(
-        fun(#journal_entry{args = Args1}, #journal_entry{args = Args2}) ->
-            {Vts1, Vts2} =
-                case {Args1, Args2} of
-                    {#begin_txn_args{dependency_vts = DependencyVts1}, #begin_txn_args{dependency_vts = DependencyVts2}} ->
-                        {DependencyVts1, DependencyVts2};
-                    {#commit_txn_args{commit_vts = CommitVts1}, #commit_txn_args{commit_vts = CommitVts2}} ->
-                        {CommitVts1, CommitVts2};
-                    {#checkpoint_args{dependency_vts = CheckpointVts1}, #checkpoint_args{dependency_vts = CheckpointVts2}} -> {CheckpointVts1, CheckpointVts2}
-                end,
-            vectorclock:le(Vts1, Vts2)
+    sort_by_vts(
+        fun(#journal_entry{args = Args}) ->
+            case Args of
+                #begin_txn_args{dependency_vts = DependencyVts} ->
+                    DependencyVts;
+                #commit_txn_args{commit_vts = CommitVts} ->
+                    CommitVts;
+                #checkpoint_args{dependency_vts = CheckpointVts} ->
+                    CheckpointVts
+            end
         end, JournalEntryList).
 
 -spec sort_journal_entries_of_same_tx([journal_entry()]) -> [journal_entry()].
@@ -503,13 +524,9 @@ bcast_local_gingko_async({ServerName, VMaster}, Request) ->
 -spec bcast_local_gingko_sync({atom(), atom()}, any()) -> [{partition_id(), term()}].
 bcast_local_gingko_sync({ServerName, VMaster}, Request) ->
     case ?USE_SINGLE_SERVER of
-        true -> gen_server:cast(ServerName, Request);
+        true -> [{0, gen_server:call(ServerName, Request)}];
         false -> antidote_utils:bcast_local_vnode_sync(VMaster, Request)
     end.
-
--spec bcast_local_gingko_sync_only_values({atom(), atom()}, any()) -> [term()].
-bcast_local_gingko_sync_only_values({ServerName, VMaster}, Request) ->
-    general_utils:get_values(bcast_local_gingko_sync({ServerName, VMaster}, Request)).
 
 %% Sends the same (asynchronous) command to all vnodes of a given type.
 -spec bcast_gingko_async({atom(), atom()}, any()) -> ok.
@@ -527,16 +544,13 @@ bcast_gingko_sync({ServerName, VMaster}, Request) ->
         false -> antidote_utils:bcast_vnode_sync(VMaster, Request)
     end.
 
-%% Sends the same (synchronous) command to all vnodes of a given type.
--spec bcast_gingko_sync_only_values({atom(), atom()}, any()) -> [term()].
-bcast_gingko_sync_only_values({ServerName, VMaster}, Request) ->
-    general_utils:get_values(bcast_gingko_sync({ServerName, VMaster}, Request)).
-
--spec get_key_partition(term()) -> {partition_id(), node()}.
+-spec get_key_partition(term()) -> partition_id().
 get_key_partition(Key) ->
     case ?USE_SINGLE_SERVER of
-        true -> {0, node()};
-        false -> antidote_utils:get_key_partition(Key)
+        true -> 0;
+        false ->
+            {Partition, _} = antidote_utils:get_key_partition_node_tuple(Key),
+            Partition
     end.
 
 

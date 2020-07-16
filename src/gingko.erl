@@ -128,7 +128,7 @@ update_multiple(KeyStructTypeOpTuples, TxId) ->
 -spec update_txn([{key_struct() | {key(), type()}, type_op()}] | {key_struct() | {key(), type()}, type_op()}) -> ok | {error, reason()}.
 update_txn(KeyStructTypeOpTuples) when is_list(KeyStructTypeOpTuples) ->
     case update_txn(KeyStructTypeOpTuples, ignore) of
-        {ok, Results, _} -> {ok, Results};
+        {ok, _CommitVts} -> ok;
         Error -> Error
     end;
 update_txn(KeyStructTypeOpTuple) -> update_txn([KeyStructTypeOpTuple]).
@@ -153,7 +153,7 @@ update_txn(KeyStructTypeOpTuples, Clock) when is_list(KeyStructTypeOpTuples) ->
             Fun = fun() -> gingko_server:perform_request(Transaction) end,
             general_utils:benchmark("Transaction", Fun)
     end;
-%%    gingko_server:perform_request(Transaction);
+
 update_txn(KeyStructTypeOpTuple, Clock) -> update_txn([KeyStructTypeOpTuple], Clock).
 
 -spec begin_txn() -> {ok, txid()} | {error, reason()}.
@@ -176,14 +176,12 @@ begin_txn(DependencyVts, TxId) ->
     BeginTxn = {{begin_txn, DependencyVts}, TxId},
     Fun = fun() -> gingko_server:perform_request(BeginTxn) end,
     general_utils:benchmark("BeginTxn", Fun).
-%%    gingko_server:perform_request(BeginTxn).
 
 -spec prepare_txn(txid()) -> ok | {error, reason()}.
 prepare_txn(TxId) ->
     PrepareTxn = {{prepare_txn, none}, TxId},
     Fun = fun() -> gingko_server:perform_request(PrepareTxn) end,
     general_utils:benchmark("PrepareTxn", Fun).
-%%    gingko_server:perform_request(PrepareTxn).
 
 -spec commit_txn(txid()) -> {ok, vectorclock()} | {error, reason()}.
 commit_txn(TxId) ->
@@ -196,10 +194,6 @@ commit_txn(CommitVts, TxId) ->
     CommitTxn = {{commit_txn, CommitVts}, TxId},
     Fun = fun() -> gingko_server:perform_request(CommitTxn) end,
     general_utils:benchmark("CommitTxn", Fun).
-%%    case gingko_server:perform_request(CommitTxn) of
-%%        ok -> {ok, CommitVts};
-%%        Error -> Error
-%%    end.
 
 -spec prepare_and_commit_txn(txid()) -> {ok, vectorclock()} | {error, reason()}.
 prepare_and_commit_txn(TxId) ->
@@ -222,4 +216,5 @@ checkpoint() ->
 -spec checkpoint(vectorclock()) -> ok.
 checkpoint(DependencyVts) ->
     Checkpoint = {{checkpoint, DependencyVts}, #tx_id{local_start_time = gingko_utils:get_timestamp(), server_pid = self()}},
-    gingko_server:perform_request(Checkpoint).
+    Fun = fun() -> gingko_server:perform_request(Checkpoint) end,
+    general_utils:benchmark("Checkpoint", Fun).

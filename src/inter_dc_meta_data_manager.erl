@@ -68,7 +68,7 @@ get_dc_descriptors() ->
     DcInfoEntry = get_or_create_dc_info_entry(),
     DcInfoEntry#dc_info_entry.connected_descriptors.
 
--spec get_connected_dcids_and_mine() -> [descriptor()].
+-spec get_connected_dcids_and_mine() -> [dcid()].
 get_connected_dcids_and_mine() ->
     [gingko_utils:get_my_dcid() | get_connected_dcids()].
 

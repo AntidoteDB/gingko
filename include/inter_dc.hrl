@@ -62,8 +62,7 @@ pull | push | xpub | xsub.
 -record(dc_info_entry, {
     dcid :: dcid(),
     has_started :: boolean(),
-    connected_descriptors :: [descriptor()],
-    minimum_dependency_vts :: {vectorclock(), []} %%TODO this is a hack to share information between all nodes of a dc
+    connected_descriptors :: [descriptor()]
 }).
 -type dc_info_entry() :: #dc_info_entry{}.
 

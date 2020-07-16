@@ -145,24 +145,14 @@
 -record(journal_entry, {
     jsn :: jsn(),
     dcid :: dcid(),
-    rt_timestamp :: clock_time(),
     tx_id :: txid(),
     type :: journal_entry_type(),
     args :: journal_entry_args()
 }).
 -type journal_entry() :: #journal_entry{}.
 
--record(update_payload, {
-    key_struct :: key_struct(),
-    commit_vts :: vectorclock(),
-    snapshot_vts :: vectorclock(),
-    downstream_op :: downstream_op()
-}).
--type update_payload() :: #update_payload{}.
-
 -record(jsn_state, {
     next_jsn :: jsn(),
-    dcid :: dcid(),
-    rt_timestamp :: clock_time()
+    dcid :: dcid()
 }).
 -type jsn_state() :: #jsn_state{}.

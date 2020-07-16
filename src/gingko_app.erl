@@ -178,7 +178,7 @@ make_sure_global_stores_are_running(TableNames, SetupMnesiaNodes) ->
                     ValidType =
                         case TableName of
                             distributed_vts -> ram_copies;
-                            _ -> disk_copies
+                            _ -> disc_copies
                         end,
                     RamCopiesNodes = mnesia:table_info(TableName, ram_copies),
                     DiscCopiesNodes = mnesia:table_info(TableName, disc_copies),

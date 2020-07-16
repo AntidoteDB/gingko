@@ -21,7 +21,12 @@
 -include("inter_dc.hrl").
 -behaviour(gen_server).
 
--export([perform_request/1, get_current_minimum_dependency_vts/0, set_initial_minimum_dependency_vts/0]).
+%%The gingko_server handles the requests sent from the public API from gingko.
+%%All requests are executed synchronously
+%%The node_minimum_dependency_vts is the smallest dependency vts of any running transactions on the node. It is monotonically increasing (can stay the same for a while). It used to as a lower bound for newly started transactions. Also it is shared with all nodes in the dc so that the dc_minimum_dependency_vts can be determined.
+%%The dc_minimum_dependency_vts is the smallest dependency vts of any running transaction in the whole dc. It is monotonically increasing (can stay the same for a while). It used for checkpointing since a checkpoint can only be performed before the dc_minimum_dependency_vts (similar to GCSt). The way it works is that all nodes in a cluster store their node_minimum_dependency_vts (together with the node name as the key) in a dc replicated mnesia database and once all nodes in a dc are represented in the database, the lowest vts of all is the dc_minimum_dependency_vts and since it is monotonically increasing it is safe to checkpoint at this vts because no transaction can be started prior to it.
+
+-export([perform_request/1]).
 
 -export([start_link/0,
     init/1,
@@ -35,8 +40,8 @@
     running_txns = #{} :: #{txid() => vectorclock()},
     running_txid_to_partition_tx_op_num_list_map = #{} :: #{txid() => #{partition_id() => [tx_op_num()]}},
     prepared_txns = ordsets:new() :: ordsets:ordset(txid()),
-    local_minimum_dependency_vts = none :: none | vectorclock(),
-    global_minimum_dependency_vts = none :: none | vectorclock()
+    node_minimum_dependency_vts = none :: none | vectorclock(),
+    dc_minimum_dependency_vts = none :: none | vectorclock()
 }).
 -type state() :: #state{}.
 
@@ -49,15 +54,6 @@
 -spec perform_request({{atom(), term()}, txid()}) -> ok | {ok, snapshot()} | {error, reason()}.
 perform_request(Request = {{_Op, _Args}, _TxId}) ->
     gen_server:call(?MODULE, Request).
-
--spec get_current_minimum_dependency_vts() -> vectorclock().
-get_current_minimum_dependency_vts() ->
-    gen_server:call(?MODULE, get_minimum_dependency_vts).
-
--spec get_current_minimum_dependency_vts() -> ok.
-set_initial_minimum_dependency_vts() ->
-    get_current_minimum_dependency_vts(),
-    ok.
 
 %%%===================================================================
 %%% Spawning and gen_server implementation
@@ -74,18 +70,21 @@ handle_call(Request = hello, From, State) ->
     default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
     {reply, ok, State};
 
-handle_call(Request = get_local_minimum_dependency_vts, From, State = #state{local_minimum_dependency_vts = MinimumDependencyVts}) ->
+handle_call(Request = initialize, From, State = #state{node_minimum_dependency_vts = none}) ->
     default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
-    {Initial, NewState} =
-        case MinimumDependencyVts of
-            none -> {true, State#state{local_minimum_dependency_vts = gingko_utils:get_DCSf_vts()}};
-            _ -> {false, State}
-        end,
-    case Initial of
-        true -> update_global_minimum_dependency_vts(NewState);
-        false -> ok
-    end,
-    {reply, NewState#state.local_minimum_dependency_vts, NewState};
+    {reply, ok, initialize_node_minimum_dependency_vts(State)};
+
+handle_call(Request, From, State = #state{node_minimum_dependency_vts = none}) ->
+    default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
+    {reply, {error, "node_minimum_dependency_vts not initialized"}, State};
+
+handle_call(Request, From, State = #state{dc_minimum_dependency_vts = none}) ->
+    default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
+    case get_dc_minimum_dependency_vts() of
+        {ok, DcMinimumDependencyVts} ->
+            handle_call(Request, From, State#state{dc_minimum_dependency_vts = DcMinimumDependencyVts});
+        Error -> {reply, Error, State}
+    end;
 
 handle_call(Request = {{_Op, _Args}, _TxId}, From, State) ->
     default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
@@ -105,31 +104,27 @@ code_change(OldVsn, State, Extra) -> default_gen_server_behaviour:code_change(?M
 %%%===================================================================
 
 -spec process_command({{Op :: operation_type(), Args :: term()}, txid() | vectorclock()}, state()) -> {term(), state()}.
-
-process_command({{read, KeyStruct}, TxIdOrReadVts}, State) ->
+process_command({{read, KeyStruct}, TxId = #tx_id{}}, State) ->%%TODO key
     Result =
-        case is_record(TxIdOrReadVts, tx_id) of
-            true ->
-                case check_state(true, false, false, true, TxIdOrReadVts, State) of
-                    ok ->
-                        {Partition, _Node} = gingko_utils:get_key_partition(KeyStruct),
-                        case is_running_on_partition(TxIdOrReadVts, Partition, State) of
-                            {false, BeginVts} ->
-                                gingko_utils:call_gingko_sync_with_key(KeyStruct, ?GINGKO_CACHE, {get, KeyStruct, BeginVts});
-                            true ->
-                                gingko_utils:call_gingko_sync(Partition, ?GINGKO_LOG_HELPER, {{read, KeyStruct}, TxIdOrReadVts})
-                        end;
-                    Error -> Error
+        case check_state(true, false, false, true, TxId, State) of
+            ok ->
+                Partition = gingko_utils:get_key_partition(KeyStruct),
+                case is_running_on_partition(TxId, Partition, State) of
+                    {false, BeginVts} ->
+                        gingko_utils:call_gingko_sync(Partition, ?GINGKO_CACHE, {get, KeyStruct, BeginVts});
+                    true ->
+                        gingko_utils:call_gingko_sync(Partition, ?GINGKO_LOG_HELPER, {{read, KeyStruct}, TxId})
                 end;
-            false ->
-                gingko_utils:call_gingko_sync_with_key(KeyStruct, ?GINGKO_CACHE, {get, KeyStruct, TxIdOrReadVts})
+            Error -> Error
         end,
     {Result, State};
+process_command({{read, KeyStruct}, ReadVts}, State) ->%%TODO key
+    {gingko_utils:call_gingko_sync_with_key(KeyStruct, ?GINGKO_CACHE, {get, KeyStruct, ReadVts}), State};
 
 process_command({{update, Update = {KeyStruct, _TypeOp}}, TxId}, State = #state{running_txid_to_partition_tx_op_num_list_map = TxIdToOps}) ->
     case check_state(true, false, false, true, TxId, State) of
         ok ->
-            {Partition, _Node} = gingko_utils:get_key_partition(KeyStruct),
+            Partition = gingko_utils:get_key_partition(KeyStruct),
             BeginResult =
                 case is_running_on_partition(TxId, Partition, State) of
                     {false, BeginVts} ->
@@ -139,7 +134,7 @@ process_command({{update, Update = {KeyStruct, _TypeOp}}, TxId}, State = #state{
             case BeginResult of
                 ok ->
                     TxOpNumber = get_next_tx_op_number(TxId, TxIdToOps),
-                    UpdatedTxIdToOps = general_utils:append_inner_map(TxId, Partition, TxOpNumber, TxIdToOps),
+                    UpdatedTxIdToOps = general_utils:maps_inner_append(TxId, Partition, TxOpNumber, TxIdToOps),
                     Result = gingko_utils:call_gingko_sync(Partition, ?GINGKO_LOG_HELPER, {{update, {Update, TxOpNumber}}, TxId}),
                     {Result, State#state{running_txid_to_partition_tx_op_num_list_map = UpdatedTxIdToOps}};
                 Error -> {Error, State}
@@ -148,7 +143,7 @@ process_command({{update, Update = {KeyStruct, _TypeOp}}, TxId}, State = #state{
     end;
 %%TODO abort failed transactions directly
 process_command({{transaction, {BeginVts, [Update = {KeyStruct, _TypeOp}]}}, TxId}, State) ->
-    {Partition, _Node} = gingko_utils:get_key_partition(KeyStruct),
+    Partition = gingko_utils:get_key_partition(KeyStruct),
     Result =
         case gingko_utils:call_gingko_sync(Partition, ?GINGKO_LOG, {{begin_txn, BeginVts}, TxId}) of
             ok ->
@@ -180,8 +175,7 @@ process_command({{transaction, {BeginVts, Updates}}, TxId}, State) ->
                 UnsortedPartitionToIndexedUpdatesMap =
                     general_utils:group_by_map(
                         fun({_, {KeyStruct, _TypeOp}}) ->
-                            {Partition, _Node} = gingko_utils:get_key_partition(KeyStruct),
-                            Partition
+                            gingko_utils:get_key_partition(KeyStruct)
                         end, NewIndexedUpdates),
                 PartitionToIndexedUpdatesMap =
                     maps:map(
@@ -251,10 +245,10 @@ process_command({{transaction, {BeginVts, Updates}}, TxId}, State) ->
         end,
     {Result, State};
 
-process_command({{begin_txn, BeginVts}, TxId}, State = #state{global_minimum_dependency_vts = GlobalMinimumDependencyVts}) ->
+process_command({{begin_txn, BeginVts}, TxId}, State = #state{dc_minimum_dependency_vts = GlobalMinimumDependencyVts}) ->
     NewGlobalMinimumDependencyVts =
         case GlobalMinimumDependencyVts of
-            none -> get_global_minimum_dependency_vts();
+            none -> get_dc_minimum_dependency_vts();
             _ -> GlobalMinimumDependencyVts
         end,
     case check_state(false, true, false, true, TxId, State) of
@@ -262,7 +256,7 @@ process_command({{begin_txn, BeginVts}, TxId}, State = #state{global_minimum_dep
             NewThanMinimum = vectorclock:ge(BeginVts, NewGlobalMinimumDependencyVts),
             case NewThanMinimum of
                 true ->
-                    {ok, add_running(TxId, BeginVts, State#state{global_minimum_dependency_vts = GlobalMinimumDependencyVts})};
+                    {ok, add_running(TxId, BeginVts, State#state{dc_minimum_dependency_vts = GlobalMinimumDependencyVts})};
                 false -> {error, "A transaction cannot be started earlier than all running transactions"}
             end;
         Error -> {Error, State}
@@ -344,7 +338,7 @@ process_command(Request = {{abort_txn, none}, TxId}, State = #state{running_txid
 
 %%We check whether we need to abort local transactions to perform the checkpoint (transactions older than two checkpoint intervals will be aborted)
 %%TODO make this varible so that old transactions may get some more time to finish!
-process_command({{checkpoint, DependencyVts}, TxId}, State = #state{running_txns = RunningTxns, global_minimum_dependency_vts = GlobalMinimumDependencyVts}) ->
+process_command({{checkpoint, DependencyVts}, TxId}, State = #state{running_txns = RunningTxns, dc_minimum_dependency_vts = GlobalMinimumDependencyVts}) ->
     MyDcId = gingko_utils:get_my_dcid(),
     MinimumDependencyClockTime = vectorclock:get(MyDcId, GlobalMinimumDependencyVts),
     DependencyClockTime = vectorclock:get(MyDcId, DependencyVts),
@@ -355,22 +349,26 @@ process_command({{checkpoint, DependencyVts}, TxId}, State = #state{running_txns
             false -> State;
             true ->
                 maps:fold(
-                    fun(TxId, BeginVts, CurrentState) ->
+                    fun(RunningTxId, BeginVts, CurrentState) ->
                         LocalBeginClockTime = vectorclock:get(MyDcId, BeginVts),
                         AbortThisTransactions = (DependencyClockTime - LocalBeginClockTime) > CheckpointIntervalMillis * 2 * 1000,
                         {ok, NextState} = %%TODO potential error not handled
                         case AbortThisTransactions of
-                            true -> process_command({{abort_txn, none}, TxId}, CurrentState);
+                            true -> process_command({{abort_txn, none}, RunningTxId}, CurrentState);
                             false -> CurrentState
                         end,
                         NextState
                     end, State, RunningTxns)
         end,
-    update_global_minimum_dependency_vts(NewState),
-    NewGlobalMinimumDependencyVts = get_global_minimum_dependency_vts(),
-    CheckpointVts = vectorclock:min([DependencyVts, NewGlobalMinimumDependencyVts]),
-    CheckpointResult = gingko_utils:bcast_local_gingko_sync(?GINGKO_LOG, {{checkpoint, CheckpointVts}, TxId}),%%Checkpoints only get applied to local partitions because they are reoccurring processes on all nodes
-    {CheckpointResult, NewState#state{global_minimum_dependency_vts = NewGlobalMinimumDependencyVts}}.
+    update_dc_minimum_dependency_vts(NewState),
+    NewDcMinimumDependencyVtsResult = get_dc_minimum_dependency_vts(),
+    case NewDcMinimumDependencyVtsResult of
+        {ok, NewDcMinimumDependencyVts} ->
+            CheckpointVts = vectorclock:min([DependencyVts, NewDcMinimumDependencyVts]),
+            CheckpointResult = gingko_utils:bcast_local_gingko_sync(?GINGKO_LOG, {{checkpoint, CheckpointVts}, TxId}),%%Checkpoints only get applied to local partitions because they are reoccurring processes on all nodes
+            {CheckpointResult, NewState#state{dc_minimum_dependency_vts = NewDcMinimumDependencyVts}};
+        Error -> Error
+    end.
 
 -spec get_next_tx_op_number(txid(), #{txid() => #{partition_id() => [non_neg_integer()]}}) -> pos_integer().
 get_next_tx_op_number(TxId, TxIdToOps) ->
@@ -399,8 +397,15 @@ check_state(MustRun, MustNotRun, MustBePrepared, MustNotBePrepared, TxId, State)
             end
     end.
 
--spec get_global_minimum_dependency_vts() -> {ok, vectorclock()} | {error, reason()}.
-get_global_minimum_dependency_vts() ->
+-spec initialize_node_minimum_dependency_vts(state()) -> state().
+initialize_node_minimum_dependency_vts(State = #state{node_minimum_dependency_vts = none}) ->
+    InitialMinimumDependencyVts = gingko_utils:get_DCSf_vts(),
+    NewState = State#state{node_minimum_dependency_vts = InitialMinimumDependencyVts},
+    update_dc_minimum_dependency_vts(NewState),
+    NewState.
+
+-spec get_dc_minimum_dependency_vts() -> {ok, vectorclock()} | {error, reason()}.
+get_dc_minimum_dependency_vts() ->
     F = fun() ->
         mnesia:foldl(
             fun(DistributedVts, DistributedVtsAcc) ->
@@ -417,13 +422,13 @@ get_global_minimum_dependency_vts() ->
                 true ->
                     {ok, vectorclock:min(lists:map(fun(#distributed_vts{vts = Vts}) -> Vts end, DistributedVtsList))};
                 false ->
-                    {error, "Not synchronized yet"}
+                    {error, "dc_minimum_dependency_vts not synchronized"}
             end
     end.
 
--spec update_global_minimum_dependency_vts(state()) -> ok.
-update_global_minimum_dependency_vts(#state{local_minimum_dependency_vts = LocalMinimumDependencyVts}) ->
-    F = fun() -> mnesia:write(?TABLE_NAME, #distributed_vts{node = node(), vts = LocalMinimumDependencyVts}, write) end,
+-spec update_dc_minimum_dependency_vts(state()) -> ok.
+update_dc_minimum_dependency_vts(#state{node_minimum_dependency_vts = NodeMinimumDependencyVts}) ->
+    F = fun() -> mnesia:write(?TABLE_NAME, #distributed_vts{node = node(), vts = NodeMinimumDependencyVts}, write) end,
     mnesia_utils:run_transaction(F).
 
 -spec is_running(txid(), state()) -> boolean().
@@ -462,7 +467,7 @@ clean_state(TxId, State = #state{running_txns = RunningTxns, running_txid_to_par
     NewMinimumDependencyVts =
         case maps:values(UpdatedRunningTxns) of
             [] -> gingko_utils:get_DCSf_vts();
-            _ -> vectorclock:min(UpdatedRunningTxns)
+            _ -> vectorclock:min(maps:values(UpdatedRunningTxns))
         end,
-    State#state{running_txns = UpdatedRunningTxns, running_txid_to_partition_tx_op_num_list_map = UpdatedTxIdToOps, prepared_txns = UpdatedPreparedTxns, local_minimum_dependency_vts = NewMinimumDependencyVts}.
+    State#state{running_txns = UpdatedRunningTxns, running_txid_to_partition_tx_op_num_list_map = UpdatedTxIdToOps, prepared_txns = UpdatedPreparedTxns, node_minimum_dependency_vts = NewMinimumDependencyVts}.
 

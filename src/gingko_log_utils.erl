@@ -56,19 +56,16 @@ perform_tx_read(KeyStruct, TxId, TableName) ->
         _ ->
             SortedTxJournalEntryList = gingko_utils:sort_journal_entries_of_same_tx(TxJournalEntryList),
             case SortedTxJournalEntryList of
-                [] -> {ok, gingko_utils:create_new_snapshot(KeyStruct, vectorclock:new())};
-                [#journal_entry{args = #begin_txn_args{dependency_vts = BeginVts}} | _] ->
-                    #journal_entry{args = #begin_txn_args{dependency_vts = BeginVts}} = hd(SortedTxJournalEntryList), %%Crash if this is not true
+                [] -> {error, "Tx Read cannot be performed without a running Txn!"};
+                [#journal_entry{args = #begin_txn_args{dependency_vts = BeginVts}} | RestTxJournalEntryList] ->
                     {ok, SnapshotBeforeTx} = gingko_utils:call_gingko_sync_with_key(KeyStruct, ?GINGKO_CACHE, {get, KeyStruct, BeginVts}),
+                    AllUpdatesOfKey = gingko_utils:get_updates_of_key(RestTxJournalEntryList, KeyStruct),
                     DownstreamOpsToBeAdded =
-                        lists:filtermap(
-                            fun(JournalEntry = #journal_entry{args = Args}) ->
-                                case gingko_utils:is_update_of_keys(JournalEntry, [KeyStruct]) of
-                                    true -> {true, Args#update_args.downstream_op};
-                                    false -> false
-                                end
-                            end, SortedTxJournalEntryList),
-                    gingko_materializer:materialize_tx_snapshot(SnapshotBeforeTx, DownstreamOpsToBeAdded)
+                        lists:map(
+                            fun(#journal_entry{args = #update_args{downstream_op = DownstreamOp}}) ->
+                                DownstreamOp
+                            end, AllUpdatesOfKey),
+                    {ok, gingko_materializer:materialize_tx_snapshot(SnapshotBeforeTx, DownstreamOpsToBeAdded)}
             end
     end.
 
@@ -105,8 +102,6 @@ checkpoint(ValidJournalEntryListBeforeCheckpoint, DependencyVts, NewCheckpointDc
                 Snapshot
             end, UpdatedKeyStructs),
     gingko_log_utils:add_or_update_checkpoint_entries(SnapshotsToStore).
-%TODO cache cleanup
-%%TODO txn tracking cleanup
 
 -spec perform_journal_log_trimming(table_name()) -> ok.
 perform_journal_log_trimming(TableName) ->
@@ -116,13 +111,13 @@ perform_journal_log_trimming(TableName) ->
     case lists:reverse(SortedByVts) of
         [] -> ok;
         [_] -> ok;
-        [#checkpoint_args{dependency_vts = CheckpointVts1}, #checkpoint_args{dependency_vts = CheckpointVts2} | _] ->
+        [#journal_entry{args = #checkpoint_args{dependency_vts = CheckpointVts1}}, #journal_entry{args = #checkpoint_args{dependency_vts = CheckpointVts2}} | _] ->
             JournalEntriesByTxId = maps:values(general_utils:group_by_map(fun(#journal_entry{tx_id = TxId}) ->
                 TxId end, AllJournalEntries)),
             RelevantCheckpointVts = case ?JOURNAL_TRIMMING_MODE of
-                      keep_two_checkpoints -> CheckpointVts2;
-                      _ -> CheckpointVts1
-                  end,
+                                        keep_two_checkpoints -> CheckpointVts2;
+                                        _ -> CheckpointVts1
+                                    end,
             JsnListToRemove =
                 lists:append(lists:filtermap(
                     fun(JournalEntryList) ->
@@ -150,12 +145,12 @@ perform_journal_log_trimming(TableName) ->
 -spec remove_unresolved_or_aborted_transactions_and_return_remaining_journal_entry_list(table_name()) -> [journal_entry()].
 remove_unresolved_or_aborted_transactions_and_return_remaining_journal_entry_list(TableName) ->
     JournalEntryList = read_all_journal_entries(TableName),
-    JournalEntriesByTxId = maps:values(general_utils:group_by_map(fun(#journal_entry{tx_id = TxId}) ->
-        TxId end, JournalEntryList)),
+    TxJournalEntryListList = general_utils:group_by_only_values(fun(#journal_entry{tx_id = TxId}) ->
+        TxId end, JournalEntryList),
     {JsnListToRemove, RemainingJournalEntryList} =
         lists:foldl(
-            fun(JournalEntryList, {CurrentJsnListToRemove, CurrentRemainingJournalEntryList}) ->
-                SortedTxnJournalEntryList = gingko_utils:sort_journal_entries_of_same_tx(JournalEntryList),
+            fun(TxJournalEntryList, {CurrentJsnListToRemove, CurrentRemainingJournalEntryList}) ->
+                SortedTxnJournalEntryList = gingko_utils:sort_journal_entries_of_same_tx(TxJournalEntryList),
                 LastJournalEntryOfTxn = lists:last(SortedTxnJournalEntryList),
                 ToBeRemoved =
                     case LastJournalEntryOfTxn of
@@ -165,11 +160,12 @@ remove_unresolved_or_aborted_transactions_and_return_remaining_journal_entry_lis
                         _ -> true
                     end,
                 case ToBeRemoved of
-                    true -> {lists:map(fun(#journal_entry{jsn = Jsn}) -> Jsn end, SortedTxnJournalEntryList) ++ CurrentJsnListToRemove, CurrentRemainingJournalEntryList};
+                    true ->
+                        {lists:map(
+                            fun(#journal_entry{jsn = Jsn}) -> Jsn end, SortedTxnJournalEntryList) ++ CurrentJsnListToRemove, CurrentRemainingJournalEntryList};
                     false -> {CurrentJsnListToRemove, SortedTxnJournalEntryList ++ CurrentRemainingJournalEntryList}
-                end,
-                {ToBeRemoved, SortedTxnJournalEntryList}
-            end, {[], []}, JournalEntriesByTxId),
+                end
+            end, {[], []}, TxJournalEntryListList),
     gingko_log_utils:delete_jsn_list(JsnListToRemove, TableName),
     gingko_log_utils:persist_journal_entries(TableName),
     RemainingJournalEntryList.

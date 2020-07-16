@@ -195,7 +195,7 @@ request_remote(RequiredSum, Key) ->
 
 -spec do_request(dcid(), dcid(), key(), non_neg_integer()) -> ok | unknown_dc.
 do_request(DCID, RemoteDCID, Key, Amount) ->
-    {Partition, _} = gingko_utils:get_key_partition(Key),
+    Partition = gingko_utils:get_key_partition(Key),
     inter_dc_request_sender:perform_bcounter_permissions_request({RemoteDCID, Partition}, {transfer, {Key, Amount, DCID}}).
 
 %% Orders the reservation of each DC, from high to low.

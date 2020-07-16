@@ -35,9 +35,9 @@
 -export([get_my_dc_id/0,
     get_my_dc_nodes/0,
 
-    partition_to_indexnode/1,
+    partition_to_partition_node_tuple/1,
     get_all_partitions/0,
-    get_all_partitions_nodes/0,
+    get_all_partition_node_tuples/0,
     get_my_partitions/0,
     get_number_of_partitions/0,
 
@@ -52,7 +52,7 @@
     bcast_vnode_async/2,
     bcast_vnode_sync/2,
 
-    get_key_partition/1,
+    get_key_partition_node_tuple/1,
     get_preflist_from_key/1,
 
     check_registered/1,
@@ -72,8 +72,8 @@ get_my_dc_nodes() ->
     riak_core_ring:all_members(Ring).
 
 %% Returns the IndexNode tuple used by riak_core_vnode_master:command functions.
--spec partition_to_indexnode(partition_id()) -> {partition_id(), node()}.
-partition_to_indexnode(Partition) ->
+-spec partition_to_partition_node_tuple(partition_id()) -> {partition_id(), node()}.
+partition_to_partition_node_tuple(Partition) ->
     {Partition, get_node_of_partition(Partition)}.
 
 -spec get_node_of_partition(partition_id()) -> node().
@@ -89,21 +89,12 @@ get_node_of_partition(Partition) ->
 %% use the inter_dc_txn:partition_to_bin/1 function.
 -spec get_all_partitions() -> [partition_id()].
 get_all_partitions() ->
-    try
-        {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-        CHash = riak_core_ring:chash(Ring),
-        Nodes = chash:nodes(CHash),
-        [I || {I, _} <- Nodes]
-    catch
-        _Ex:Res ->
-            logger:debug("Error loading partition names: ~p, will retry", [Res]),
-            get_all_partitions()
-    end.
+    lists:map(fun({Partition, _}) -> Partition end, get_all_partition_node_tuples()).
 
-%% Returns a list of all partition indcies plus the node each
+%% Returns a list of all partition indices plus the node each
 %% belongs to
--spec get_all_partitions_nodes() -> [{partition_id(), node()}].
-get_all_partitions_nodes() ->
+-spec get_all_partition_node_tuples() -> [{partition_id(), node()}].
+get_all_partition_node_tuples() ->
     try
         {ok, Ring} = riak_core_ring_manager:get_my_ring(),
         CHash = riak_core_ring:chash(Ring),
@@ -111,7 +102,7 @@ get_all_partitions_nodes() ->
     catch
         _Ex:Res ->
             logger:debug("Error loading partition-node names ~p, will retry", [Res]),
-            get_all_partitions_nodes()
+            get_all_partition_node_tuples()
     end.
 
 %% Returns the partition indices hosted by the local (caller) node.
@@ -120,20 +111,26 @@ get_my_partitions() ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     riak_core_ring:my_indices(Ring).
 
+-spec get_my_partition_node_tuples() -> [{partition_id(), node()}].
+get_my_partition_node_tuples() ->
+    lists:map(fun(Partition) -> {Partition, node()} end, get_my_partitions()).
+
 %% Returns the number of partitions.
 -spec get_number_of_partitions() -> non_neg_integer().
-get_number_of_partitions() -> length(get_all_partitions()).
+get_number_of_partitions() ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    riak_core_ring:num_partitions(Ring).
 
 
 %% Sends the asynchronous command to a vnode of a specified type and responsible for a specified partition number.
 -spec call_vnode_async(partition_id(), atom(), any()) -> ok.
 call_vnode_async(Partition, VMaster, Request) ->
-    riak_core_vnode_master:command(partition_to_indexnode(Partition), Request, VMaster).
+    riak_core_vnode_master:command(partition_to_partition_node_tuple(Partition), Request, VMaster).
 
 %% Sends the synchronous command to a vnode of a specified type and responsible for a specified partition number.
 -spec call_vnode_sync(partition_id(), atom(), any()) -> any().
 call_vnode_sync(Partition, VMaster, Request) ->
-    riak_core_vnode_master:sync_spawn_command(partition_to_indexnode(Partition), Request, VMaster).
+    riak_core_vnode_master:sync_spawn_command(partition_to_partition_node_tuple(Partition), Request, VMaster).
 
 %% Sends the asynchronous command to a vnode of a specified type and responsible for a specified partition number,
 %% the partition must be on the same node that the command is run on
@@ -148,32 +145,36 @@ call_local_vnode_sync(Partition, VMaster, Request) ->
 %% Sends the asynchronous command to a vnode of a specified type and responsible for a specified partition number.
 -spec call_vnode_async_with_key(key(), atom(), any()) -> ok.
 call_vnode_async_with_key(Key, VMaster, Request) ->
-    IndexNode = get_key_partition(Key),
-    riak_core_vnode_master:command(IndexNode, Request, VMaster).
+    PartitionNodeTuple = get_key_partition_node_tuple(Key),
+    riak_core_vnode_master:command(PartitionNodeTuple, Request, VMaster).
 
 %% Sends the synchronous command to a vnode of a specified type and responsible for a specified partition number.
 -spec call_vnode_sync_with_key(key(), atom(), any()) -> any().
 call_vnode_sync_with_key(Key, VMaster, Request) ->
-    IndexNode = get_key_partition(Key),
-    riak_core_vnode_master:sync_spawn_command(IndexNode, Request, VMaster).
+    PartitionNodeTuple = get_key_partition_node_tuple(Key),
+    riak_core_vnode_master:sync_spawn_command(PartitionNodeTuple, Request, VMaster).
 
 -spec bcast_local_vnode_async(atom(), any()) -> ok.
 bcast_local_vnode_async(VMaster, Request) ->
-    general_utils:parallel_foreach(fun(P) -> call_vnode_async(P, VMaster, Request) end, get_my_partitions()).
+    PartitionNodeTupleList = get_my_partition_node_tuples(),
+    general_utils:parallel_foreach(fun(PartitionNodeTuple = {P, _}) -> {P, riak_core_vnode_master:sync_spawn_command(PartitionNodeTuple, Request, VMaster)} end, PartitionNodeTupleList).
 
--spec bcast_local_vnode_sync(atom(), any()) -> ok.
+-spec bcast_local_vnode_sync(atom(), any()) -> [{partition_id(), term()}].
 bcast_local_vnode_sync(VMaster, Request) ->
-    general_utils:parallel_map(fun(P) -> {P, call_vnode_sync(P, VMaster, Request)} end, get_my_partitions()).
+    PartitionNodeTupleList = get_my_partition_node_tuples(),
+    general_utils:parallel_map(fun(PartitionNodeTuple = {P, _}) -> {P, riak_core_vnode_master:sync_spawn_command(PartitionNodeTuple, Request, VMaster)} end, PartitionNodeTupleList).
 
 %% Sends the same (asynchronous) command to all vnodes of a given type.
 -spec bcast_vnode_async(atom(), any()) -> ok.
 bcast_vnode_async(VMaster, Request) ->
-    general_utils:parallel_foreach(fun(P) -> call_vnode_async(P, VMaster, Request) end, get_all_partitions()).
+    PartitionNodeTupleList = get_all_partition_node_tuples(),
+    general_utils:parallel_foreach(fun(PartitionNodeTuple = {P, _}) -> {P, riak_core_vnode_master:sync_spawn_command(PartitionNodeTuple, Request, VMaster)} end, PartitionNodeTupleList).
 
 %% Sends the same (synchronous) command to all vnodes of a given type.
 -spec bcast_vnode_sync(atom(), any()) -> [{partition_id(), term()}].
 bcast_vnode_sync(VMaster, Request) ->
-    general_utils:parallel_map(fun(P) -> {P, call_vnode_sync(P, VMaster, Request)} end, get_all_partitions()).
+    PartitionNodeTupleList = get_all_partition_node_tuples(),
+    general_utils:parallel_map(fun(PartitionNodeTuple = {P, _}) -> {P, riak_core_vnode_master:sync_spawn_command(PartitionNodeTuple, Request, VMaster)} end, PartitionNodeTupleList).
 
 %% Loops until a process with the given name is registered locally
 -spec check_registered(atom()) -> ok.
@@ -189,10 +190,9 @@ check_registered(Name) ->
 
 %% @doc get_key_partition returns the most probable node where a given
 %%      key's logfile will be located.
--spec get_key_partition(key()) -> index_node().
-get_key_partition(Key) ->
-    IndexNode = hd(get_preflist_from_key(Key)),
-    IndexNode.
+-spec get_key_partition_node_tuple(key()) -> {partition_id(), node()}.
+get_key_partition_node_tuple(Key) ->
+    hd(get_preflist_from_key(Key)).
 
 %% @doc get_preflist_from_key returns a preference list where a given
 %%      key's logfile will be located.

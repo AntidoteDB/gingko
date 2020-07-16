@@ -29,6 +29,9 @@
     run_function_with_unexpected_error/6,
     print_and_return_unexpected_error/5,
     get_timestamp_in_microseconds/0,
+    return_ok_values_or_error_with_all_reasons/2,
+    list_first_match/2,
+    list_filter_return_both/2,
     list_all_equal/2,
     list_without_elements_from_other_list/2,
     set_equals_on_lists/2,
@@ -37,8 +40,11 @@
     get_values_times/2,
     max_by/2,
     group_by_map/2,
+    group_by_only_values/2,
+    maps_prepend/3,
     maps_append/3,
-    append_inner_map/4,
+    maps_inner_prepend/4,
+    maps_inner_append/4,
     get_or_default_map_list/3,
     get_or_default_map_list_check/3,
     concat_and_make_atom/1,
@@ -69,6 +75,48 @@ print_and_return_unexpected_error(Module, FunctionName, Args, Error, ExtraArgs) 
 get_timestamp_in_microseconds() ->
     {Mega, Sec, Micro} = erlang:timestamp(),
     (Mega * 1000000 + Sec) * 1000000 + Micro.
+
+-spec return_ok_values_or_error_with_all_reasons(boolean(), [{ok, OkValueType :: term()} | {error, reason()}]) -> {ok, [OkValueType :: term()]} | {error, [reason()]}.
+return_ok_values_or_error_with_all_reasons(OkValuesAreListThatNeedToBeCombined, List) ->
+    lists:foldl(
+        fun(ListElement, CurrentResultList) ->
+            case ListElement of
+                {ok, Result} ->
+                    case CurrentResultList of
+                        {error, ReasonList} ->
+                            {error, ReasonList};
+                        _ -> case OkValuesAreListThatNeedToBeCombined of
+                                 true -> Result ++ CurrentResultList;
+                                 false -> [Result | CurrentResultList]
+                             end
+                    end;
+                {error, Reason} ->
+                    case CurrentResultList of
+                        {error, ReasonList} ->
+                            {error, [Reason | ReasonList]};
+                        _ ->
+                            {error, [Reason]}
+                    end
+            end
+        end, [], List).
+
+-spec list_first_match(fun((ListElem :: term()) -> boolean()), [ListElem :: term()]) -> ListElem :: term() | error.
+list_first_match(_, []) -> error;
+list_first_match(Fun, [First | List]) ->
+    case Fun(First) of
+        true -> First;
+        false -> list_first_match(Fun, List)
+    end.
+
+-spec list_filter_return_both(fun((ListType :: term()) -> boolean()), [ListType :: term()]) -> {[ListType :: term()], [ListType :: term()]}.
+list_filter_return_both(Fun, List) ->
+    lists:foldr(
+        fun(ListElem, {MatchFilterList, NotMatchFilterList}) ->
+            case Fun(ListElem) of
+                true -> {[ListElem | MatchFilterList], NotMatchFilterList};
+                false -> {MatchFilterList, [ListElem | NotMatchFilterList]}
+            end
+        end, {[], []}, List).
 
 -spec list_all_equal(term(), list()) -> boolean().
 list_all_equal(Result, List) ->
@@ -113,12 +161,26 @@ group_by_map(Fun, List) ->
             maps_append(Key, Value, Map)
         end, #{}, NewList).
 
+-spec group_by_only_values(fun((ListType :: term()) -> GroupKeyType :: term()), [ListType :: term()]) -> [[ListType :: term()]].
+group_by_only_values(Fun, List) ->
+    maps:values(group_by_map(Fun, List)).
+
+-spec maps_prepend(Key :: term(), Value :: term(), #{Key :: term() => [Value :: term()]}) -> #{Key :: term() => [Value :: term()]}.
+maps_prepend(Key, Value, Map) ->
+    Map#{Key => [Value ++ maps:get(Key, Map, [])]}. %%TODO think of more performant solution to keep order
+
 -spec maps_append(Key :: term(), Value :: term(), #{Key :: term() => [Value :: term()]}) -> #{Key :: term() => [Value :: term()]}.
 maps_append(Key, Value, Map) ->
-    Map#{Key => [Value | maps:get(Key, Map, [])]}.
+    Map#{Key => [maps:get(Key, Map, []) ++ Value]}. %%TODO think of more performant solution to keep order
 
--spec append_inner_map(TypeA :: term(), TypeB :: term(), TypeC :: term(), #{TypeA :: term() => #{TypeB :: term() => [TypeC :: term()]}}) -> #{TypeA :: term() => #{TypeB :: term() => [TypeC :: term()]}}.
-append_inner_map(OuterKey, InnerKey, InnerValue, Map) ->
+-spec maps_inner_prepend(TypeA :: term(), TypeB :: term(), TypeC :: term(), #{TypeA :: term() => #{TypeB :: term() => [TypeC :: term()]}}) -> #{TypeA :: term() => #{TypeB :: term() => [TypeC :: term()]}}.
+maps_inner_prepend(OuterKey, InnerKey, InnerValue, Map) ->
+    InnerMap = maps:get(OuterKey, Map, #{}),
+    UpdatedInnerMap = maps_prepend(InnerKey, InnerValue, InnerMap),
+    Map#{OuterKey => UpdatedInnerMap}.
+
+-spec maps_inner_append(TypeA :: term(), TypeB :: term(), TypeC :: term(), #{TypeA :: term() => #{TypeB :: term() => [TypeC :: term()]}}) -> #{TypeA :: term() => #{TypeB :: term() => [TypeC :: term()]}}.
+maps_inner_append(OuterKey, InnerKey, InnerValue, Map) ->
     InnerMap = maps:get(OuterKey, Map, #{}),
     UpdatedInnerMap = maps_append(InnerKey, InnerValue, InnerMap),
     Map#{OuterKey => UpdatedInnerMap}.
@@ -156,6 +218,8 @@ atom_replace(Atom, AtomToReplace, ReplacementString) ->
 %% Taken from antidote test_utils and updated readability
 %% TODO test
 -spec parallel_map(fun((TypeA | {MapKeyType, MapValueType}) -> TypeB), [TypeA] | #{MapKeyType => MapValueType}) -> [TypeB].
+parallel_map(_, []) -> [];
+parallel_map(Function, [Element]) -> Function(Element);
 parallel_map(Function, List) when is_list(List) ->
     Parent = self(),
     lists:foldl(

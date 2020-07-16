@@ -29,12 +29,10 @@
     create_checkpoint_operation/2]).
 
 -spec create_local_journal_entry(jsn_state(), txid(), journal_entry_type(), journal_entry_args()) -> journal_entry().
-create_local_journal_entry(#jsn_state{next_jsn = Jsn, rt_timestamp = RtTimestamp}, TxId, Type, Args) ->
-    DcId = gingko_utils:get_my_dcid(),
+create_local_journal_entry(#jsn_state{next_jsn = Jsn, dcid = DcId}, TxId, Type, Args) ->
     #journal_entry{
         jsn = Jsn,
         dcid = DcId,
-        rt_timestamp = RtTimestamp,
         tx_id = TxId,
         type = Type,
         args = Args
