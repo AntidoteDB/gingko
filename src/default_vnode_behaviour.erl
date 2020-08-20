@@ -41,17 +41,17 @@
 
 -spec init(atom(), [non_neg_integer()]) -> {ok, none}.
 init(Module, [Partition]) ->
-    logger:debug("~p:init(~nPartition: ~p~n)", [Module, Partition]),
+    %%logger:debug("~p:init(~nPartition: ~p~n)", [Module, Partition]),
     {ok, none}.
 
 -spec handle_command(atom(), term(), term(), term()) -> {reply, default_response, term()}.
 handle_command(Module, Request, Sender, State) ->
-    logger:debug("~p:handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Module, Request, Sender, State]),
+    %%logger:debug("~p:handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Module, Request, Sender, State]),
     {reply, default_response, State}.
 
 -spec handle_command_crash(atom(), term(), term(), term()) -> no_return().
 handle_command_crash(Module, Request, Sender, State) ->
-    handle_command(Module, Request, Sender, State),
+    logger:debug("~p:handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Module, Request, Sender, State]),
     error("handle_command_crash").
 
 -spec handoff_starting(atom(), term(), term()) -> {true, term()}.
@@ -119,12 +119,12 @@ handle_coverage(Module, Request, KeySpaces, Sender, State) ->
     logger:debug("~p:handle_coverage(~nRequest: ~p~nKeySpaces: ~p~nSender: ~p~nState: ~p~n)", [Module, Request, KeySpaces, Sender, State]),
     {stop, not_implemented, State}.
 
--spec handle_overload_command(atom(), term(), term(), partition_id()) -> ok.
+-spec handle_overload_command(atom(), term(), term(), partition()) -> ok.
 handle_overload_command(Module, Request, Sender, Partition) ->
     logger:debug("~p:handle_overload_command(~nRequest: ~p~nSender: ~p~nPartition: ~p~n)", [Module, Request, Sender, Partition]),
     ok.
 
--spec handle_overload_info(atom(), term(), partition_id()) -> ok.
+-spec handle_overload_info(atom(), term(), partition()) -> ok.
 handle_overload_info(Module, Request, Partition) ->
     logger:debug("~p:handle_overload_info(~nRequest: ~p~nPartition: ~p~n)", [Module, Request, Partition]),
     ok.

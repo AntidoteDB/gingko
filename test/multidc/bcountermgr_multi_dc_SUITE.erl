@@ -145,7 +145,7 @@ test_dec_multi_success1(Config) ->
 
 
 conditional_write_test_run(Config) ->
-    case ?USE_SINGLE_SERVER of
+    case gingko_env_utils:get_use_single_server() of
         true -> pass;
         false ->
 

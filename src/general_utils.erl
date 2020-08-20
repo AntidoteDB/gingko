@@ -26,6 +26,7 @@
 
 %% API
 -export([benchmark/2,
+    check_multicall_results/1,
     run_function_with_unexpected_error/6,
     print_and_return_unexpected_error/5,
     get_timestamp_in_microseconds/0,
@@ -45,8 +46,6 @@
     maps_append/3,
     maps_inner_prepend/4,
     maps_inner_append/4,
-    get_or_default_map_list/3,
-    get_or_default_map_list_check/3,
     concat_and_make_atom/1,
     atom_replace/3,
     parallel_map/2,
@@ -56,8 +55,24 @@ benchmark(Name, Fun) ->
     Start = erlang:monotonic_time(millisecond),
     Result = Fun(),
     End = erlang:monotonic_time(millisecond),
-    logger:debug("~p Run Time (ms) ~p | ~p Result: ~p", [Name, End - Start, Result]),
+    logger:debug("~p Run Time (ms): ~p~nResult:~n~p", [Name, End - Start, Result]),
     Result.
+
+check_multicall_results({[], []}) -> ok;
+check_multicall_results({_, BadNodes = [_ | _]}) -> {error, {"One or more Nodes are not running!", BadNodes}};
+check_multicall_results({Results, []}) ->
+    AnyBadResult =
+        lists:any(
+            fun(Result) ->
+                case Result of
+                    {badrpc, _} -> true;
+                    _ -> false
+                end
+            end, Results),
+    case AnyBadResult of
+        true -> {error, {"One or more Nodes did not respond!", Results}};
+        false -> ok
+    end.
 
 -spec run_function_with_unexpected_error(term(), term(), atom(), atom(), list(), list()) -> term() | no_return().
 run_function_with_unexpected_error(Result, ExpectedResult, Module, FunctionName, Args, ExtraArgs) ->
@@ -137,7 +152,7 @@ remove_duplicates_and_lose_order(List) ->
 -spec get_values([{Key :: term(), Value :: term()}] | #{Key :: term() => Value :: term()}) -> ValueList :: [Value :: term()].
 get_values(TupleList) when is_list(TupleList) ->
     lists:map(fun({_Key, Value}) -> Value end, TupleList);
-get_values(Map) ->
+get_values(Map) when is_map(Map) ->
     maps:values(Map).
 
 -spec get_values_times([{Key :: term(), Value :: term()}] | #{Key :: term() => Value :: term()}, non_neg_integer()) -> list().
@@ -167,11 +182,11 @@ group_by_only_values(Fun, List) ->
 
 -spec maps_prepend(Key :: term(), Value :: term(), #{Key :: term() => [Value :: term()]}) -> #{Key :: term() => [Value :: term()]}.
 maps_prepend(Key, Value, Map) ->
-    Map#{Key => [Value ++ maps:get(Key, Map, [])]}. %%TODO think of more performant solution to keep order
+    Map#{Key => [Value | maps:get(Key, Map, [])]}. %%TODO think of more performant solution to keep order
 
 -spec maps_append(Key :: term(), Value :: term(), #{Key :: term() => [Value :: term()]}) -> #{Key :: term() => [Value :: term()]}.
 maps_append(Key, Value, Map) ->
-    Map#{Key => [maps:get(Key, Map, []) ++ Value]}. %%TODO think of more performant solution to keep order
+    Map#{Key => maps:get(Key, Map, []) ++ [Value]}. %%TODO think of more performant solution to keep order
 
 -spec maps_inner_prepend(TypeA :: term(), TypeB :: term(), TypeC :: term(), #{TypeA :: term() => #{TypeB :: term() => [TypeC :: term()]}}) -> #{TypeA :: term() => #{TypeB :: term() => [TypeC :: term()]}}.
 maps_inner_prepend(OuterKey, InnerKey, InnerValue, Map) ->
@@ -184,18 +199,6 @@ maps_inner_append(OuterKey, InnerKey, InnerValue, Map) ->
     InnerMap = maps:get(OuterKey, Map, #{}),
     UpdatedInnerMap = maps_append(InnerKey, InnerValue, InnerMap),
     Map#{OuterKey => UpdatedInnerMap}.
-
--spec get_or_default_map_list(Key :: term(), MapList :: map_list(), Default :: term()) -> ValueOrDefault :: term().
-get_or_default_map_list(Key, MapList, Default) ->
-    case lists:keyfind(Key, 1, MapList) of
-        {Key, Value} -> Value;
-        false -> Default
-    end.
-
--spec get_or_default_map_list_check(Key :: term(), MapList :: map_list(), Default :: term()) -> {ValueDifferentToDefault :: boolean(), ValueOrDefault :: term()}.
-get_or_default_map_list_check(Key, MapList, Default) ->
-    Value = get_or_default_map_list(Key, MapList, Default),
-    {Default /= Value, Value}.
 
 -spec concat_and_make_atom([string() | atom()]) -> atom().
 concat_and_make_atom(StringOrAtomList) ->
@@ -219,7 +222,7 @@ atom_replace(Atom, AtomToReplace, ReplacementString) ->
 %% TODO test
 -spec parallel_map(fun((TypeA | {MapKeyType, MapValueType}) -> TypeB), [TypeA] | #{MapKeyType => MapValueType}) -> [TypeB].
 parallel_map(_, []) -> [];
-parallel_map(Function, [Element]) -> Function(Element);
+parallel_map(Function, [Element]) -> [Function(Element)];
 parallel_map(Function, List) when is_list(List) ->
     Parent = self(),
     lists:foldl(

@@ -23,22 +23,7 @@
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
 -include("gingko.hrl").
 
--export([get_timestamp/0,
-    get_my_dcid/0,
-    get_connected_dcids/0,
-    get_my_dc_nodes/0,
-    get_DCSf_vts/0,
-    get_GCSt_vts/0,
-    get_my_partitions/0,
-    get_number_of_partitions/0,
-    gingko_send_after/2,
-    update_timer/5,
-
-    check_registered/1,
-    ensure_local_gingko_instance_running/1,
-    ensure_gingko_instance_running/1,
-
-    get_smallest_vts/1,
+-export([get_smallest_vts/1,
     get_largest_vts/1,
     get_smallest_by_vts/2,
     get_largest_by_vts/2,
@@ -70,192 +55,17 @@
     remove_existing_journal_entries_handoff/2,
 
     get_default_txn_tracking_num/0,
-    generate_downstream_op/4,
+    generate_downstream_op/4]).
 
-    call_gingko_async/3,
-    call_gingko_sync/3,
-    call_gingko_async_with_key/3,
-    call_gingko_sync_with_key/3,
-    bcast_local_gingko_async/2,
-    bcast_local_gingko_sync/2,
-    bcast_gingko_async/2,
-    bcast_gingko_sync/2,
-
-    get_key_partition/1]).
-
-%% Gets the current erlang timestamp and returns it as an integer that represents microseconds
--spec get_timestamp() -> non_neg_integer().
-get_timestamp() ->
-    case ?USE_GINGKO_TIMESTAMP of
-        true ->
-            case ?EXPERIMENTAL_TIMESTAMP_USE_MONOTONIC_TIME of
-                true -> gingko_time_manager:get_positive_monotonic_time();
-                false -> gingko_time_manager:get_monotonic_system_time()
-            end;
-        false ->
-            general_utils:get_timestamp_in_microseconds() %TODO decide which timestamp to use
-    end.
-
-%% Gets the DCID
-%% USE_SINGLE_SERVER: returns the current node because a DC can only have a single node
--spec get_my_dcid() -> dcid().
-get_my_dcid() ->
-    case ?USE_SINGLE_SERVER of
-        true -> node();
-        false -> antidote_utils:get_my_dc_id()
-    end.
-
-%% Gets the connected DCIDs
--spec get_connected_dcids() -> [dcid()].
-get_connected_dcids() ->
-    inter_dc_meta_data_manager:get_connected_dcids().
-
-%% Gets all nodes of the DC
-%% USE_SINGLE_SERVER: returns the current node because a DC can only have a single node
--spec get_my_dc_nodes() -> [node()].
-get_my_dc_nodes() ->
-    case ?USE_SINGLE_SERVER of
-        true -> [node()];
-        false -> antidote_utils:get_my_dc_nodes()
-    end.
-
--spec get_DCSf_vts() -> vectorclock().
-get_DCSf_vts() ->
-    Vectorclocks = general_utils:get_values_times(bcast_gingko_sync(?GINGKO_LOG, get_current_dependency_vts), 2),
-    vectorclock:min(Vectorclocks).
-
--spec get_GCSt_vts() -> vectorclock().
-get_GCSt_vts() ->
-    inter_dc_state_service:get_GCSt().
-
-%% Gets all partitions of the caller node
-%% USE_SINGLE_SERVER: returns the default SINGLE_SERVER_PARTITION in a list
--spec get_my_partitions() -> [partition_id()].
-get_my_partitions() ->
-    case ?USE_SINGLE_SERVER of
-        true -> [?SINGLE_SERVER_PARTITION];
-        false -> antidote_utils:get_my_partitions()
-    end.
-
-%% Gets all partitions of the DC
-%% USE_SINGLE_SERVER: returns the default SINGLE_SERVER_PARTITION in a list
--spec get_all_partitions() -> [partition_id()].
-get_all_partitions() ->
-    case ?USE_SINGLE_SERVER of
-        true -> [?SINGLE_SERVER_PARTITION];
-        false -> antidote_utils:get_all_partitions()
-    end.
-
-%% Gets the number of all partitions of the DC
-%% USE_SINGLE_SERVER: returns 1
--spec get_number_of_partitions() -> non_neg_integer().
-get_number_of_partitions() ->
-    case ?USE_SINGLE_SERVER of
-        true -> 1;
-        false -> antidote_utils:get_number_of_partitions()
-    end.
-
--spec gingko_send_after(millisecond(), term()) -> reference().
-gingko_send_after(TimeMillis, Request) ->
-    case ?USE_SINGLE_SERVER of
-        true -> erlang:send_after(TimeMillis, self(), Request);
-        false -> riak_core_vnode:send_command_after(TimeMillis, Request)
-    end.
-
--spec update_timer(none | reference(), boolean(), millisecond(), term(), boolean()) -> reference().
-update_timer(CurrentTimerOrNone, UpdateExistingTimer, TimeMillis, Request, IsPotentialVNode) ->
-    UpdateTimerFun =
-        fun() ->
-            case IsPotentialVNode of
-                true -> gingko_send_after(TimeMillis, Request);
-                false -> erlang:send_after(TimeMillis, self(), Request)
-            end
-        end,
-    case CurrentTimerOrNone of
-        none ->
-            UpdateTimerFun();
-        TimerReference ->
-            case UpdateExistingTimer of
-                true ->
-                    erlang:cancel_timer(TimerReference),
-                    UpdateTimerFun();
-                false -> TimerReference
-            end
-    end.
-
-
-%% Waits until a process/vnode name is registered in erlang
--spec check_registered({atom(), atom()} | atom()) -> ok.
-check_registered({ServerName, VMaster}) ->
-    case ?USE_SINGLE_SERVER of
-        true ->
-            antidote_utils:check_registered(ServerName);
-        false ->
-            antidote_utils:check_registered(VMaster)
-    end;
-check_registered(ServerName) ->
-    antidote_utils:check_registered(ServerName).
-
--spec ensure_local_gingko_instance_running({atom(), atom()} | atom()) -> ok.
-ensure_local_gingko_instance_running({ServerName, VMaster}) ->
-    check_registered({ServerName, VMaster}),
-    bcast_gingko_instance_check_up({ServerName, VMaster}, get_my_partitions());
-ensure_local_gingko_instance_running(ServerName) ->
-    check_registered(ServerName),
-    bcast_gingko_instance_check_up(ServerName, [0]).
-
--spec ensure_gingko_instance_running({atom(), atom()} | atom()) -> ok.
-ensure_gingko_instance_running({ServerName, VMaster}) ->
-    check_registered({ServerName, VMaster}),
-    bcast_gingko_instance_check_up({ServerName, VMaster}, get_all_partitions());
-ensure_gingko_instance_running(ServerName) ->
-    ensure_local_gingko_instance_running(ServerName).
-
-%% Internal function that loops until a given vnode type is running
--spec bcast_gingko_instance_check_up({atom(), atom()} | atom(), [partition_id()]) -> ok.
-bcast_gingko_instance_check_up(_, []) ->
-    ok;
-bcast_gingko_instance_check_up(InstanceTuple = {_ServerName, _VMaster}, [Partition | Rest]) ->
-    Error = try
-                case call_gingko_sync(Partition, InstanceTuple, hello) of
-                    ok -> false;
-                    _Msg -> true
-                end
-            catch
-                _Ex:_Res -> true
-            end,
-    case Error of
-        true ->
-            logger:debug("Vnode not up retrying, ~p, ~p", [InstanceTuple, Partition]),
-            timer:sleep(?DEFAULT_WAIT_TIME_SHORT),
-            bcast_gingko_instance_check_up(InstanceTuple, [Partition | Rest]);
-        false ->
-            bcast_gingko_instance_check_up(InstanceTuple, Rest)
-    end;
-bcast_gingko_instance_check_up(ServerName, [0]) ->
-    Error = try
-                case gen_server:call(ServerName, hello) of
-                    ok -> false;
-                    _Msg -> true
-                end
-            catch
-                _Ex:_Res -> true
-            end,
-    case Error of
-        true ->
-            logger:debug("Server not up retrying, ~p", [ServerName]),
-            timer:sleep(?DEFAULT_WAIT_TIME_SHORT),
-            bcast_gingko_instance_check_up(ServerName, [0]);
-        false ->
-            ok
-    end.
-
+-spec get_smallest_vts([vectorclock()]) -> vectorclock() | error.
 get_smallest_vts(VtsList) ->
     get_smallest_by_vts(fun(Vts) -> Vts end, VtsList).
 
+-spec get_largest_vts([vectorclock()]) -> vectorclock() | error.
 get_largest_vts(VtsList) ->
     get_largest_by_vts(fun(Vts) -> Vts end, VtsList).
 
+-spec get_smallest_by_vts(fun((Type :: term()) -> vectorclock()), [Type :: term()]) -> Type :: term() | error.
 get_smallest_by_vts(FunThatGetsVtsFromElement, ElementThatContainsVtsList) ->
     general_utils:list_first_match(
         fun(Vts) ->
@@ -265,6 +75,7 @@ get_smallest_by_vts(FunThatGetsVtsFromElement, ElementThatContainsVtsList) ->
                 end, ElementThatContainsVtsList)
         end, ElementThatContainsVtsList).
 
+-spec get_largest_by_vts(fun((Type :: term()) -> vectorclock()), [Type :: term()]) -> Type :: term() | error.
 get_largest_by_vts(FunThatGetsVtsFromElement, ElementThatContainsVtsList) ->
     general_utils:list_first_match(
         fun(Vts) ->
@@ -274,11 +85,13 @@ get_largest_by_vts(FunThatGetsVtsFromElement, ElementThatContainsVtsList) ->
                 end, ElementThatContainsVtsList)
         end, ElementThatContainsVtsList).
 
+-spec sort_vts_list([vectorclock()]) -> [vectorclock()].
 sort_vts_list([]) -> [];
 sort_vts_list([Vts]) -> [Vts];
 sort_vts_list(VtsList) ->
     sort_by_vts(fun(Vts) -> Vts end, VtsList).
 
+-spec sort_by_vts(fun((Type :: term()) -> vectorclock()), [Type :: term()]) -> [Type :: term()].
 sort_by_vts(_, []) -> [];
 sort_by_vts(_, [ElementThatContainsVts]) -> [ElementThatContainsVts];
 sort_by_vts(FunThatGetsVtsFromElement, ElementThatContainsVtsList) ->
@@ -307,13 +120,13 @@ create_new_snapshot(KeyStruct = #key_struct{type = Type}, DependencyVts) ->
 
 -spec create_cache_entry(snapshot()) -> cache_entry().
 create_cache_entry(Snapshot) ->
-    #cache_entry{snapshot = Snapshot, usage = #cache_usage{first_used = get_timestamp(), last_used = get_timestamp()}}.
+    #cache_entry{snapshot = Snapshot, usage = #cache_usage{first_used = gingko_dc_utils:get_timestamp(), last_used = gingko_dc_utils:get_timestamp()}}.
 
 -spec update_cache_usage(cache_entry(), boolean()) -> cache_entry().
 update_cache_usage(CacheEntry = #cache_entry{usage = CacheUsage}, Used) ->
     NewCacheUsage = case Used of
                         true ->
-                            CacheUsage#cache_usage{used = true, last_used = get_timestamp(), times_used = CacheUsage#cache_usage.times_used + 1};
+                            CacheUsage#cache_usage{used = true, last_used = gingko_dc_utils:get_timestamp(), times_used = CacheUsage#cache_usage.times_used + 1};
                         false -> CacheUsage#cache_usage{used = false}
                     end,
     CacheEntry#cache_entry{usage = NewCacheUsage}.
@@ -410,7 +223,7 @@ sort_journal_entries_of_same_tx(JournalEntryList) ->
 tx_sort_fun(JournalEntry1, JournalEntry2) ->
     op_type_sort(get_op_type(JournalEntry1), get_op_type(JournalEntry2)).
 
--spec op_type_sort(atom() | non_neg_integer(), atom() | non_neg_integer()) -> boolean().
+-spec op_type_sort(journal_entry_type() | non_neg_integer(), journal_entry_type() | non_neg_integer()) -> boolean().
 op_type_sort(begin_txn, _) -> true;
 op_type_sort(_, begin_txn) -> false;
 op_type_sort(TxOpNum, OpType) when is_integer(TxOpNum), is_atom(OpType) -> true;
@@ -427,7 +240,7 @@ op_type_sort(_, checkpoint) -> false;
 op_type_sort(checkpoint_commit, _) -> true;
 op_type_sort(_, checkpoint_commit) -> false.
 
--spec get_op_type(journal_entry()) -> atom() | non_neg_integer().
+-spec get_op_type(journal_entry()) -> journal_entry_type() | non_neg_integer().
 get_op_type(#journal_entry{args = #update_args{tx_op_num = TxOpNum}}) -> TxOpNum;
 get_op_type(#journal_entry{type = OpType}) -> OpType.
 
@@ -462,7 +275,7 @@ remove_existing_journal_entry_handoff(NewJournalEntryList, ExistingJournalEntryL
 -spec get_default_txn_tracking_num() -> txn_tracking_num().
 get_default_txn_tracking_num() -> {0, none, 0}.
 
--spec generate_downstream_op(key_struct(), type_op(), txid(), atom()) ->
+-spec generate_downstream_op(key_struct(), type_op(), txid(), table_name()) ->
     {ok, downstream_op()} | {error, reason()}.
 generate_downstream_op(KeyStruct = #key_struct{key = Key, type = Type}, TypeOp, TxId, TableName) ->
     %% TODO: Check if read can be omitted for some types as registers
@@ -485,72 +298,3 @@ generate_downstream_op(KeyStruct = #key_struct{key = Key, type = Type}, TypeOp, 
         false ->
             Type:downstream(TypeOp, ignore) %Use a dummy value
     end.
-
--spec call_gingko_async(partition_id(), {atom(), atom()}, any()) -> ok.
-call_gingko_async(Partition, {ServerName, VMaster}, Request) ->
-    case ?USE_SINGLE_SERVER of
-        true -> gen_server:cast(ServerName, Request);
-        false -> antidote_utils:call_vnode_async(Partition, VMaster, Request)
-    end.
-
--spec call_gingko_sync(partition_id(), {atom(), atom()}, any()) -> any().
-call_gingko_sync(Partition, {ServerName, VMaster}, Request) ->
-    case ?USE_SINGLE_SERVER of
-        true -> gen_server:call(ServerName, Request);
-        false -> antidote_utils:call_vnode_sync(Partition, VMaster, Request)
-    end.
-
--spec call_gingko_async_with_key(key(), {atom(), atom()}, any()) -> ok.
-call_gingko_async_with_key(Key, {ServerName, VMaster}, Request) ->
-    case ?USE_SINGLE_SERVER of
-        true -> gen_server:cast(ServerName, Request);
-        false -> antidote_utils:call_vnode_async_with_key(Key, VMaster, Request)
-    end.
-
--spec call_gingko_sync_with_key(key(), {atom(), atom()}, any()) -> any().
-call_gingko_sync_with_key(Key, {ServerName, VMaster}, Request) ->
-    case ?USE_SINGLE_SERVER of
-        true -> gen_server:call(ServerName, Request);
-        false -> antidote_utils:call_vnode_sync_with_key(Key, VMaster, Request)
-    end.
-
--spec bcast_local_gingko_async({atom(), atom()}, any()) -> ok.
-bcast_local_gingko_async({ServerName, VMaster}, Request) ->
-    case ?USE_SINGLE_SERVER of
-        true -> gen_server:cast(ServerName, Request);
-        false -> antidote_utils:bcast_local_vnode_async(VMaster, Request)
-    end.
-
--spec bcast_local_gingko_sync({atom(), atom()}, any()) -> [{partition_id(), term()}].
-bcast_local_gingko_sync({ServerName, VMaster}, Request) ->
-    case ?USE_SINGLE_SERVER of
-        true -> [{0, gen_server:call(ServerName, Request)}];
-        false -> antidote_utils:bcast_local_vnode_sync(VMaster, Request)
-    end.
-
-%% Sends the same (asynchronous) command to all vnodes of a given type.
--spec bcast_gingko_async({atom(), atom()}, any()) -> ok.
-bcast_gingko_async({ServerName, VMaster}, Request) ->
-    case ?USE_SINGLE_SERVER of
-        true -> gen_server:cast(ServerName, Request);
-        false -> antidote_utils:bcast_vnode_async(VMaster, Request)
-    end.
-
-%% Sends the same (synchronous) command to all vnodes of a given type.
--spec bcast_gingko_sync({atom(), atom()}, any()) -> [{partition_id(), term()}].
-bcast_gingko_sync({ServerName, VMaster}, Request) ->
-    case ?USE_SINGLE_SERVER of
-        true -> [{0, gen_server:call(ServerName, Request)}];
-        false -> antidote_utils:bcast_vnode_sync(VMaster, Request)
-    end.
-
--spec get_key_partition(term()) -> partition_id().
-get_key_partition(Key) ->
-    case ?USE_SINGLE_SERVER of
-        true -> 0;
-        false ->
-            {Partition, _} = antidote_utils:get_key_partition_node_tuple(Key),
-            Partition
-    end.
-
-

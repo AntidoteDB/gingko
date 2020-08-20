@@ -57,7 +57,7 @@ handle_call(Request = hello, From, State) ->
     {reply, ok, State};
 
 handle_call(Request, From, State) -> default_gen_server_behaviour:handle_call_crash(?MODULE, Request, From, State).
-
+-spec handle_cast(term(), state()) -> no_return().
 handle_cast(Request, State) -> default_gen_server_behaviour:handle_cast_crash(?MODULE, Request, State).
 
 %% Handle the remote request
@@ -92,6 +92,7 @@ code_change(OldVsn, State, Extra) -> default_gen_server_behaviour:code_change(?M
 %%% Internal functions
 %%%===================================================================
 
+-spec process_request(request_record(), zmq_sender_id(), zmq_socket()) -> ok.
 process_request(RequestRecord = #request_record{request_type = ?HEALTH_CHECK_MSG}, ZmqSenderId, Socket) ->
     send_response(?OK_MSG, RequestRecord, ZmqSenderId, Socket);
 process_request(RequestRecord = #request_record{request_type = ?DCSF_MSG, request_args = RequestArgs}, ZmqSenderId, Socket) ->
@@ -99,7 +100,7 @@ process_request(RequestRecord = #request_record{request_type = ?DCSF_MSG, reques
     send_response(?OK_MSG, RequestRecord, ZmqSenderId, Socket);
 process_request(RequestRecord = #request_record{request_type = ?JOURNAL_READ_REQUEST, target_partition = TargetPartition, request_args = RequestArgs}, ZmqSenderId, Socket) ->
     TxnTrackingNumList = RequestArgs,
-    {ok, JournalEntryList} = gingko_utils:call_gingko_sync(TargetPartition, ?GINGKO_LOG, {get_txns, TxnTrackingNumList}),
+    {ok, JournalEntryList} = gingko_dc_utils:call_gingko_sync(TargetPartition, ?GINGKO_LOG, {get_txns, TxnTrackingNumList}),
     send_response(JournalEntryList, RequestRecord, ZmqSenderId, Socket);
 process_request(RequestRecord = #request_record{request_type = ?BCOUNTER_REQUEST, request_args = RequestArgs}, ZmqSenderId, Socket) ->
     {transfer, {_Key, _Amount, _RemoteDCID}} = RequestArgs,

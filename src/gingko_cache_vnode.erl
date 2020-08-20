@@ -43,17 +43,10 @@
 
 %TODO think of default values
 -record(state, {
-    partition = 0 :: partition_id(),
+    partition = 0 :: partition(),
     key_cache_entry_map = #{} :: cache_map(), %TODO double map for optimization later
-    max_occupancy = 100 :: non_neg_integer(),
-    reset_used_interval_millis = ?DEFAULT_WAIT_TIME_LONG :: non_neg_integer(),
     reset_used_timer = none :: none | reference(),
-    eviction_interval_millis = ?DEFAULT_WAIT_TIME_SUPER_LONG :: non_neg_integer(),
-    eviction_timer = none :: none | reference(),
-    eviction_threshold_in_percent = 90 :: 0..100, %TODO values above 100 are simply 100
-    target_threshold_in_percent = 80 :: 0..100, %TODO think about this one (currently based on the eviction threshold)
-    eviction_strategy = interval :: interval | fifo | lru | lfu
-    %TODO decide on parameters
+    eviction_timer = none :: none | reference()
 }).
 -type state() :: #state{}.
 
@@ -74,9 +67,7 @@ start_vnode(I) ->
 %%      `log' and the partition identifier.
 init([Partition]) ->
     default_vnode_behaviour:init(?MODULE, [Partition]),
-    TableName = general_utils:concat_and_make_atom([integer_to_list(Partition), '_journal_entry']),
-    CacheConfig = [{partition, Partition}, {table_name, TableName} | gingko_app:get_default_config()],
-    NewState = apply_gingko_config(#state{}, CacheConfig),
+    NewState = reset_timers(#state{partition = Partition}),
     {ok, NewState}.
 
 handle_command(Request = hello, Sender, State) ->
@@ -93,9 +84,9 @@ handle_command(Request = {get, KeyStruct, DependencyVts, ValidJournalEntries}, S
     {Reply, NewState} = get_internal(KeyStruct, DependencyVts, ValidJournalEntries, State),
     {reply, Reply, NewState};
 
-handle_command(Request = {update_cache_config, CacheConfig}, Sender, State) ->
+handle_command(Request = reset_cache_timers, Sender, State) ->
     default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
-    {reply, ok, apply_gingko_config(State, CacheConfig)};
+    {reply, ok, reset_timers(State)};
 
 handle_command(Request = {checkpoint_cache_cleanup, CheckpointVts}, Sender, State) ->
     default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
@@ -136,30 +127,19 @@ handle_overload_info(Request, Partition) -> default_vnode_behaviour:handle_overl
 %%% Internal functions
 %%%===================================================================
 
--spec apply_gingko_config(state(), map_list()) -> state().
-apply_gingko_config(State = #state{partition = InitialPartition, max_occupancy = InitialMaxOccupancy, eviction_strategy = InitialEvictionStrategy, reset_used_interval_millis = InitialResetUsedIntervalMillis, eviction_interval_millis = InitialEvictionIntervalMillis}, GingkoConfig) ->
-    Partition = general_utils:get_or_default_map_list(partition, GingkoConfig, InitialPartition),
-    MaxOccupancy = general_utils:get_or_default_map_list(max_occupancy, GingkoConfig, InitialMaxOccupancy),
-    EvictionStrategy = general_utils:get_or_default_map_list(eviction_strategy, GingkoConfig, InitialEvictionStrategy),
-    {UpdateResetUsedTimer, UsedResetIntervalMillis} =
-        general_utils:get_or_default_map_list_check(reset_used_interval_millis, GingkoConfig, InitialResetUsedIntervalMillis),
-    {UpdateEvictionTimer, EvictionIntervalMillis} =
-        general_utils:get_or_default_map_list_check(eviction_interval_millis, GingkoConfig, InitialEvictionIntervalMillis),
-    NewState = State#state{partition = Partition, max_occupancy = MaxOccupancy, reset_used_interval_millis = UsedResetIntervalMillis, eviction_interval_millis = EvictionIntervalMillis, eviction_strategy = EvictionStrategy},
-    update_timers(NewState, UpdateResetUsedTimer, UpdateEvictionTimer).
-
--spec update_timers(state(), boolean(), boolean()) -> state().
-update_timers(State = #state{reset_used_timer = CurrentResetUsedTimer, reset_used_interval_millis = ResetUsedIntervalMillis, eviction_timer = CurrentEvictionTimer, eviction_interval_millis = EvictionIntervalMillis}, UpdateResetUsedTimer, UpdateEvictionTimer) ->
-    NewResetUsedTimer = gingko_utils:update_timer(CurrentResetUsedTimer, UpdateResetUsedTimer, ResetUsedIntervalMillis, reset_used_event, true),
-    NewEvictionTimer = gingko_utils:update_timer(CurrentEvictionTimer, UpdateEvictionTimer, EvictionIntervalMillis, eviction_event, true),
+-spec reset_timers(state()) -> state().
+reset_timers(State = #state{reset_used_timer = CurrentResetUsedTimer, eviction_timer = CurrentEvictionTimer}) ->
+    ResetUsedIntervalMillis = gingko_env_utils:get_cache_reset_used_interval_millis(),
+    EvictionIntervalMillis = gingko_env_utils:get_cache_eviction_interval_millis(),
+    NewResetUsedTimer = gingko_dc_utils:update_timer(CurrentResetUsedTimer, true, ResetUsedIntervalMillis, reset_used_event, true),
+    NewEvictionTimer = gingko_dc_utils:update_timer(CurrentEvictionTimer, true, EvictionIntervalMillis, eviction_event, true),
     State#state{reset_used_timer = NewResetUsedTimer, eviction_timer = NewEvictionTimer}.
-
 
 -spec get_internal(key_struct(), vectorclock(), load_from_log | [journal_entry()], state()) -> {{ok, snapshot()}, state()} | {{error, reason()}, state()}.
 get_internal(KeyStruct, DependencyVts, ValidJournalEntryListOrLoadFromLog, State) ->
     GetResult = get_or_load_cache_entry(KeyStruct, DependencyVts, ValidJournalEntryListOrLoadFromLog, State),
     case GetResult of
-        {ok, #cache_entry{snapshot = Snapshot}, NewState} -> {ok, Snapshot, NewState};
+        {ok, #cache_entry{snapshot = Snapshot}, NewState} -> {{ok, Snapshot}, NewState};
         Error -> {Error, State}
     end.
 
@@ -192,7 +172,7 @@ load_key_into_cache(KeyStruct, DependencyVts, ValidJournalEntryListOrLoadFromLog
     JournalEntryListResult =
         case ValidJournalEntryListOrLoadFromLog of
             load_from_log ->
-                gingko_utils:call_gingko_sync(Partition, ?GINGKO_LOG, {get_valid_journal_entries, DependencyVts});
+                gingko_dc_utils:call_gingko_sync(Partition, ?GINGKO_LOG, {get_valid_journal_entries, DependencyVts});
             ValidJournalEntryList -> {ok, ValidJournalEntryList}
         end,
     case JournalEntryListResult of
@@ -264,7 +244,11 @@ update_cache_entry_in_state(CacheEntry = #cache_entry{snapshot = #snapshot{key_s
     end.
 
 -spec start_eviction_process(state()) -> state().
-start_eviction_process(State = #state{max_occupancy = MaxOccupancy, key_cache_entry_map = KeyCacheEntryMap, eviction_threshold_in_percent = EvictionThresholdInPercent, target_threshold_in_percent = TargetThresholdInPercent, eviction_strategy = EvictionStrategy}) ->
+start_eviction_process(State = #state{key_cache_entry_map = KeyCacheEntryMap}) ->
+    MaxOccupancy = gingko_env_utils:get_cache_max_occupancy(),
+    EvictionThresholdInPercent = gingko_env_utils:get_cache_target_threshold_in_percent(),
+    TargetThresholdInPercent = gingko_env_utils:get_cache_target_threshold_in_percent(),
+    EvictionStrategy = gingko_env_utils:get_cache_eviction_strategy(),
     CurrentOccupancy =
         maps:fold(fun(_Key, CommitVtsCacheEntryMap, Number) ->
             Number + maps:size(CommitVtsCacheEntryMap) end, 0, KeyCacheEntryMap),
@@ -349,14 +333,15 @@ sort_by_times_used(CacheEntryList) ->
         end, CacheEntryList).
 
 -spec reset_used(state()) -> state().
-reset_used(State = #state{reset_used_interval_millis = ResetUsedIntervalMillis, key_cache_entry_map = KeyCacheEntryMap}) ->
+reset_used(State = #state{key_cache_entry_map = KeyCacheEntryMap}) ->
+    ResetUsedIntervalMillis = gingko_env_utils:get_cache_reset_used_interval_millis(),
     ResetInterval = ResetUsedIntervalMillis * 1000,
     NewKeyCacheEntryMap = reset_used(KeyCacheEntryMap, ResetInterval),
     State#state{key_cache_entry_map = NewKeyCacheEntryMap}.
 
 -spec reset_used(cache_map(), non_neg_integer()) -> cache_map().
 reset_used(KeyCacheEntryMap, ResetInterval) ->
-    CurrentTime = gingko_utils:get_timestamp(),
+    CurrentTime = gingko_dc_utils:get_timestamp(),
     MatchTime = CurrentTime - ResetInterval,
     maps:map(
         fun(_KeyStruct, CommitVtsCacheEntryMap) ->

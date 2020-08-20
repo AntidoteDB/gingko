@@ -23,13 +23,13 @@
 -export([get_or_create_dc_info_entry/0,
     store_dc_info_entry/1,
     get_dc_descriptors/0,
+    get_dc_descriptors_and_mine/0,
     get_connected_dcids_and_mine/0,
     get_connected_dcids/0,
     store_dc_descriptors/1,
-    has_dc_started/0,
+    has_dc_started_and_is_healthy/0,
     start_dc/0,
-    start_dc/1,
-    is_dc_restart/0]).
+    start_dc/1]).
 
 -define(TABLE_NAME, dc_info_entry).
 
@@ -39,24 +39,23 @@
 
 -spec get_or_create_dc_info_entry() -> dc_info_entry().
 get_or_create_dc_info_entry() ->
-    DCID = gingko_utils:get_my_dcid(),
+    DCID = gingko_dc_utils:get_my_dcid(),
     %%TODO check that table exists
-    ReadFunc = fun() ->
-        DcInfoEntryList = mnesia:read(?TABLE_NAME, DCID),
-        {DcInfoEntry, MustBeUpdated} =
-            case DcInfoEntryList of
-                [] -> {#dc_info_entry{dcid = DCID, has_started = false, connected_descriptors = []}, true};
-                [Descriptor] -> {Descriptor, false};
-                [FirstDescriptor | _Descriptors] ->
-                    {FirstDescriptor, true}%%TODO{error, {"BAD", DCID, Descriptors}}
-            end,
-        case MustBeUpdated of
-            true -> mnesia:write(?TABLE_NAME, DcInfoEntry, write);
-            false -> ok
+    DcInfoEntryList = mnesia:dirty_read(?TABLE_NAME, DCID),
+    {DcInfoEntry, MustBeUpdated} =
+        case DcInfoEntryList of
+            [] -> {#dc_info_entry{dcid = DCID, nodes = gingko_dc_utils:get_my_dc_nodes(), has_started = false, my_descriptor = inter_dc_manager:get_descriptor(), connected_descriptors = []}, true};
+            [Descriptor] -> {Descriptor, false};
+            [FirstDescriptor | _Descriptors] ->
+                {FirstDescriptor, true}%%TODO{error, {"BAD", DCID, Descriptors}}
         end,
-        DcInfoEntry
-               end,
-    mnesia_utils:run_sync_transaction(ReadFunc).
+    case MustBeUpdated of
+        true ->
+            F = fun() -> mnesia:write(?TABLE_NAME, DcInfoEntry, write) end,
+            mnesia_utils:run_sync_transaction(F);
+        false -> ok
+    end,
+    DcInfoEntry.
 
 -spec store_dc_info_entry(dc_info_entry()) -> ok.
 store_dc_info_entry(DcInfoEntry) ->
@@ -68,9 +67,14 @@ get_dc_descriptors() ->
     DcInfoEntry = get_or_create_dc_info_entry(),
     DcInfoEntry#dc_info_entry.connected_descriptors.
 
+-spec get_dc_descriptors_and_mine() -> [descriptor()].
+get_dc_descriptors_and_mine() ->
+    DcInfoEntry = get_or_create_dc_info_entry(),
+    [DcInfoEntry#dc_info_entry.my_descriptor | DcInfoEntry#dc_info_entry.connected_descriptors].
+
 -spec get_connected_dcids_and_mine() -> [dcid()].
 get_connected_dcids_and_mine() ->
-    [gingko_utils:get_my_dcid() | get_connected_dcids()].
+    [gingko_dc_utils:get_my_dcid() | get_connected_dcids()].
 
 -spec get_connected_dcids() -> [dcid()].
 get_connected_dcids() ->
@@ -104,14 +108,13 @@ store_dc_descriptors(OtherDcDescriptors) ->
             store_dc_info_entry(DcInfoEntry#dc_info_entry{connected_descriptors = NewDescriptors})
     end.
 
--spec has_dc_started() -> boolean().
-has_dc_started() ->
+-spec has_dc_started_and_is_healthy() -> boolean().
+has_dc_started_and_is_healthy() ->
     DcInfoEntry = get_or_create_dc_info_entry(),
-    DcInfoEntry#dc_info_entry.has_started.
-
--spec is_dc_restart() -> boolean().
-is_dc_restart() ->
-    has_dc_started().
+    Nodes = DcInfoEntry#dc_info_entry.nodes,
+    CurrentDcNodes = gingko_dc_utils:get_my_dc_nodes(),
+    HasStarted = DcInfoEntry#dc_info_entry.has_started,
+    HasStarted andalso general_utils:set_equals_on_lists(Nodes, CurrentDcNodes).
 
 -spec merge_two_descriptor_lists([descriptor()], [descriptor()]) -> [descriptor()].
 merge_two_descriptor_lists(NewDescriptors, OldDescriptors) ->

@@ -22,11 +22,11 @@
 -type request_type() :: ?OK_MSG | ?ERROR_MSG | ?HEALTH_CHECK_MSG | ?JOURNAL_READ_REQUEST | ?BCOUNTER_REQUEST | ?DCSF_MSG.
 
 -type target_dcid() :: dcid() | all.
--type target_partition() :: partition_id() | all.
+-type target_partition() :: partition() | all.
 
--type socket_address() :: {inet:ip_address() | string(), inet:port_number()}.
--type node_address_list() :: [socket_address()].
--type dc_address_list() :: [node_address_list()].
+%%-type socket_address() :: {inet:ip_address() | string(), inet:port_number()}.
+%%-type node_address_list() :: {node(), [socket_address()]}.
+%%-type dc_address_list() :: [node_address_list()].
 -type zmq_socket() :: {pos_integer(), binary()}.%%erlzmq_socket().
 -type zmq_socket_type() :: pair | pub | sub | req | rep | dealer | router | xreq | xrep |
 pull | push | xpub | xsub.
@@ -36,8 +36,7 @@ pull | push | xpub | xsub.
 -type zmq_send_recv_flag() :: dontwait | sndmore | recvmore | {timeout, timeout()}.
 -type zmq_send_recv_flags() :: [zmq_send_recv_flag()].
 -type zmq_socket_option() :: affinity | identity | subscribe | unsubscribe | rate | recovery_ivl | sndbuf | rcvbuf | rcvmore | fd | events | linger | reconnect_ivl | backlog |reconnect_ivl_max | maxmsgsize | sndhwm | rcvhwm | multicast_hops | rcvtimeo | sndtimeo | ipv4only.
--type zmq_socket_option_value() :: integer() | iolist() | binary().
--type inter_dc_journal_entry() :: {target_partition(), journal_entry()}.
+-type zmq_socket_option_value() :: integer() | iolist() | binary().S
 %%Empty is ping and all inter_dc_journal_entries must have the same txid
 
 -type response_return_function() :: fun((term(), request_entry()) -> ok).
@@ -45,32 +44,44 @@ pull | push | xpub | xsub.
 -type zmq_sender_id() :: binary().
 
 -record(inter_dc_txn, {
-    partition :: partition_id(),
+    partition :: partition(),
     source_dcid :: dcid(),
     journal_entries :: [journal_entry()]
 }).
 -type inter_dc_txn() :: #inter_dc_txn{}.
 
+-type socket_address() :: {inet:ip_address() | string(), inet:port_number()}.
+-type node_address_list() :: {node(), [socket_address()]}.
+-type dc_address_list() :: [node_address_list()].
+
 -record(descriptor, {
     dcid :: dcid(),
     number_of_partitions :: non_neg_integer(),
-    journal_dc_address_list :: dc_address_list(),
+    txn_dc_address_list :: dc_address_list(),
     request_dc_address_list :: dc_address_list()
 }).
 -type descriptor() :: #descriptor{}.
 
 -record(dc_info_entry, {
     dcid :: dcid(),
+    nodes :: [node()],
     has_started :: boolean(),
+    my_descriptor :: descriptor(),
     connected_descriptors :: [descriptor()]
 }).
 -type dc_info_entry() :: #dc_info_entry{}.
 
--record(distributed_vts, {
-    node :: node(),
-    vts :: vectorclock()
+-record(tx_vts, {
+    tx_id :: txid(),
+    dependency_vts :: vectorclock()
 }).
--type distributed_vts() :: #distributed_vts{}.
+-type tx_vts() :: #tx_vts{}.
+
+-record(partition_vts, {
+    partition :: partition(),
+    commit_vts :: vectorclock()
+}).
+-type partition_vts() :: #partition_vts{}.
 
 -record(request_record, {
     request_id :: non_neg_integer(),
@@ -85,6 +96,7 @@ pull | push | xpub | xsub.
 
 %% This keeps information about an inter-dc request that
 %% is waiting for a reply
+
 -record(request_entry, {
     request_record :: request_record(),
     request_timestamp :: timestamp(),
@@ -97,15 +109,6 @@ pull | push | xpub | xsub.
     response :: term()
 }).
 -type response_record() :: #response_record{}.
-
-%% This keeps information about an inter-dc request
-%% on the site that is performing the query
--record(request_state, {
-    request_record :: request_record(),
-    zmq_sender_id :: zmq_sender_id(),
-    local_pid :: pid()
-}).
--type request_state() :: #request_state{}.
 
 -record(dc_state, {
     dcid :: dcid(),

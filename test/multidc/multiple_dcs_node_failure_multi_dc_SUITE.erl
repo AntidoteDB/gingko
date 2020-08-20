@@ -76,9 +76,9 @@ end_per_testcase(Name, _) ->
     ok.
 
 all() -> [
-%%    multiple_cluster_failure_test,
-%%    cluster_failure_test,
-%%    update_during_cluster_failure_test
+    multiple_cluster_failure_test,
+    cluster_failure_test,
+    update_during_cluster_failure_test
 ].
 
 %% In this test there are 3 DCs each with 1 node

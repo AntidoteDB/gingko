@@ -46,7 +46,7 @@ create_update_operation(KeyStruct, TxOpNum, DownstreamOp) ->
 create_begin_operation(DependencyVts) ->
     {begin_txn, #begin_txn_args{dependency_vts = DependencyVts}}.
 
--spec create_prepare_operation([partition_id()]) -> {journal_entry_type(), journal_entry_args()}.
+-spec create_prepare_operation([partition()]) -> {journal_entry_type(), journal_entry_args()}.
 create_prepare_operation(Partitions) ->
     {prepare_txn, #prepare_txn_args{partitions = Partitions}}.
 

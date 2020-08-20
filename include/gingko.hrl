@@ -1,10 +1,15 @@
 -include_lib("riak_core/include/riak_core_vnode.hrl").
 -define(BUCKET, <<"gingko">>).
--define(USE_SINGLE_SERVER, true).
--define(USE_GINGKO_TIMESTAMP, true).
--define(EXPERIMENTAL_TIMESTAMP_USE_MONOTONIC_TIME, false).
+-define(DATA_DIR_OPTION_NAME, data_dir).
+-define(DATA_DIR_OPTION_DEFAULT, "gingko_data").
+-define(SINGLE_SERVER_OPTION_NAME, use_single_server).
+-define(SINGLE_SERVER_OPTION_DEFAULT, true).
+-define(GINGKO_TIMESTAMP_OPTION_NAME, use_gingko_timestamp).
+-define(GINGKO_TIMESTAMP_OPTION_DEFAULT, true).
+-define(JOURNAL_TRIMMING_MODE_OPTION_NAME, journal_trimming_mode).
+-define(JOURNAL_TRIMMING_MODE_OPTION_DEFAULT, keep_all_checkpoints).
+-type journal_trimming_mode() :: keep_all_checkpoints | keep_two_checkpoints | keep_one_checkpoint.
 -define(SINGLE_SERVER_PARTITION, 0).
--define(JOURNAL_TRIMMING_MODE, keep_all_checkpoints). %keep_two_checkpoints / keep_one_checkpoint
 
 -define(GINGKO_APP_NAME, gingko_app).
 -define(GINGKO_LOG_VNODE_MASTER, gingko_log_vnode_master).
@@ -16,11 +21,31 @@
 -define(GINGKO_CACHE, {gingko_cache_server, ?GINGKO_CACHE_VNODE_MASTER}).
 -define(INTER_DC_LOG, {inter_dc_log_server, ?INTER_DC_LOG_VNODE_MASTER}).
 
+-define(TXN_PORT_OPTION_NAME, txn_port).
+-define(REQUEST_PORT_OPTION_NAME, request_port).
+-define(TXN_PORT_OPTION_DEFAULT, 8086).
+-define(REQUEST_PORT_OPTION_DEFAULT, 8085).
+-define(MAX_TX_RUN_TIME_OPTION_NAME, max_tx_run_time_millis).
+-define(CHECKPOINT_INTERVAL_OPTION_NAME, checkpoint_interval_millis).
+-define(MAX_TX_RUN_TIME_OPTION_DEFAULT, 30 * ?DEFAULT_WAIT_TIME_SUPER_LONG). %%TODO currently 5 minutes
+-define(CHECKPOINT_INTERVAL_OPTION_DEFAULT, 60 * ?DEFAULT_WAIT_TIME_SUPER_LONG). %%TODO currently 10 minutes
 
--define(JOURNAL_PORT_NAME, journal_port).
--define(REQUEST_PORT_NAME, request_port).
--define(DEFAULT_JOURNAL_PORT, 8086).
--define(DEFAULT_REQUEST_PORT, 8085).
+-define(DC_STATE_INTERVAL_OPTION_NAME, dc_state_interval_millis).
+-define(DC_STATE_INTERVAL_OPTION_DEFAULT, ?DEFAULT_WAIT_TIME_LONG). %%TODO
+
+-define(CACHE_MAX_OCCUPANCY_OPTION_NAME, max_occupancy).
+-define(CACHE_MAX_OCCUPANCY_OPTION_DEFAULT, 100).
+-define(CACHE_RESET_USED_INTERVAL_OPTION_NAME, reset_used_interval_millis).
+-define(CACHE_RESET_USED_INTERVAL_OPTION_DEFAULT, 1000).
+-define(CACHE_EVICTION_INTERVAL_OPTION_NAME, eviction_interval_millis).
+-define(CACHE_EVICTION_INTERVAL_OPTION_DEFAULT, 2000).
+-define(CACHE_EVICTION_THRESHOLD_OPTION_NAME, eviction_threshold_in_percent).
+-define(CACHE_EVICTION_THRESHOLD_OPTION_DEFAULT, 90).
+-define(CACHE_TARGET_THRESHOLD_OPTION_NAME, target_threshold_in_percent).
+-define(CACHE_TARGET_THRESHOLD_OPTION_DEFAULT, 80).
+-define(CACHE_EVICTION_STRATEGY_OPTION_NAME, eviction_strategy).
+-define(CACHE_EVICTION_STRATEGY_OPTION_DEFAULT, interval).
+-type eviction_strategy() :: interval | fifo | lru | lfu.
 
 %% Bounded counter manager parameters.
 %% Period during which transfer requests from the same DC to the same key are ignored.
@@ -40,6 +65,7 @@
 -define(DEFAULT_WAIT_TIME_LONG, 1000). %% in milliseconds
 -define(DEFAULT_WAIT_TIME_SUPER_LONG, 10000). %% in milliseconds
 
+-type percent() :: 0..100.
 -type microsecond() :: non_neg_integer().
 -type millisecond() :: non_neg_integer().
 -type timestamp() :: non_neg_integer().
@@ -47,8 +73,7 @@
 -type table_name() :: atom().
 
 -type key() :: term().
--type type() :: atom().
--type txn_properties() :: [{update_clock, boolean()} | {certify, use_default | certify | dont_certify}].
+-type type() :: antidote_crdt:typ().
 
 -record(tx_id, {
     local_start_time :: clock_time(),
@@ -57,22 +82,16 @@
 -type txid() :: #tx_id{}.
 
 -type crdt() :: term().
--type type_op() :: {Op :: atom(), OpArgs :: term()} | {Op :: atom(), OpArgs :: term(), MoreOpArgs :: term()} | atom() | term(). %downstream(type_op, crdt())
--type downstream_op() :: term(). %update(downstream_op, crdt())
+-type type_op() :: {Op :: atom(), OpArgs :: term()} | {Op :: atom(), OpArgs :: term(), MoreOpArgs :: term()} | atom() | term(). %downstream(type_op(), crdt())
+-type downstream_op() :: term(). %update(downstream_op(), crdt())
 
 -type dcid() :: node() | undefined | {term(), term()}.
 
 -type vectorclock() :: vectorclock:vectorclock().
--type snapshot_time() :: ignore | undefined | vectorclock:vectorclock().
--type vts_range() :: {MinVts :: vectorclock() | none, MaxVts :: vectorclock() | none}.
 -type clock_time() :: non_neg_integer().
--type clock_range() :: {MinClock :: clock_time() | none, MaxClock :: clock_time() | none}.
 -type reason() :: term().
--type map_list() :: [{Key :: term(), Value :: term()}].
--type index_node() :: {partition_id(), node()}.
--type preflist() :: riak_core_apl:preflist().
--type partition_id() :: chash:index_as_int().
--type ct_config() :: map_list().
+-type key_value_list() :: [{Key :: term(), Value :: term()}].
+-type ct_config() :: key_value_list().
 -type txn_num() :: non_neg_integer().
 -type txn_tracking_num() :: {txn_num(), txid() | none, clock_time()}.
 -type invalid_txn_tracking_num() :: {txn_tracking_num(), vectorclock()}.
@@ -115,7 +134,7 @@
 -record(begin_txn_args, {dependency_vts :: vectorclock()}).
 -type begin_txn_args() :: #begin_txn_args{}.
 
--record(prepare_txn_args, {partitions :: [partition_id()]}).
+-record(prepare_txn_args, {partitions :: [partition()]}).
 -type prepare_txn_args() :: #prepare_txn_args{}.
 -record(commit_txn_args, {
     commit_vts :: vectorclock(),

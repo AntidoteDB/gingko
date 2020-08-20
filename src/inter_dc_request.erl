@@ -30,11 +30,11 @@
 
 -spec create_request_record({non_neg_integer(), request_type()}, {target_dcid(), target_partition()}, term()) -> request_record().
 create_request_record({RequestId, RequestType}, {TargetDCID, TargetPartition}, RequestArgs) ->
-    request_record_from_tuple({{RequestId, RequestType}, {TargetDCID, TargetPartition}, {gingko_utils:get_my_dcid(), node()}, RequestArgs}).
+    request_record_from_tuple({{RequestId, RequestType}, {TargetDCID, TargetPartition}, {gingko_dc_utils:get_my_dcid(), node()}, RequestArgs}).
 
 -spec create_request_entry(request_record(), response_return_function() | none) -> request_entry().
 create_request_entry(RequestRecord, ReturnFuncOrNone) ->
-    #request_entry{request_record = RequestRecord, request_timestamp = gingko_utils:get_timestamp(), return_func_or_none = ReturnFuncOrNone}.
+    #request_entry{request_record = RequestRecord, request_timestamp = gingko_dc_utils:get_timestamp(), return_func_or_none = ReturnFuncOrNone}.
 
 -spec request_record_to_tuple(request_record()) -> {{non_neg_integer(), request_type()}, {target_dcid(), target_partition()}, {dcid(), node()}, term()}.
 request_record_to_tuple(#request_record{request_id = RequestId,
@@ -80,20 +80,15 @@ is_relevant_request_for_responder(#request_record{target_dcid = TargetDCID, targ
             all ->
                 true;
             SomeDCID ->
-                SomeDCID == gingko_utils:get_my_dcid()
+                SomeDCID == gingko_dc_utils:get_my_dcid()
         end,
     case CheckPartition of
         true ->
             case TargetPartition of
                 all -> true;
                 SomePartition ->
-                    lists:member(SomePartition, gingko_utils:get_my_partitions())
+                    lists:member(SomePartition, gingko_dc_utils:get_my_partitions())
             end;
         false ->
             false
     end.
-
-%%TODO equal requests
-%%-spec is_equal_request(request_entry(), request_entry()) -> boolean().
-%%is_equal_request(#request_entry{request = Request1}, #request_entry{request = Request2}) ->
-%%    Request1 == Request2.

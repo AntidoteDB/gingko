@@ -42,8 +42,7 @@
     restart_nodes/2,
     partition_cluster/2,
     heal_cluster/2,
-    set_up_clusters_common/2,
-    unpack/1
+    start_and_connect_clusters/2
 ]).
 
 %% ===========================================
@@ -66,11 +65,11 @@ init_single_dc(Suite, Config) ->
     ct:pal("Initializing [~p] (Single-DC)", [Suite]),
     at_init_testsuite(),
     ClusterConfiguration =
-        case ?USE_SINGLE_SERVER of
+        case gingko_env_utils:get_use_single_server() of
             true -> [[dev1]];
             false -> [[dev1]]%[[dev1, dev2, dev3, dev4]]%, dev3, dev4, dev5, dev6, dev7, dev8]],
         end,
-    Clusters = set_up_clusters_common([{suite_name, ?MODULE} | Config], ClusterConfiguration),
+    Clusters = start_and_connect_clusters([{suite_name, ?MODULE} | Config], ClusterConfiguration),
     Nodes = hd(Clusters),
     [{clusters, [Nodes]} | [{nodes, Nodes} | [{node, hd(Nodes)} | Config]]].
 
@@ -79,15 +78,15 @@ init_multi_dc(Suite, Config) ->
     ct:pal("Initializing [~p] (Multi-DC)", [Suite]),
     at_init_testsuite(),
     ClusterConfiguration =
-        case ?USE_SINGLE_SERVER of
+        case gingko_env_utils:get_use_single_server() of
             true -> [[dev1], [dev2], [dev3], [dev4]];
             false -> [[dev1, dev2], [dev3, dev4, dev5], [dev6, dev7, dev8, dev9]]
         end,
-    Clusters = set_up_clusters_common([{suite_name, ?MODULE} | Config], ClusterConfiguration),
+    Clusters = start_and_connect_clusters([{suite_name, ?MODULE} | Config], ClusterConfiguration),
     Nodes = hd(Clusters),
     [{clusters, Clusters} | [{nodes, Nodes} | [{node, hd(Nodes)} | Config]]].
 
-
+-spec at_init_testsuite() -> ok.
 at_init_testsuite() ->
     {ok, Hostname} = inet:gethostname(),
     case net_kernel:start([list_to_atom("runner@" ++ Hostname), shortnames]) of
@@ -101,7 +100,53 @@ at_init_testsuite() ->
 %% Node utilities
 %% ===========================================
 
--spec start_node(atom(), ct_config()) -> {connect | ready, node()}.
+%% Build clusters for all test suites.
+-spec start_and_connect_clusters(ct_config(), [[node()]]) -> [[node()]].
+start_and_connect_clusters(Config, ClusterConfiguration) ->
+    StartClusterFunc =
+        fun(UnstartedCluster) ->
+            %% start each node
+            StartedCluster = general_utils:parallel_map(
+                fun(Node) ->
+                    start_node(Node, Config)
+                end,
+                UnstartedCluster),
+            [FirstNode | OtherNodes] = StartedCluster,
+
+            ct:pal("Creating a ring for first node ~p and other nodes ~p", [FirstNode, OtherNodes]),
+            ok = rpc:call(FirstNode, gingko_app, setup_cluster, [StartedCluster]),
+            StartedCluster
+        end,
+
+    StartedClusters =
+        general_utils:parallel_map(
+            fun(Cluster) ->
+                StartClusterFunc(Cluster)
+            end, ClusterConfiguration),
+    case StartedClusters of
+        [] -> ct:pal("No Cluster", []);
+        _ ->
+            %%TODO implement for gingko
+            %% DCs started, but not connected yet
+            general_utils:parallel_map(
+                fun(CurrentCluster = [MainNode | _]) ->
+                    ct:pal("~p of ~p subscribing to other external DCs", [MainNode, CurrentCluster]),
+
+                    Descriptors =
+                        lists:map(
+                            fun([FirstNode | _]) ->
+                                rpc:call(FirstNode, inter_dc_manager, get_descriptor, [])
+                            end, StartedClusters),
+
+                    %% subscribe to descriptors of other dcs
+                    ok = rpc:call(MainNode, inter_dc_manager, connect_to_remote_dcs_and_start_dc, [Descriptors])
+                end, StartedClusters)
+    end,
+
+    ct:pal("Clusters joined and data centers connected connected: ~p", [ClusterConfiguration]),
+    StartedClusters.
+
+-spec start_node(atom(), ct_config()) -> node().
 start_node(Name, Config) ->
     %% code path for compiled dependencies (ebin folders)
     {ok, Cwd} = file:get_cwd(),
@@ -109,18 +154,19 @@ start_node(Name, Config) ->
     CodePath = lists:filter(fun filelib:is_dir/1, code:get_path()),
     ct:pal("Starting node ~p", [Name]),
 
-
     PrivDir = proplists:get_value(priv_dir, Config),
     NodeDir = filename:join([PrivDir, Name]) ++ "/",
-    filelib:ensure_dir(NodeDir),
+    ok = filelib:ensure_dir(NodeDir),
 
     %% have the slave nodes monitor the runner node, so they can't outlive it
-    NodeConfig = [
-        %% have the slave nodes monitor the runner node, so they can't outlive it
-        {monitor_master, true},
+    NodeConfig =
+        [
+            %% have the slave nodes monitor the runner node, so they can't outlive it
+            {monitor_master, true},
 
-        %% set code path for dependencies
-        {startup_functions, [{code, set_path, [CodePath]}]}],
+            %% set code path for dependencies
+            {startup_functions, [{code, set_path, [CodePath]}]}
+        ],
     case ct_slave:start(Name, NodeConfig) of
         {ok, Node} ->
             % load application to allow for configuring the environment before starting
@@ -133,16 +179,16 @@ start_node(Name, Config) ->
             {ok, NodeWorkingDir} = rpc:call(Node, file, get_cwd, []),
 
             %% DATA DIRS
-            ok = rpc:call(Node, application, set_env, [?GINGKO_APP_NAME, data_dir, filename:join([NodeWorkingDir, Node, "gingko_data"])]),
-            ok = rpc:call(Node, application, set_env, [riak_core, ring_state_dir, filename:join([NodeWorkingDir, Node, "data"])]),
-            ok = rpc:call(Node, application, set_env, [riak_core, platform_data_dir, filename:join([NodeWorkingDir, Node, "data"])]),
+            ok = rpc:call(Node, application, set_env, [riak_core, ring_state_dir, filename:join([NodeWorkingDir, Node, "riak_data"])]),
+            ok = rpc:call(Node, application, set_env, [riak_core, platform_data_dir, filename:join([NodeWorkingDir, Node, "riak_data"])]),
             ok = rpc:call(Node, application, set_env, [riak_core, schema_dirs, [GingkoFolder ++ "/_build/default/rel/gingko_app/lib/"]]),
-            ok = rpc:call(Node, application, set_env, [mnesia, dir, filename:join([NodeWorkingDir, Node, "gingko_data"])]),
+            ok = rpc:call(Node, gingko_env_utils, set_data_dir, [filename:join([NodeWorkingDir, Node, "gingko_data"])]),
 
             Port = web_ports(Name),
-            ok = rpc:call(Node, application, set_env, [?GINGKO_APP_NAME, ?REQUEST_PORT_NAME, Port]),
-            ok = rpc:call(Node, application, set_env, [?GINGKO_APP_NAME, ?JOURNAL_PORT_NAME, Port + 1]),
+            ok = rpc:call(Node, gingko_env_utils, set_request_port, [Port]),
+            ok = rpc:call(Node, gingko_env_utils, set_txn_port, [Port + 1]),
             ok = rpc:call(Node, application, set_env, [riak_core, handoff_port, Port + 3]),
+            ok = rpc:call(Node, application, set_env, [mnesia, debug, trace]),
 
             %% LOGGING Configuration
             %% add additional logging handlers to ensure easy access to remote node logs
@@ -157,7 +203,7 @@ start_node(Name, Config) ->
 
             %% redirect slave logs to ct_master logs
             ok = rpc:call(Node, application, set_env, [?GINGKO_APP_NAME, ct_master, node()]),
-            ConfLog = #{level => debug, formatter => {logger_formatter, #{single_line => true, max_size => 2048}}, config => #{type => standard_io}},
+            ConfLog = #{level => debug, formatter => {logger_formatter, #{single_line => false}}, config => #{type => standard_io}},
             _ = rpc:call(Node, logger, add_handler, [gingko_redirect_ct, ct_redirect_handler, ConfLog]),
 
             %% ANTIDOTE Configuration
@@ -165,11 +211,10 @@ start_node(Name, Config) ->
             ok = rpc:call(Node, application, set_env, [riak_core, ring_creation_size, 4]),
             {ok, _} = rpc:call(Node, application, ensure_all_started, [?GINGKO_APP_NAME]),
             ct:pal("Node ~p started", [Node]),
-
-            {connect, Node};
+            Node;
         {error, already_started, Node} ->
             ct:pal("Node ~p already started, reusing node", [Node]),
-            {ready, Node};
+            Node;
         {error, Reason, Node} ->
             ct:pal("Error starting node ~w, reason ~w, will retry", [Node, Reason]),
             ct_slave:stop(Name),
@@ -177,6 +222,7 @@ start_node(Name, Config) ->
             start_node(Name, Config)
     end.
 
+-spec web_ports(atom()) -> inet:port_number().
 web_ports(dev1) -> 10015;
 web_ports(dev2) -> 10025;
 web_ports(dev3) -> 10035;
@@ -198,6 +244,7 @@ web_ports(dev16) -> 10165.
 -spec kill_and_restart_nodes([node()], [tuple()]) -> [node()].
 kill_and_restart_nodes(NodeList, Config) ->
     NewNodeList = brutal_kill_nodes(NodeList),
+    %%ct:sleep(100000),
     restart_nodes(NewNodeList, Config).
 
 
@@ -210,17 +257,18 @@ kill_nodes(NodeList) ->
 %% @doc Send force kill signals to all given nodes
 -spec brutal_kill_nodes([node()]) -> [node()].
 brutal_kill_nodes(NodeList) ->
-    lists:map(fun(Node) ->
-        ct:pal("Killing node ~p", [Node]),
-        OSPidToKill = rpc:call(Node, os, getpid, []),
-        %% try a normal kill first, but set a timer to
-        %% kill -9 after X seconds just in case
-%%                  rpc:cast(Node, timer, apply_after,
-%%                      [?FORCE_KILL_TIMER, os, cmd, [io_lib:format("kill -9 ~s", [OSPidToKill])]]),
-        ct_slave:stop(get_node_name(Node)),
-        rpc:cast(Node, os, cmd, [io_lib:format("kill -15 ~s", [OSPidToKill])]),
-        Node
-              end, NodeList).
+    lists:map(
+        fun(Node) ->
+            ct:pal("Killing node ~p", [Node]),
+            OSPidToKill = rpc:call(Node, os, getpid, []),
+            %% try a normal kill first, but set a timer to
+            %% kill -9 after X seconds just in case
+            %%rpc:cast(Node, timer, apply_after,
+            %%[?FORCE_KILL_TIMER, os, cmd, [io_lib:format("kill -9 ~s", [OSPidToKill])]]),
+            ct_slave:stop(get_node_name(Node)),
+            rpc:cast(Node, os, cmd, [io_lib:format("kill -15 ~s", [OSPidToKill])]),
+            Node
+        end, NodeList).
 
 
 %% @doc Restart nodes with given configuration
@@ -267,96 +315,24 @@ heal_cluster(ANodes, BNodes) ->
     ok.
 
 
-%% Build clusters for all test suites.
--spec set_up_clusters_common(ct_config(), ClusterConfiguration :: [[atom()]]) -> [[node()]].
-set_up_clusters_common(Config, ClusterConfiguration) ->
-    StartClusterFunc =
-        fun(Nodes) ->
-            %% start each node
-            Cluster = general_utils:parallel_map(
-                fun(Node) ->
-                    start_node(Node, Config)
-                end,
-                Nodes),
-            [{Status, Claimant} | OtherNodes] = Cluster,
-
-            %% check if node was reused or not
-            case Status of
-                ready -> ok;
-                connect ->
-                    ct:pal("Creating a ring for claimant ~p and other nodes ~p", [Claimant, unpack(OtherNodes)]),
-                    ok = rpc:call(Claimant, inter_dc_manager, add_nodes_to_dc, [unpack(Cluster)])
-            end,
-            Cluster
-        end,
-
-    Clusters =
-        general_utils:parallel_map(
-            fun(Cluster) ->
-                StartClusterFunc(Cluster)
-            end, ClusterConfiguration),
-    case Clusters of
-        [] -> ct:pal("No Cluster", []);
-        [SingleCluster] -> ct:pal("Single Cluster ~p", [SingleCluster]);
-        _ ->
-            %%TODO implement for gingko
-            %% DCs started, but not connected yet
-            general_utils:parallel_map(
-                fun(CurrentCluster = [{Status, MainNode} | _]) ->
-                    case Status of
-                        ready -> ok;
-                        connect ->
-                            ct:pal("~p of ~p subscribing to other external DCs", [MainNode, unpack(CurrentCluster)]),
-
-                            Descriptors =
-                                lists:map(
-                                    fun([{_Status, FirstNode} | _]) ->
-                                        Descriptor = rpc:call(FirstNode, inter_dc_manager, get_descriptor, []),
-                                        Descriptor
-                                    end, Clusters),
-
-                            %% subscribe to descriptors of other dcs
-                            ok = rpc:call(MainNode, inter_dc_manager, subscribe_updates_from, [Descriptors])
-                    end
-                end, Clusters)
-    end,
-
-
-    ct:pal("Clusters joined and data centers connected connected: ~p", [ClusterConfiguration]),
-    [unpack(Cluster) || Cluster <- Clusters].
-
-
 %% logger configuration for each level
 %% see http://erlang.org/doc/man/logger.html
+-spec log_config(file:filename()) -> [logger:handler_config()].
 log_config(LogDir) ->
     DebugConfig = #{level => debug,
-        formatter => {logger_formatter, #{single_line => true, max_size => 2048}},
+        formatter => {logger_formatter, #{single_line => false}},
         config => #{type => {file, filename:join(LogDir, "debug.log")}}},
 
     InfoConfig = #{level => info,
-        formatter => {logger_formatter, #{single_line => true, max_size => 2048}},
+        formatter => {logger_formatter, #{single_line => false}},
         config => #{type => {file, filename:join(LogDir, "info.log")}}},
 
-    NoticeConfig = #{level => notice,
-        formatter => {logger_formatter, #{single_line => true, max_size => 2048}},
-        config => #{type => {file, filename:join(LogDir, "notice.log")}}},
-
-    WarningConfig = #{level => warning,
-        formatter => {logger_formatter, #{single_line => true, max_size => 2048}},
-        config => #{type => {file, filename:join(LogDir, "warning.log")}}},
-
     ErrorConfig = #{level => error,
-        formatter => {logger_formatter, #{single_line => true, max_size => 2048}},
+        formatter => {logger_formatter, #{single_line => false}},
         config => #{type => {file, filename:join(LogDir, "error.log")}}},
 
     [
-        {handler, debug_antidote, logger_std_h, DebugConfig},
-        {handler, info_antidote, logger_std_h, InfoConfig},
-        {handler, notice_antidote, logger_std_h, NoticeConfig},
-        {handler, warning_antidote, logger_std_h, WarningConfig},
-        {handler, error_antidote, logger_std_h, ErrorConfig}
+        {handler, debug_gingko, logger_std_h, DebugConfig},
+        {handler, info_gingko, logger_std_h, InfoConfig},
+        {handler, error_gingko, logger_std_h, ErrorConfig}
     ].
-
--spec unpack([{ready | connect, atom()}]) -> [atom()].
-unpack(NodesWithStatus) ->
-    [Node || {_Status, Node} <- NodesWithStatus].

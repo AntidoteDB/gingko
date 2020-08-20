@@ -18,7 +18,7 @@
 
 -module(inter_dc_log_vnode).
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
--include("gingko.hrl").
+-include("inter_dc.hrl").
 -behaviour(riak_core_vnode).
 
 -export([start_vnode/1,
@@ -40,7 +40,7 @@
     handle_overload_info/2]).
 
 -record(state, {
-    partition = 0 :: partition_id(),
+    partition = 0 :: partition(),
     txid_to_journal_entry_list_map = #{} :: #{txid() => [journal_entry()]}
 }).
 -type state() :: #state{}.
@@ -127,6 +127,6 @@ request_remote_txns(TargetDcId, TxnNumList, #state{partition = TargetPartition})
             JournalEntryListByTxIdList = maps:values(general_utils:group_by_map(fun(#journal_entry{tx_id = TxId}) -> TxId end, JournalEntryList)),
             lists:foreach(
                 fun(JournalEntryTxnList) ->
-                    gingko_utils:call_gingko_async(TargetPartition, ?GINGKO_LOG, {add_remote_txn, gingko_utils:sort_journal_entries_of_same_tx(JournalEntryTxnList)})
+                    gingko_dc_utils:call_gingko_async(TargetPartition, ?GINGKO_LOG, {add_remote_txn, gingko_utils:sort_journal_entries_of_same_tx(JournalEntryTxnList)})
                 end, JournalEntryListByTxIdList)
         end).

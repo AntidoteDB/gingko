@@ -40,7 +40,7 @@
     handle_overload_info/2]).
 
 -record(state, {
-    partition = 0 :: partition_id(),
+    partition = 0 :: partition(),
     table_name :: atom()
 }).
 -type state() :: #state{}.
@@ -76,7 +76,7 @@ handle_command(Request = {{update, {{KeyStruct, TypeOp}, TxOpNum}}, TxId}, Sende
     Result =
         case gingko_utils:generate_downstream_op(KeyStruct, TypeOp, TxId, TableName) of
             {ok, DownstreamOp} ->
-                gingko_utils:call_gingko_sync(Partition, ?GINGKO_LOG, {{update, {{KeyStruct, DownstreamOp}, TxOpNum}}, TxId});
+                gingko_dc_utils:call_gingko_sync(Partition, ?GINGKO_LOG, {{update, {{KeyStruct, DownstreamOp}, TxOpNum}}, TxId});
             Error -> Error
         end,
     {reply, Result, State};

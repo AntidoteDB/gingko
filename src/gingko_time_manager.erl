@@ -20,7 +20,7 @@
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
 -behaviour(gen_server).
 
--export([get_positive_monotonic_time/0, get_monotonic_system_time/0]).
+-export([get_monotonic_system_time/0]).
 
 -export([start_link/0,
     init/1,
@@ -31,7 +31,6 @@
     code_change/3]).
 
 -record(state, {
-    offset :: non_neg_integer(),
     monotonic_system_timestamp :: non_neg_integer()
 }).
 -type state() :: #state{}.
@@ -39,10 +38,6 @@
 %%%===================================================================
 %%% Public API
 %%%===================================================================
-
--spec get_positive_monotonic_time() -> non_neg_integer().
-get_positive_monotonic_time() ->
-    gen_server:call(?MODULE, positive_monotonic_timestamp).
 
 -spec get_monotonic_system_time() -> non_neg_integer().
 get_monotonic_system_time() ->
@@ -56,23 +51,12 @@ start_link() -> gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 init([]) ->
     default_gen_server_behaviour:init(?MODULE, []),
-    MonotonicTime = erlang:monotonic_time(),
-    Offset =
-        case MonotonicTime > 0 of
-            true -> erlang:monotonic_time() * (-1);
-            false -> 0
-        end,
     SystemTime = general_utils:get_timestamp_in_microseconds(),
-    {ok, #state{offset = Offset, monotonic_system_timestamp = SystemTime}}.
+    {ok, #state{monotonic_system_timestamp = SystemTime}}.
 
 handle_call(Request = hello, From, State) ->
     default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
     {reply, ok, State};
-
-handle_call(Request = positive_monotonic_timestamp, From, State = #state{offset = Offset}) ->
-    default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
-    PositiveMonotonicTime = erlang:monotonic_time() + Offset,
-    {reply, PositiveMonotonicTime, State};
 
 handle_call(Request = monotonic_system_timestamp, From, State = #state{monotonic_system_timestamp = MonotonicSystemTimestamp}) ->
     default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),

@@ -31,17 +31,17 @@
 
 %% common_test callbacks
 -export([
-         init_per_suite/1,
-         end_per_suite/1,
-         init_per_testcase/2,
-         end_per_testcase/2,
-         all/0
-        ]).
+    init_per_suite/1,
+    end_per_suite/1,
+    init_per_testcase/2,
+    end_per_testcase/2,
+    all/0
+]).
 
 %% tests
 -export([
-         append_failure_test/1
-        ]).
+    append_failure_test/1
+]).
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
@@ -66,33 +66,28 @@ all() -> [
 
 
 append_failure_test(Config) ->
-    Bucket = ?BUCKET,
-    Nodes = proplists:get_value(nodes, Config),
-    N = hd(Nodes),
-    Key = append_failure,
+    case gingko_env_utils:get_use_single_server() of
+        true -> pass;
+        false ->
+            Bucket = ?BUCKET,
+            Nodes = proplists:get_value(nodes, Config),
+            KeyStruct = #key_struct{key = append_failure, type = antidote_crdt_counter_pn},
+            KeyNode = gingko_dc_utils:get_key_partition_node_tuple(KeyStruct),
+            %% Identify preference list for a given key.
+            KeyNodeList = [KeyNode],
+            %% Perform successful write and read.
+            antidote_test_utils:increment_pn_counter(KeyNode, KeyStruct, Bucket),
+            {Val1, _} = antidote_test_utils:read_pn_counter(KeyNode, KeyStruct, Bucket),
+            ?assertEqual(1, Val1),
 
-    %% Identify preference list for a given key.
-    Preflist = rpc:call(N, antidote_utils, get_preflist_from_key, [Key]),
-    ct:log("Preference list: ~p", [Preflist]),
+            %% Partition the network.
+            ct:log("About to partition: ~p from: ~p", [KeyNodeList, Nodes -- KeyNodeList]),
+            test_utils:partition_cluster(KeyNodeList, Nodes -- KeyNodeList),
 
-    NodeList = [Node || {_Index, Node} <- Preflist],
-    ct:log("Responsible nodes for key: ~p", [NodeList]),
+            %% Heal the partition.
+            test_utils:heal_cluster(KeyNodeList, Nodes -- KeyNodeList),
 
-    {A, _} = lists:split(1, NodeList),
-    First = hd(A),
-
-    %% Perform successful write and read.
-    antidote_test_utils:increment_pn_counter(First, Key, Bucket),
-    {Val1, _} = antidote_test_utils:read_pn_counter(First, Key, Bucket),
-    ?assertEqual(1, Val1),
-
-    %% Partition the network.
-    ct:log("About to partition: ~p from: ~p", [A, Nodes -- A]),
-    test_utils:partition_cluster(A, Nodes -- A),
-
-    %% Heal the partition.
-    test_utils:heal_cluster(A, Nodes -- A),
-
-    %% Read after the partition has been healed.
-    {Val2, _} = antidote_test_utils:read_pn_counter(First, Key, Bucket),
-    ?assertEqual(1, Val2).
+            %% Read after the partition has been healed.
+            {Val2, _} = antidote_test_utils:read_pn_counter(KeyNode, KeyStruct, Bucket),
+            ?assertEqual(1, Val2)
+    end.

@@ -22,8 +22,8 @@
 
 -export([get_request_address/0,
     get_request_address_list/0,
-    get_journal_address/0,
-    get_journal_address_list/0,
+    get_txn_address/0,
+    get_txn_address_list/0,
     partition_to_binary/1,
     partition_from_binary/1,
     partition_and_rest_binary/1,
@@ -51,22 +51,22 @@ get_ip_list_without_local_ip() ->
 
 -spec get_request_address() -> socket_address().
 get_request_address() ->
-    Port = application:get_env(?GINGKO_APP_NAME, ?REQUEST_PORT_NAME, ?DEFAULT_REQUEST_PORT),
+    Port = gingko_env_utils:get_request_port(),
     {get_ip(), Port}.
 
 -spec get_request_address_list() -> [socket_address()].
 get_request_address_list() ->
-    Port = application:get_env(?GINGKO_APP_NAME, ?REQUEST_PORT_NAME, ?DEFAULT_REQUEST_PORT),
+    Port = gingko_env_utils:get_request_port(),
     [{Ip, Port} || Ip <- get_ip_list_without_local_ip()].
 
--spec get_journal_address() -> socket_address().
-get_journal_address() ->
-    Port = application:get_env(?GINGKO_APP_NAME, ?JOURNAL_PORT_NAME, ?DEFAULT_JOURNAL_PORT),
+-spec get_txn_address() -> socket_address().
+get_txn_address() ->
+    Port = gingko_env_utils:get_txn_port(),
     {get_ip(), Port}.
 
--spec get_journal_address_list() -> [socket_address()].
-get_journal_address_list() ->
-    Port = application:get_env(?GINGKO_APP_NAME, ?JOURNAL_PORT_NAME, ?DEFAULT_JOURNAL_PORT),
+-spec get_txn_address_list() -> [socket_address()].
+get_txn_address_list() ->
+    Port = gingko_env_utils:get_txn_port(),
     [{Ip, Port} || Ip <- get_ip_list_without_local_ip()].
 
 -spec pad(non_neg_integer(), binary()) -> binary().
@@ -90,11 +90,11 @@ pad_or_trim(Width, Binary) ->
         N -> <<0:(N * 8), Binary/binary>>
     end.
 
--spec partition_to_binary(partition_id()) -> binary().
+-spec partition_to_binary(partition()) -> binary().
 partition_to_binary(Partition) ->
     pad(?PARTITION_BYTE_LENGTH, binary:encode_unsigned(Partition)).
 
--spec partition_from_binary(binary()) -> partition_id().
+-spec partition_from_binary(binary()) -> partition().
 partition_from_binary(PartitionBinary) ->
     binary:decode_unsigned(PartitionBinary).
 
@@ -102,3 +102,13 @@ partition_from_binary(PartitionBinary) ->
 partition_and_rest_binary(Binary) ->
     <<Partition:?PARTITION_BYTE_LENGTH/big-unsigned-integer-unit:8, RestBinary/binary>> = Binary,
     {Partition, RestBinary}.
+
+sort_dc_address_list(DcAddressList) ->
+    lists:sort(
+        lists:map(
+            fun({Node, SocketAddressList}) ->
+                {Node, lists:sort(SocketAddressList)}
+            end, DcAddressList)).
+
+sort_descriptor(Descriptor = #descriptor{txn_dc_address_list = TxnDcAddressList, request_dc_address_list = RequestDcAddressList}) ->
+    Descriptor#descriptor{txn_dc_address_list = sort_dc_address_list(TxnDcAddressList), request_dc_address_list = sort_dc_address_list(RequestDcAddressList)}.

@@ -18,10 +18,10 @@
 
 -module(gingko_checkpoint_service).
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
--include("gingko.hrl").
+-include("inter_dc.hrl").
 -behaviour(gen_server).
 
--export([update_checkpoint_service/2, get_checkpoint_interval_millis/0]).
+-export([update_checkpoint_service/1, checkpoint/0]).
 
 -export([start_link/0,
     init/1,
@@ -33,7 +33,6 @@
 
 -record(state, {
     active = false :: boolean(),
-    checkpoint_interval_millis = ?DEFAULT_WAIT_TIME_SUPER_LONG :: non_neg_integer(),
     checkpoint_timer = none :: none | reference()
 }).
 -type state() :: #state{}.
@@ -42,13 +41,12 @@
 %%% Public API
 %%%===================================================================
 
--spec update_checkpoint_service(boolean(), non_neg_integer()) -> ok.
-update_checkpoint_service(Active, CheckpointIntervalMillis) ->
-    gen_server:cast(?MODULE, {update_checkpoint_service, Active, CheckpointIntervalMillis}).
+-spec update_checkpoint_service(boolean()) -> ok.
+update_checkpoint_service(Active) ->
+    gen_server:cast(?MODULE, {update_checkpoint_service, Active}).
 
--spec get_checkpoint_interval_millis() -> millisecond().
-get_checkpoint_interval_millis() ->
-    gen_server:call(?MODULE, get_checkpoint_interval_millis).
+-spec checkpoint() -> ok.
+checkpoint() -> gen_server:call(?MODULE, checkpoint).
 
 %%%===================================================================
 %%% Spawning and gen_server implementation
@@ -64,23 +62,24 @@ handle_call(Request = hello, From, State) ->
     default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
     {reply, ok, State};
 
-handle_call(Request = get_checkpoint_interval_millis, From, State = #state{checkpoint_interval_millis = CheckpointIntervalMillis}) ->
+handle_call(Request = checkpoint, From, State) ->
     default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
-    {reply, CheckpointIntervalMillis, State};
+    internal_checkpoint(),
+    {reply, ok, State};
 
 handle_call(Request, From, State) -> default_gen_server_behaviour:handle_call_crash(?MODULE, Request, From, State).
 
-handle_cast(Request = {update_checkpoint_service, Active, CheckpointIntervalMillis}, State) ->
+handle_cast(Request = {update_checkpoint_service, Active}, State) ->
     default_gen_server_behaviour:handle_cast(?MODULE, Request, State),
-    {noreply, update_timer(State#state{active = Active, checkpoint_interval_millis = CheckpointIntervalMillis})};
+    {noreply, update_timer(State#state{active = Active})};
 
 handle_cast(Request, State) -> default_gen_server_behaviour:handle_cast_crash(?MODULE, Request, State).
 
-handle_info(Info = checkpoint, State = #state{checkpoint_timer = CheckpointTimer, checkpoint_interval_millis = CheckpointIntervalMillis}) ->
+handle_info(Info = checkpoint, State = #state{checkpoint_timer = CheckpointTimer}) ->
     default_gen_server_behaviour:handle_info(?MODULE, Info, State),
     erlang:cancel_timer(CheckpointTimer),
-    DependencyVts = gingko_utils:get_GCSt_vts(),
-    gingko:checkpoint(DependencyVts),
+    internal_checkpoint(),
+    CheckpointIntervalMillis = gingko_env_utils:get_checkpoint_interval_millis(),
     NewCheckpointTimer = erlang:send_after(CheckpointIntervalMillis, self(), checkpoint),
     {noreply, State#state{checkpoint_timer = NewCheckpointTimer}};
 
@@ -93,6 +92,17 @@ code_change(OldVsn, State, Extra) -> default_gen_server_behaviour:code_change(?M
 %%%===================================================================
 
 -spec update_timer(state()) -> state().
-update_timer(State = #state{checkpoint_timer = CheckpointTimer, checkpoint_interval_millis = CheckpointIntervalMillis}) ->
-    NewCheckpointTimer = gingko_utils:update_timer(CheckpointTimer, true, CheckpointIntervalMillis, checkpoint, false),
+update_timer(State = #state{checkpoint_timer = CheckpointTimer}) ->
+    CheckpointIntervalMillis = gingko_env_utils:get_checkpoint_interval_millis(),
+    NewCheckpointTimer = gingko_dc_utils:update_timer(CheckpointTimer, true, CheckpointIntervalMillis, checkpoint, false),
     State#state{checkpoint_timer = NewCheckpointTimer}.
+
+%%We check whether we need to abort local transactions to perform the checkpoint (transactions older than two checkpoint intervals will be aborted)
+%%TODO make this varible so that old transactions may get some more time to finish!
+-spec internal_checkpoint() -> ok.
+internal_checkpoint() ->
+    GCSt = gingko_dc_utils:get_GCSt_vts(),
+    MinimumDependencyVts = gingko_dc_utils:get_minimum_tx_dependency_vts(),
+    CheckpointVts = vectorclock:min([GCSt, MinimumDependencyVts]),
+    gingko_dc_utils:bcast_local_gingko_sync(?GINGKO_LOG, {{checkpoint, CheckpointVts}, #tx_id{server_pid = self(), local_start_time = gingko_dc_utils:get_timestamp()}}), %%TODO check results
+    ok.%%Checkpoints only get applied to local partitions because they are reoccurring processes on all nodes

@@ -31,37 +31,37 @@
 
 -spec init(atom(), list()) -> {ok, none}.
 init(Module, Args) ->
-    logger:debug("~p:init(~nArgs: ~p~n)", [Module, Args]),
+    %%logger:debug("~p:init(~nArgs: ~p~n)", [Module, Args]),
     {ok, none}.
 
 -spec handle_call(atom(), term(), {pid(), term()}, term()) -> {reply, default_response, term()}.
 handle_call(Module, Request, From, State) ->
-    logger:debug("~p:handle_call(~nRequest: ~p~nFrom: ~p~nState: ~p~n)", [Module, Request, From, State]),
+    %%logger:debug("~p:handle_call(~nRequest: ~p~nFrom: ~p~nState: ~p~n)", [Module, Request, From, State]),
     {reply, default_response, State}.
 
 -spec handle_call_crash(atom(), term(), {pid(), term()}, term()) -> no_return().
 handle_call_crash(Module, Request, From, State) ->
-    handle_call(Module, Request, From, State),
+    logger:debug("~p:handle_call(~nRequest: ~p~nFrom: ~p~nState: ~p~n)", [Module, Request, From, State]),
     error("handle_call_error").
 
 -spec handle_cast(atom(), term(), term()) -> {noreply, term()}.
 handle_cast(Module, Request, State) ->
-    logger:debug("~p:handle_cast(~nRequest: ~p~nState: ~p~n)", [Module, Request, State]),
+    %%logger:debug("~p:handle_cast(~nRequest: ~p~nState: ~p~n)", [Module, Request, State]),
     {noreply, State}.
 
 -spec handle_cast_crash(atom(), term(), term()) -> no_return().
 handle_cast_crash(Module, Request, State) ->
-    handle_cast(Module, Request, State),
+    logger:debug("~p:handle_cast(~nRequest: ~p~nState: ~p~n)", [Module, Request, State]),
     error("handle_cast_error").
 
 -spec handle_info(atom(), term(), term()) -> {noreply, term()}.
 handle_info(Module, Info, State) ->
-    logger:debug("~p:handle_info(~nInfo: ~p~nState: ~p~n)", [Module, Info, State]),
+    %%logger:debug("~p:handle_info(~nInfo: ~p~nState: ~p~n)", [Module, Info, State]),
     {noreply, State}.
 
 -spec handle_info_crash(atom(), term(), term()) -> no_return().
-handle_info_crash(Module, Request, State) ->
-    handle_info(Module, Request, State),
+handle_info_crash(Module, Info, State) ->
+    logger:debug("~p:handle_info(~nInfo: ~p~nState: ~p~n)", [Module, Info, State]),
     error("handle_info_crash").
 
 -spec terminate(atom(), term(), term()) -> ok.

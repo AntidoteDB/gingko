@@ -84,15 +84,20 @@ materialize_snapshot(Snapshot = #snapshot{key_struct = KeyStruct, snapshot_vts =
             fun({CommitVts, _}) ->
                 CommitVts
             end, BeforeEqualDependencyVtsCommitVtsDownstreamOpListTupleList),
-    SmallestCommitVtsAfterDependencyVts =
-        gingko_utils:get_smallest_by_vts(
-            fun({CommitVts, _}) ->
-                CommitVts
-            end, AfterDependencyVtsCommitVtsDownstreamOpListTupleList),
-    NewSnapshotVts = vectorclock:map(
-        fun(_, DcClockTime) ->
-            DcClockTime - 1
-        end, SmallestCommitVtsAfterDependencyVts), %%TODO maybe implement more elegant solution
+    NewSnapshotVts =
+        case AfterDependencyVtsCommitVtsDownstreamOpListTupleList of
+            [] -> DependencyVts;
+            _ ->
+                {SmallestCommitVtsAfterDependencyVts, _} =
+                    gingko_utils:get_smallest_by_vts(
+                        fun({CommitVts, _}) ->
+                            CommitVts
+                        end, AfterDependencyVtsCommitVtsDownstreamOpListTupleList),
+                vectorclock:map(
+                    fun(_, DcClockTime) ->
+                        DcClockTime - 1
+                    end, SmallestCommitVtsAfterDependencyVts)
+        end,%%TODO maybe implement more elegant solution
     %%Calculate maximum valid snapshot vts so that a key that rarely updated is valid longer
     NewSnapshot = materialize_update_payload(Snapshot, SortedBeforeEqualDependencyVtsCommitVtsDownstreamOpListTupleList),
     NewSnapshot#snapshot{snapshot_vts = NewSnapshotVts}.

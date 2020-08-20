@@ -27,35 +27,59 @@
 -export([start_link/0,
     init/1]).
 
--define(CHILD(I, Type, Args), {I, {I, start_link, Args}, permanent, 5000, Type, [I]}).
--define(VNODE(I, M), {I, {riak_core_vnode_master, start_link, [M]}, permanent, 5000, worker, [riak_core_vnode_master]}).
+-define(WORKER(ModuleName),
+    #{
+        id => ModuleName,
+        start => {ModuleName, start_link, []}
+    }).
+-define(SUPERVISOR(ModuleName),
+    #{
+        id => ModuleName,
+        start => {ModuleName, start_link, []},
+        type => supervisor
+    }).
+-define(VNODE(MasterName, ModuleName),
+    #{
+        id => MasterName,
+        start => {riak_core_vnode_master, start_link, [ModuleName]},
+        modules => [riak_core_vnode_master]
+    }).
 
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 init(_Args) ->
-    GingkoMaster = ?CHILD(gingko_server, worker, []),
+    TimeManager = ?WORKER(gingko_time_manager),
     {GingkoLogMaster, GingkoLogHelperMaster, GingkoCacheMaster, InterDcLogMaster} =
-        case ?USE_SINGLE_SERVER of
+        case gingko_env_utils:get_use_single_server() of
             true ->
-                {?CHILD(gingko_log_server, worker, []), ?CHILD(gingko_log_helper_server, worker, []), ?CHILD(gingko_cache_server, worker, []), ?CHILD(inter_dc_log_server, worker, [])};
+                {
+                    ?WORKER(gingko_log_server),
+                    ?WORKER(gingko_log_helper_server),
+                    ?WORKER(gingko_cache_server),
+                    ?WORKER(inter_dc_log_server)
+                };
             false ->
-                {?VNODE(?GINGKO_LOG_VNODE_MASTER, gingko_log_vnode), ?VNODE(?GINGKO_LOG_HELPER_VNODE_MASTER, gingko_log_helper_vnode), ?VNODE(?GINGKO_CACHE_VNODE_MASTER, gingko_cache_vnode), ?VNODE(?INTER_DC_LOG_VNODE_MASTER, inter_dc_log_vnode)}
+                {
+                    ?VNODE(?GINGKO_LOG_VNODE_MASTER, gingko_log_vnode),
+                    ?VNODE(?GINGKO_LOG_HELPER_VNODE_MASTER, gingko_log_helper_vnode),
+                    ?VNODE(?GINGKO_CACHE_VNODE_MASTER, gingko_cache_vnode),
+                    ?VNODE(?INTER_DC_LOG_VNODE_MASTER, inter_dc_log_vnode)
+                }
         end,
-    BCounterManager = ?CHILD(bcounter_manager, worker, []),
-    TimeManager = ?CHILD(gingko_time_manager, worker, []),
-    CheckpointService = ?CHILD(gingko_checkpoint_service, worker, []),
-    StateService = ?CHILD(inter_dc_state_service, worker, []),
-    ZMQContextManager = ?CHILD(zmq_context, worker, []),
-    InterDcJournalSender = ?CHILD(inter_dc_txn_sender, worker, []),
-    InterDcJournalReceiver = ?CHILD(inter_dc_txn_receiver, worker, []),
-    InterDcRequestSender = ?CHILD(inter_dc_request_sender, worker, []),
-    InterDcRequestResponder = ?CHILD(inter_dc_request_responder, worker, []),
+    ZMQContextManager = ?WORKER(zmq_context),
+    CheckpointService = ?WORKER(gingko_checkpoint_service),
+    StateService = ?WORKER(inter_dc_state_service),
+    InterDcTxnSender = ?WORKER(inter_dc_txn_sender),
+    InterDcJournalReceiver = ?WORKER(inter_dc_txn_receiver),
+    InterDcRequestSender = ?WORKER(inter_dc_request_sender),
+    InterDcRequestResponder = ?WORKER(inter_dc_request_responder),
+    BCounterManager = ?WORKER(bcounter_manager),
+    TxServerSup = ?SUPERVISOR(gingko_tx_server_sup),
 
     SupFlags = #{strategy => one_for_one, intensity => 5, period => 10},
     {ok, {SupFlags, [
         TimeManager,
-        GingkoMaster,
         InterDcLogMaster,
         GingkoLogMaster,
         GingkoLogHelperMaster,
@@ -63,8 +87,9 @@ init(_Args) ->
         ZMQContextManager,
         CheckpointService,
         StateService,
-        InterDcJournalSender,
+        InterDcTxnSender,
         InterDcJournalReceiver,
         InterDcRequestSender,
         InterDcRequestResponder,
-        BCounterManager]}}.
+        BCounterManager,
+        TxServerSup]}}.

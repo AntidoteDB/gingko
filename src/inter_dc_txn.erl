@@ -26,12 +26,12 @@
     from_binary/1]).
 
 %%TODO check correctness
--spec from_journal_entries(partition_id(), [journal_entry()]) -> inter_dc_txn().
+-spec from_journal_entries(partition(), [journal_entry()]) -> inter_dc_txn().
 from_journal_entries(Partition, JournalEntryList) ->
-    #inter_dc_txn{partition = Partition, source_dcid = gingko_utils:get_my_dcid(), journal_entries = JournalEntryList}.
+    #inter_dc_txn{partition = Partition, source_dcid = gingko_dc_utils:get_my_dcid(), journal_entries = JournalEntryList}.
 
 -spec is_local(inter_dc_txn()) -> boolean().
-is_local(#inter_dc_txn{source_dcid = DCID}) -> DCID == gingko_utils:get_my_dcid().
+is_local(#inter_dc_txn{source_dcid = DCID}) -> DCID == gingko_dc_utils:get_my_dcid().
 
 to_tuple(#inter_dc_txn{partition = Partition, source_dcid = DCID, journal_entries = JournalEntryList}) ->
     {Partition, DCID, JournalEntryList}.

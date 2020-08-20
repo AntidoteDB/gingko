@@ -32,12 +32,11 @@
 -export([leave_dc/0,
     create_dc/1,
     add_nodes_to_dc/1,
-    subscribe_updates_from/1,
+    connect_to_remote_dcs_and_start_dc/1,
     get_descriptor/0,
-    connect_to_remote_dcs/1,
-    dc_successfully_started/0,
-    check_node_restart/0,
-    forget_dcs/1]).
+    connect_all_nodes_to_remote_dcs/1,
+    reconnect_node_to_remote_dcs_after_restart/2,
+    disconnect_remote_dcs_from_all_nodes/1]).
 
 %% Command this node to leave the current data center
 -spec leave_dc() -> ok | {error, term()}.
@@ -48,20 +47,15 @@ leave_dc() -> riak_core:leave().
 create_dc(Nodes) -> add_nodes_to_dc(Nodes).
 
 %% Build a ring of Nodes forming a data center
--spec add_nodes_to_dc([node()]) -> ok | {error, ring_not_ready}.
+-spec add_nodes_to_dc([node()]) -> ok | {error, reason()}.
 add_nodes_to_dc(Nodes) ->
     %% check if ring is ready first
-    case ?USE_SINGLE_SERVER of
-        true -> gingko_app:initial_startup_nodes(Nodes);
-        false ->
-            case riak_core_ring:ring_ready() of
-                true ->
-                    join_new_nodes(Nodes),
-                ok = gingko_app:initial_startup_nodes(Nodes);
-                _ -> {error, ring_not_ready}
-            end
+    case riak_core_ring:ring_ready() of
+        true ->
+            join_new_nodes(Nodes);
+        _ ->
+            {error, ring_not_ready}
     end.
-
 
 %% ---------- Internal Functions --------------
 
@@ -72,7 +66,8 @@ join_new_nodes(Nodes) ->
 
     %% filter nodes that are not already in this nodes ring
     CurrentNodeMembers = riak_core_ring:all_members(CurrentRing),
-    NewNodeMembers = [NewNode || NewNode <- Nodes, not lists:member(NewNode, CurrentNodeMembers)],
+
+    NewNodeMembers = general_utils:list_without_elements_from_other_list(Nodes, CurrentNodeMembers),
     plan_and_commit(NewNodeMembers).
 
 
@@ -111,7 +106,7 @@ plan_and_commit(NewNodeMembers) ->
     %% this prevents writing to a ring which has not finished its balancing yet and therefore causes
     %% handoffs to be triggered
     %% FIXME this can be removed when #401 and #203 is fixed
-    riak_core_handoff_manager:set_concurrency(16),
+    %%riak_core_handoff_manager:set_concurrency(16),
 
     %%riak_core_handoff_manager ! management_tick,
     wait_until_ring_no_pending_changes(),
@@ -152,32 +147,26 @@ wait_until_ring_ready(Node) ->
     end.
 
 %% Start receiving updates from other DCs
--spec subscribe_updates_from([descriptor()]) -> ok.
-subscribe_updates_from(DCDescriptors) ->
-    _Connected = connect_to_remote_dcs(DCDescriptors),
-    inter_dc_meta_data_manager:start_dc(),
+-spec connect_to_remote_dcs_and_start_dc([descriptor()]) -> ok.
+connect_to_remote_dcs_and_start_dc(DCDescriptors) ->
+    ok = connect_all_nodes_to_remote_dcs(DCDescriptors),
+    ok = inter_dc_meta_data_manager:start_dc(),
     %%TODO Check return for errors
-    true = dc_successfully_started(),
+    true = inter_dc_meta_data_manager:has_dc_started_and_is_healthy(),
     ok.
 
 -spec get_descriptor() -> descriptor().
 get_descriptor() ->
     %% Wait until all needed vnodes are spawned, so that the heartbeats are already being sent
-    Nodes = gingko_utils:get_my_dc_nodes(),
-    JournalDcAddressList =
-        lists:map(
-            fun(Node) ->
-                rpc:call(Node, inter_dc_utils, get_journal_address_list, [])
-            end, Nodes),
-    RequestDcAddressList =
-        lists:map(
-            fun(Node) ->
-                rpc:call(Node, inter_dc_utils, get_request_address_list, [])
-            end, Nodes),
+    Nodes = gingko_dc_utils:get_my_dc_nodes(),
+    {TxnNodeAddressListList, []} = rpc:multicall(Nodes, inter_dc_utils, get_txn_address_list, []),
+    TxnDcAddressList = lists:zip(Nodes, TxnNodeAddressListList),
+    {RequestNodeAddressListList, []} = rpc:multicall(Nodes, inter_dc_utils, get_request_address_list, []),
+    RequestDcAddressList = lists:zip(Nodes, RequestNodeAddressListList),
     #descriptor{
-        dcid = gingko_utils:get_my_dcid(),
-        number_of_partitions = gingko_utils:get_number_of_partitions(),
-        journal_dc_address_list = JournalDcAddressList,
+        dcid = gingko_dc_utils:get_my_dcid(),
+        number_of_partitions = gingko_dc_utils:get_number_of_partitions(),
+        txn_dc_address_list = TxnDcAddressList,
         request_dc_address_list = RequestDcAddressList
     }.
 
@@ -187,13 +176,13 @@ get_descriptor() ->
 %% Note this is an internal function, to instruct the local DC to connect to a new DC the observe_dcs_sync(Descriptors) function should be used
 -spec connect_nodes_to_remote_dc([node()], descriptor()) -> ok | {error, reason()}.
 connect_nodes_to_remote_dc(Nodes, Descriptor = #descriptor{dcid = DCID, number_of_partitions = RemoteNumberOfPartitions}) ->
-    LocalNumberOfPartitions = gingko_utils:get_number_of_partitions(),
+    LocalNumberOfPartitions = gingko_dc_utils:get_number_of_partitions(),
     case RemoteNumberOfPartitions == LocalNumberOfPartitions of
         false ->
             logger:info("Cannot observe remote DC: partition number mismatch"),
             {error, {number_of_partitions_mismatch, RemoteNumberOfPartitions, LocalNumberOfPartitions}};
         true ->
-            case DCID == gingko_utils:get_my_dcid() of
+            case DCID == gingko_dc_utils:get_my_dcid() of
                 true -> ok;
                 false ->
                     logger:info("Observing DC ~p", [DCID]),
@@ -208,12 +197,12 @@ connect_nodes_to_remote_dc(Nodes, Descriptor = #descriptor{dcid = DCID, number_o
 connect_nodes_to_remote_dc([], _Descriptor, _Retries) ->
     ok;
 connect_nodes_to_remote_dc(_Nodes, Descriptor, 0) ->
-    ok = forget_dcs([Descriptor]),
+    ok = disconnect_remote_dcs_from_all_nodes([Descriptor]),
     {error, connection_error};
-connect_nodes_to_remote_dc([Node | Rest], Descriptor = #descriptor{dcid = DCID, journal_dc_address_list = JournalDcAddressList, request_dc_address_list = RequestDcAddressList}, Retries) ->
+connect_nodes_to_remote_dc([Node | Rest], Descriptor = #descriptor{dcid = DCID, txn_dc_address_list = TxnDcAddressList, request_dc_address_list = RequestDcAddressList}, Retries) ->
     case rpc:call(Node, inter_dc_request_sender, add_dc, [DCID, RequestDcAddressList], ?COMM_TIMEOUT) of
         ok ->
-            case rpc:call(Node, inter_dc_txn_receiver, add_dc, [DCID, JournalDcAddressList], ?COMM_TIMEOUT) of
+            case rpc:call(Node, inter_dc_txn_receiver, add_dc, [DCID, TxnDcAddressList], ?COMM_TIMEOUT) of
                 ok ->
                     connect_nodes_to_remote_dc(Rest, Descriptor, ?DC_CONNECT_RETRIES);
                 _ ->
@@ -227,78 +216,46 @@ connect_nodes_to_remote_dc([Node | Rest], Descriptor = #descriptor{dcid = DCID, 
             connect_nodes_to_remote_dc([Node | Rest], Descriptor, Retries - 1)
     end.
 
-%% This should be called once the DC is up and running successfully
-%% It sets a flag on disk to true.  When this is true on fail and
-%% restart the DC will load its state from disk
--spec dc_successfully_started() -> boolean().
-dc_successfully_started() ->
-    inter_dc_meta_data_manager:has_dc_started().
+-spec reconnect_node_to_remote_dcs_after_restart([descriptor()], node()) -> ok | {error, reason()}.
+reconnect_node_to_remote_dcs_after_restart(Descriptors, Node) ->
+    disconnect_remote_dcs_from_nodes(Descriptors, [Node]),
+    connect_nodes_to_remote_dcs(Descriptors, [Node]).
 
-%% Checks is the node is restarting when it had already been running
-%% If it is then all the background processes and connections are restarted
--spec check_node_restart() -> boolean().
-check_node_restart() ->
-    case inter_dc_meta_data_manager:is_dc_restart() of
-        true ->
-            logger:info("This node was previously configured, will restart from previous config"),
-            MyNode = node(),
-            %% Reconnect this node to other DCs
-            OtherDCs = inter_dc_meta_data_manager:get_dc_descriptors(),
-            Responses3 = reconnect_dcs_after_restart(OtherDCs, MyNode),
-            %% Ensure all connections were successful, crash otherwise
+-spec connect_all_nodes_to_remote_dcs([descriptor()]) -> ok | {error, reason()}.
+connect_all_nodes_to_remote_dcs(Descriptors) ->
+    Nodes = gingko_dc_utils:get_my_dc_nodes(),
+    connect_nodes_to_remote_dcs(Descriptors, Nodes).
 
-            Responses3 = [X = ok || X <- Responses3],
-            true;
-        false ->
-            false
+-spec connect_nodes_to_remote_dcs([descriptor()], [node()]) -> ok | {error, reason()}.
+connect_nodes_to_remote_dcs(Descriptors, Nodes) ->
+    try
+        lists:foreach(
+                fun(DC) ->
+                    ok = connect_nodes_to_remote_dc(Nodes, DC)
+                end, Descriptors),
+        inter_dc_meta_data_manager:store_dc_descriptors(Descriptors)
+    catch
+        error:{badmatch, Error = {error, _}} -> Error
     end.
 
--spec reconnect_dcs_after_restart([descriptor()], node()) -> [ok | {error, reason()}].
-reconnect_dcs_after_restart(Descriptors, MyNode) ->
-    forget_dcs(Descriptors, [MyNode]),
-    connect_to_remote_dcs(Descriptors, [MyNode]).
-
--spec connect_to_remote_dcs([descriptor()]) -> [ok | {error, reason()}].
-connect_to_remote_dcs(Descriptors) ->
-    Nodes = gingko_utils:get_my_dc_nodes(),
-    connect_to_remote_dcs(Descriptors, Nodes).
-
--spec connect_to_remote_dcs([descriptor()], [node()]) -> [ok | {error, reason()}].
-connect_to_remote_dcs(Descriptors, Nodes) ->
-    Nodes = gingko_utils:get_my_dc_nodes(),
-    ConnectionResults =
-        lists:map(
-            fun(DC) ->
-                {connect_nodes_to_remote_dc(Nodes, DC), DC}
-            end, Descriptors),
-    OnlyDescriptors = lists:filtermap(
-        fun({ConnectionResult, Descriptor}) ->
-            case ConnectionResult of
-                ok -> {true, Descriptor};
-                _ -> false
-            end
-        end, ConnectionResults),
-    inter_dc_meta_data_manager:store_dc_descriptors(OnlyDescriptors),
-    [Result || {Result, _Descriptor} <- ConnectionResults].
-
--spec forget_dc(descriptor(), [node()]) -> ok.
-forget_dc(#descriptor{dcid = DCID}, Nodes) ->
-    case DCID == gingko_utils:get_my_dcid() of
+-spec disconnect_remote_dc_from_nodes(descriptor(), [node()]) -> ok.
+disconnect_remote_dc_from_nodes(#descriptor{dcid = DcId}, Nodes) ->
+    case DcId == gingko_dc_utils:get_my_dcid() of
         true -> ok;
         false ->
-            logger:notice("Forgetting DC ~p", [DCID]),
-            lists:foreach(fun(Node) -> ok = rpc:call(Node, inter_dc_request_sender, delete_dc, [DCID]) end, Nodes),
-            lists:foreach(fun(Node) -> ok = rpc:call(Node, inter_dc_txn_receiver, delete_dc, [DCID]) end, Nodes)
+            logger:notice("Forgetting DC ~p", [DcId]),
+            lists:foreach(fun(Node) -> ok = rpc:call(Node, inter_dc_request_sender, delete_dc, [DcId]) end, Nodes),
+            lists:foreach(fun(Node) -> ok = rpc:call(Node, inter_dc_txn_receiver, delete_dc, [DcId]) end, Nodes)
     end.
 
--spec forget_dcs([descriptor()]) -> ok.
-forget_dcs(Descriptors) ->
-    Nodes = gingko_utils:get_my_dc_nodes(),
-    forget_dcs(Descriptors, Nodes).
+-spec disconnect_remote_dcs_from_all_nodes([descriptor()]) -> ok.
+disconnect_remote_dcs_from_all_nodes(Descriptors) ->
+    Nodes = gingko_dc_utils:get_my_dc_nodes(),
+    disconnect_remote_dcs_from_nodes(Descriptors, Nodes).
 
--spec forget_dcs([descriptor()], [node()]) -> ok.
-forget_dcs(Descriptors, Nodes) ->
+-spec disconnect_remote_dcs_from_nodes([descriptor()], [node()]) -> ok.
+disconnect_remote_dcs_from_nodes(Descriptors, Nodes) ->
     lists:foreach(
         fun(Descriptor) ->
-            forget_dc(Descriptor, Nodes)
+            disconnect_remote_dc_from_nodes(Descriptor, Nodes)
         end, Descriptors).

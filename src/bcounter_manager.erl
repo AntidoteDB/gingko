@@ -65,13 +65,13 @@
 %% below 0), operation fails, otherwise a downstream for the decrement
 %% is generated.
 generate_downstream(Key, {decrement, {Value, _DCID}}, BCounter) ->
-    DCID = gingko_utils:get_my_dcid(),
+    DCID = gingko_dc_utils:get_my_dcid(),
     gen_server:call(?MODULE, {consume, Key, {decrement, {Value, DCID}}, BCounter});
 
 %% @doc Processes an increment operation for the bounded counter.
 %% Operation is always safe.
 generate_downstream(_Key, {increment, {Amount, _DCID}}, BCounter) ->
-    DCID = gingko_utils:get_my_dcid(),
+    DCID = gingko_dc_utils:get_my_dcid(),
     ?DATA_TYPE:downstream({increment, {Amount, DCID}}, BCounter);
 
 %% @doc Processes a transfer operation between two owners of the
@@ -102,7 +102,7 @@ handle_call(Request = hello, From, State) ->
 
 handle_call(Request = {consume, Key, {Op, {Amount, _}}, BCounter}, From, State = #state{request_queue = RequestQueue}) ->
     default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
-    DCID = gingko_utils:get_my_dcid(),
+    DCID = gingko_dc_utils:get_my_dcid(),
     case ?DATA_TYPE:generate_downstream_check({Op, Amount}, DCID, BCounter, Amount) of
         {error, no_permissions} = FailedResult ->
             Available = ?DATA_TYPE:localPermissions(DCID, BCounter),
@@ -115,7 +115,7 @@ handle_call(Request = {consume, Key, {Op, {Amount, _}}, BCounter}, From, State =
 handle_cast(Request = {transfer, {Key, Amount, RequesterDCID}}, State = #state{last_transfers = LastTransfers}) ->
     default_gen_server_behaviour:handle_cast(?MODULE, Request, State),
     NewLastTransfers = cancel_consecutive_request(LastTransfers, ?GRACE_PERIOD),
-    DCID = gingko_utils:get_my_dcid(),
+    DCID = gingko_dc_utils:get_my_dcid(),
     case can_process(Key, RequesterDCID, NewLastTransfers) of
         true ->
             BCounterKey = {Key, ?DATA_TYPE},
@@ -175,7 +175,7 @@ queue_request(Key, Amount, RequestQueue) ->
 -spec request_remote(non_neg_integer(), key()) -> non_neg_integer().
 request_remote(0, _Key) -> 0;
 request_remote(RequiredSum, Key) ->
-    DCID = gingko_utils:get_my_dcid(),
+    DCID = gingko_dc_utils:get_my_dcid(),
     BCounterKey = {Key, ?DATA_TYPE},
     {ok, BCounter} = gingko:read(BCounterKey),
     PrefList = pref_list(BCounter),
@@ -195,13 +195,13 @@ request_remote(RequiredSum, Key) ->
 
 -spec do_request(dcid(), dcid(), key(), non_neg_integer()) -> ok | unknown_dc.
 do_request(DCID, RemoteDCID, Key, Amount) ->
-    Partition = gingko_utils:get_key_partition(Key),
+    Partition = gingko_dc_utils:get_key_partition(Key),
     inter_dc_request_sender:perform_bcounter_permissions_request({RemoteDCID, Partition}, {transfer, {Key, Amount, DCID}}).
 
 %% Orders the reservation of each DC, from high to low.
 -spec pref_list(antidote_crdt_counter_b:antidote_crdt_counter_b()) -> [{dcid(), non_neg_integer()}].
 pref_list(BCounter) ->
-    DCID = gingko_utils:get_my_dcid(),
+    DCID = gingko_dc_utils:get_my_dcid(),
     OtherDCDescriptors = inter_dc_meta_data_manager:get_dc_descriptors(),
     OtherDCIDs = [DescriptorDCID || #descriptor{dcid = DescriptorDCID} <- OtherDCDescriptors, DescriptorDCID /= DCID],
     OtherDCPermissions = [{OtherDCID, ?DATA_TYPE:localPermissions(OtherDCID, BCounter)} || OtherDCID <- OtherDCIDs],
@@ -230,7 +230,7 @@ clear_pending_request(LastRequestQueue, Period) ->
 
 -spec can_process(key(), dcid(), last_transfers()) -> boolean().
 can_process(Key, RequesterDCID, LastTransfers) ->
-    DCID = gingko_utils:get_my_dcid(),
+    DCID = gingko_dc_utils:get_my_dcid(),
     case RequesterDCID == DCID of
         false ->
             case orddict:find({Key, RequesterDCID}, LastTransfers) of

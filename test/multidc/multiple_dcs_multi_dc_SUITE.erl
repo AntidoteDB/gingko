@@ -77,11 +77,11 @@ end_per_testcase(Name, _) ->
 
 
 all() -> [
-%%    simple_replication_test,
-%%    failure_test,
+    simple_replication_test,
+    failure_test,
 %%    blocking_test,
-%%    parallel_writes_test,
-%%    replicated_set_test
+    parallel_writes_test,
+    replicated_set_test
 ].
 
 
@@ -173,10 +173,10 @@ failure_test(Config) ->
             update_counters(Node1, [Key], [1], ignore, static, Bucket),
 
             %% Simulate failure of NODE3 by stopping the receiver
-            {ok, D1} = rpc:call(Node1, inter_dc_manager, get_descriptor, []),
-            {ok, D2} = rpc:call(Node2, inter_dc_manager, get_descriptor, []),
+            D1 = rpc:call(Node1, inter_dc_manager, get_descriptor, []),
+            D2 = rpc:call(Node2, inter_dc_manager, get_descriptor, []),
 
-            ok = rpc:call(Node3, inter_dc_manager, forget_dcs, [[D1, D2]]),
+            ok = rpc:call(Node3, inter_dc_manager, disconnect_remote_dcs_from_all_nodes, [[D1, D2]]),
 
             update_counters(Node1, [Key], [1], ignore, static, Bucket),
             %% Induce some delay
@@ -188,7 +188,7 @@ failure_test(Config) ->
             ct:log("Done append in Node1"),
 
             %% NODE3 comes back
-            [ok, ok] = rpc:call(Node3, inter_dc_manager, observe_dcs_sync, [[D1, D2]]),
+            ok = rpc:call(Node3, inter_dc_manager, connect_all_nodes_to_remote_dcs, [[D1, D2]]),
             check_read_key(Node2, Key, Type, 3, CommitTime, static, Bucket),
             ct:log("Done read from Node2"),
             check_read_key(Node3, Key, Type, 3, CommitTime, static, Bucket),

@@ -77,7 +77,7 @@ all() ->
 %% Tests that add_nodes_to_dc is idempotent
 %% calling it again on each node of a dc should have no effect
 recreate_dc(Config) ->
-    case ?USE_SINGLE_SERVER of
+    case gingko_env_utils:get_use_single_server() of
         true -> pass;
         false ->
 
@@ -104,7 +104,7 @@ dc_count(Config) ->
     ok.
 
 dummy_test(Config) ->
-    case ?USE_SINGLE_SERVER of
+    case gingko_env_utils:get_use_single_server() of
         true -> pass;
         false ->
 

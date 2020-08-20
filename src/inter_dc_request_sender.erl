@@ -49,12 +49,12 @@
 %%% Public API
 %%%===================================================================
 
--spec perform_journal_read_request({dcid(), partition_id()}, [txid()], fun((term(), request_entry()) -> ok))
+-spec perform_journal_read_request({dcid(), partition()}, [txid()], fun((term(), request_entry()) -> ok))
         -> ok.
 perform_journal_read_request({TargetDCID, TargetPartition}, TxnNumList, ReturnToSenderFunc) ->
     gen_server:cast(?MODULE, {request, ?JOURNAL_READ_REQUEST, {TargetDCID, TargetPartition}, TxnNumList, ReturnToSenderFunc}).
 
--spec perform_bcounter_permissions_request({dcid(), partition_id()}, {atom(), {key(), non_neg_integer(), dcid()}})
+-spec perform_bcounter_permissions_request({dcid(), partition()}, {atom(), {key(), non_neg_integer(), dcid()}})
         -> ok.
 perform_bcounter_permissions_request({TargetDCID, TargetPartition}, {transfer, {Key, Amount, RequesterDCID}}) ->
     gen_server:cast(?MODULE, {request, ?BCOUNTER_REQUEST, {TargetDCID, TargetPartition}, {transfer, {Key, Amount, RequesterDCID}}, none}).
@@ -63,6 +63,7 @@ perform_bcounter_permissions_request({TargetDCID, TargetPartition}, {transfer, {
 perform_dc_state_request(DcState) ->
     gen_server:cast(?MODULE, {request, ?DCSF_MSG, {all, all}, DcState, none}).
 
+-spec perform_health_check_request(fun((term(), request_entry()) -> ok)) -> ok.
 perform_health_check_request(ReturnToSenderFunc) ->
     gen_server:cast(?MODULE, {request, ?HEALTH_CHECK_MSG, {all, all}, none, ReturnToSenderFunc}).
 
@@ -196,12 +197,12 @@ connect_to_nodes([NodeAddressList | Rest], SocketAcc) ->
 %% A node is a list of addresses because it can have multiple interfaces
 %% this just goes through the list and connects to the first interface that works
 -spec connect_to_node(node_address_list()) -> {ok, zmq_socket()} | {error, reason()}.
-connect_to_node([]) ->
-    logger:error("Unable to subscribe to DC log reader"),
+connect_to_node({Node, []}) ->
+    logger:error("Unable to connect to node: ~p", [Node]),
     {error, connection_error};
-connect_to_node([Address | Rest]) ->
+connect_to_node({Node, [NodeAddress | Rest]}) ->
     %% Test the connection
-    TemporarySocket = zmq_utils:create_connect_socket(req, false, Address),
+    TemporarySocket = zmq_utils:create_connect_socket(req, false, NodeAddress),
     ok = zmq_utils:set_receive_timeout(TemporarySocket, ?ZMQ_TIMEOUT),
     %% Always use 0 as the id of the check up message
     RequestRecord = inter_dc_request:create_request_record({0, ?HEALTH_CHECK_MSG}, {all, all}, none),
@@ -217,11 +218,11 @@ connect_to_node([Address | Rest]) ->
             %% check that an ok msg was received
             #response_record{request_record = RequestRecord, response = ?OK_MSG} = ResponseRecord,
             %% Create a subscriber socket for the specified DC
-            Socket = zmq_utils:create_connect_socket(req, true, Address),
+            Socket = zmq_utils:create_connect_socket(req, true, NodeAddress),
             %% For each partition in the current node:
             {ok, Socket};
         _ ->
-            connect_to_node(Rest)
+            connect_to_node({Node, Rest})
     end.
 
 

@@ -41,10 +41,7 @@
 %% tests
 -export([
     clocksi_read_time_test/1,
-    clocksi_prepare_test/1,
-    clocksi_cert_property_test/1,
-    clocksi_certification_test/1,
-    clocksi_multiple_certification_test/1
+    clocksi_prepare_test/1
 ]).
 
 -include_lib("common_test/include/ct.hrl").
@@ -67,52 +64,7 @@ end_per_testcase(Name, _) ->
 all() -> [
 %%    clocksi_read_time_test,
 %%    clocksi_prepare_test
-%%    clocksi_cert_property_test,
-%%    clocksi_certification_test,
-%%    clocksi_multiple_certification_test
 ].
-
-
-%% @doc The following function tests the certification check algorithm.
-%%      when two concurrent txs modify a single object, one hast to abort.
-%%      Besides, it updates multiple partitions.
-clocksi_multiple_certification_test(Config) ->
-    Nodes = proplists:get_value(nodes, Config),
-    case rpc:call(hd(Nodes), application, get_env, [antidote, txn_cert]) of
-        {ok, true} ->
-            clocksi_multiple_test_certification_check_run(Nodes);
-        _ ->
-            pass
-    end.
-
-clocksi_multiple_test_certification_check_run(Nodes) ->
-    Bucket = ?BUCKET,
-    Key1 = clocksi_multiple_test_certification_check_key1,
-    Key2 = clocksi_multiple_test_certification_check_key2,
-    Key3 = clocksi_multiple_test_certification_check_key3,
-    FirstNode = hd(Nodes),
-    LastNode = lists:last(Nodes),
-    ct:log("FirstNode: ~p", [FirstNode]),
-    ct:log("LastNode: ~p", [LastNode]),
-
-    %% Start a new tx,  perform an update on three keys.
-
-    {ok, TxId} = rpc:call(FirstNode, antidote, start_transaction, [ignore, []]),
-    antidote_test_utils:update_counters(FirstNode, [Key1], [1], ignore, TxId, Bucket),
-    antidote_test_utils:update_counters(FirstNode, [Key2], [1], ignore, TxId, Bucket),
-    antidote_test_utils:update_counters(FirstNode, [Key3], [1], ignore, TxId, Bucket),
-
-    %% Start a new tx,  perform an update over key1.
-
-    {ok, TxId1} = rpc:call(LastNode, antidote, start_transaction, [ignore, []]),
-    antidote_test_utils:update_counters(LastNode, [Key1], [2], ignore, TxId1, Bucket),
-    {ok, _CT} = rpc:call(LastNode, antidote, commit_transaction, [TxId1]),
-
-    %% Try to commit the first tx.
-    CommitResult = rpc:call(FirstNode, antidote, commit_transaction, [TxId]),
-    ?assertMatch({error, aborted}, CommitResult),
-    pass.
-
 
 %% @doc This test makes sure to block pending reads when a prepare is in progress
 %% that could violate atomicity if not blocked
@@ -192,71 +144,4 @@ clocksi_read_time_test(Config) ->
 
     %% prepare and commit the second transaction.
     {ok, _CommitTime} = rpc:call(FirstNode, antidote, commit_transaction, [TxId1]),
-    pass.
-
-
-%% @doc The following function tests the certification check algorithm,
-%%      when two concurrent txs modify a single object, one hast to abort.
-clocksi_certification_test(Config) ->
-    Bucket = ?BUCKET,
-    Nodes = proplists:get_value(nodes, Config),
-    case rpc:call(hd(Nodes), application, get_env, [antidote, txn_cert]) of
-        {ok, true} ->
-            clocksi_test_certification_check_run(Nodes, false, Bucket);
-        _ ->
-            pass
-    end.
-
-%% @doc The following function tests the certification check algorithm,
-%%      with the property set to disable the certification
-%%      when two concurrent txs modify a single object, they both must commit.
-clocksi_cert_property_test(Config) ->
-    Bucket = ?BUCKET,
-    Nodes = proplists:get_value(nodes, Config),
-    case rpc:call(hd(Nodes), application, get_env, [antidote, txn_cert]) of
-        {ok, true} ->
-            clocksi_test_certification_check_run(Nodes, true, Bucket);
-        _ ->
-            pass
-    end.
-
-clocksi_test_certification_check_run(Nodes, DisableCert, Bucket) ->
-    Key1 = clockSI_test_certification_check_key1,
-
-    FirstNode = hd(Nodes),
-    LastNode = lists:last(Nodes),
-    ct:log("FirstNode: ~p", [FirstNode]),
-    ct:log("LastNode: ~p", [LastNode]),
-
-    %% Start a new tx on first node, perform an update on some key.
-    Properties = case DisableCert of
-                     true -> [{certify, dont_certify}];
-                     false -> []
-                 end,
-
-    {ok, TxId} = rpc:call(FirstNode, antidote, start_transaction, [ignore, Properties]),
-    ct:log("Tx1 Started, id : ~p", [TxId]),
-    antidote_test_utils:update_counters(FirstNode, [Key1], [1], ignore, TxId, Bucket),
-
-    %% Start a new tx on last node, perform an update on the same key.
-    {ok, TxId1} = rpc:call(LastNode, antidote, start_transaction, [ignore, []]),
-    ct:log("Tx2 Started, id : ~p", [TxId1]),
-    antidote_test_utils:update_counters(FirstNode, [Key1], [1], ignore, TxId1, Bucket),
-
-    {ok, _CT}= rpc:call(LastNode, antidote, commit_transaction, [TxId1]),
-
-    %% Commit the first tx.
-    Result = rpc:call(FirstNode, gingko, prepare_txn, [TxId]),
-    case DisableCert of
-        false ->
-            ?assertMatch({error, aborted}, Result),
-            ct:log("Tx1 sent prepare, got message: ~p", [Result]),
-            ct:log("Tx1 aborted. Test passed!");
-        true ->
-            ?assertMatch({ok, _}, Result),
-            ct:log("Tx1 sent prepare, got message: ~p", [Result]),
-            End2 = rpc:call(FirstNode, antidote, commit_transaction, [TxId]),
-            ?assertMatch({ok, _}, End2),
-            ct:log("Tx1 committed. Test passed!")
-    end,
     pass.

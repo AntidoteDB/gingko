@@ -47,7 +47,7 @@
 -type dc_txn_tracking_state() :: dc_txn_tracking_state().
 
 -record(state, {
-    partition = 0 :: partition_id(),
+    partition = 0 :: partition(),
     table_name :: atom(),
     next_jsn = 0 :: non_neg_integer(),
     latest_vts = vectorclock:new() :: vectorclock(),
@@ -73,8 +73,7 @@ start_vnode(I) ->
 init([Partition]) ->
     default_vnode_behaviour:init(?MODULE, [Partition]),
     TableName = general_utils:concat_and_make_atom([integer_to_list(Partition), '_journal_entry']),
-    GingkoConfig = [{partition, Partition}, {table_name, TableName} | gingko_app:get_default_config()],
-    NewState = apply_gingko_config(#state{}, GingkoConfig),
+    NewState = #state{partition = Partition, table_name = TableName},
     {_Reply, FinalState} = initialize_or_repair(NewState),
     {ok, FinalState}.
 
@@ -96,11 +95,14 @@ handle_command(Request = get_journal_mnesia_table_name, Sender, State = #state{t
 
 handle_command(Request = get_current_dependency_vts, Sender, State = #state{latest_vts = LatestVts, initialized = Initialized}) ->
     default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
-    Reply = case Initialized of
-                false -> {error, not_initialized};
-                true -> {ok, vectorclock:set(gingko_utils:get_my_dcid(), gingko_utils:get_timestamp(), LatestVts)}
-            end,
-    {reply, Reply, State};
+    {Reply, NewState} =
+        case Initialized of
+            false -> {{error, not_initialized}, State};
+            true ->
+                NewLatestVts = vectorclock:set(gingko_dc_utils:get_my_dcid(), gingko_dc_utils:get_timestamp(), LatestVts),
+                {{ok, NewLatestVts}, State#state{latest_vts = NewLatestVts}}
+        end,
+    {reply, Reply, NewState};
 
 %%TODO consider timing issues during start-up with large tables
 %%TODO failure testing required
@@ -117,7 +119,7 @@ handle_command(Request = {get_txns, TxnNumList}, Sender, State = #state{table_na
         case Initialized of
             false -> {error, not_initialized};
             true ->
-                MyDcId = gingko_utils:get_my_dcid(),
+                MyDcId = gingko_dc_utils:get_my_dcid(),
                 %%TODO not optimized at all
                 #dc_txn_tracking_state{valid_txn_tracking_num_gb_set = ValidSet} = maps:get(MyDcId, DcIdToDcTxnTrackingState, #dc_txn_tracking_state{}),
                 TxIdList = lists:filtermap(
@@ -232,12 +234,6 @@ handle_overload_info(Request, Partition) -> default_vnode_behaviour:handle_overl
 %%% Internal functions
 %%%===================================================================
 
--spec apply_gingko_config(state(), [{atom(), term()}]) -> state().
-apply_gingko_config(State, GingkoConfig) ->
-    Partition = general_utils:get_or_default_map_list(partition, GingkoConfig, error),
-    TableName = general_utils:get_or_default_map_list(table_name, GingkoConfig, error),
-    State#state{partition = Partition, table_name = TableName}.
-
 initialize_or_repair(State = #state{table_name = TableName, initialized = Initialized}) ->
     case mnesia:system_info(is_running) of
         yes ->
@@ -256,21 +252,22 @@ initialize_or_repair(State = #state{table_name = TableName, initialized = Initia
                                     %%TODO make sure we have ram copies and delete tables on other nodes
                                     case lists:member(node(), Nodes) of
                                         true ->
-                                            RamCopiesNodes = mnesia:table_info(TableName, ram_copies),
-                                            case lists:member(node(), RamCopiesNodes) of
+                                            DiscCopiesNodes = mnesia:table_info(TableName, disc_copies),
+                                            case lists:member(node(), DiscCopiesNodes) of
                                                 true -> ok;
                                                 false ->
-                                                    {atomic, ok} = mnesia:change_table_copy_type(TableName, node(), ram_copies)
+                                                    {atomic, ok} = mnesia:change_table_copy_type(TableName, node(), disc_copies)
                                             end;
 
                                         false ->
-                                            {atomic, ok} = mnesia:add_table_copy(TableName, node(), ram_copies)
+                                            {atomic, ok} = mnesia:add_table_copy(TableName, node(), disc_copies)
                                     end,
                                     %TODO maybe this will cause problems during handoff
                                     lists:foreach(
                                         fun(Node) ->
                                             case Node /= node() of
-                                                true -> {atomic, ok} = mnesia:del_table_copy(TableName, Node);
+                                                true ->
+                                                    {atomic, ok} = mnesia:del_table_copy(TableName, Node);
                                                 false -> ok
                                             end
                                         end, Nodes)
@@ -314,7 +311,6 @@ process_command({{prepare_txn, {Partitions, GivenTxOpNumbers}}, TxId}, State = #
             {JsnState, NewState} = next_jsn(State),
             {Type, Args} = gingko_journal_utils:create_prepare_operation(Partitions),
             create_and_add_local_journal_entry(JsnState, TxId, Type, Args, NewState),
-            ok = gingko_log_utils:persist_journal_entries(TableName),
             {ok, NewState};
         false ->
             {{error, {"Inner Prepare Validation failed", TxJournalEntryList, GivenTxOpNumbers, FoundTxOpNumbers}}, State}
@@ -343,7 +339,7 @@ process_command({{abort_txn, none}, TxId}, State) ->
     create_and_add_local_journal_entry(JsnState, TxId, Type, Args, NewState),
     {ok, NewState};
 
-process_command({{checkpoint, DependencyVts}, TxId}, State = #state{partition = Partition, table_name = TableName}) ->
+process_command({{checkpoint, DependencyVts}, TxId}, State = #state{partition = Partition}) ->
     {BeginJsnState, BeginState} = next_jsn(State),
     NewCheckpointDcIdToLastTxnTrackingNumMap = get_new_checkpoint_dcid_to_txn_tracking_num_map(DependencyVts, BeginState),
     ValidJournalEntryListBeforeCheckpointResult = get_valid_journal_entries(DependencyVts, BeginState),
@@ -351,15 +347,13 @@ process_command({{checkpoint, DependencyVts}, TxId}, State = #state{partition = 
         {ok, ValidJournalEntryListBeforeCheckpoint} ->
             {Type, Args} = gingko_journal_utils:create_checkpoint_operation(DependencyVts, NewCheckpointDcIdToLastTxnTrackingNumMap),
             create_and_add_local_journal_entry(BeginJsnState, TxId, Type, Args, BeginState),
-            ok = gingko_log_utils:persist_journal_entries(TableName),
             CheckpointResult = gingko_log_utils:checkpoint(ValidJournalEntryListBeforeCheckpoint, DependencyVts, NewCheckpointDcIdToLastTxnTrackingNumMap),
             {ResultJsnState, ResultState} = next_jsn(BeginState),
             case CheckpointResult of
                 ok ->
                     create_and_add_local_journal_entry(ResultJsnState, TxId, checkpoint_commit, Args, ResultState),
                     TrimState = perform_journal_log_trimming_and_add_checkpoint_to_state(NewCheckpointDcIdToLastTxnTrackingNumMap, ResultState),
-                    ok = gingko_log_utils:persist_journal_entries(TableName),
-                    gingko_utils:call_gingko_sync(Partition, ?GINGKO_CACHE, {checkpoint_cache_cleanup, DependencyVts}),
+                    gingko_dc_utils:call_gingko_sync(Partition, ?GINGKO_CACHE, {checkpoint_cache_cleanup, DependencyVts}),
                     {ok, TrimState};
                 Error ->
                     {Error, ResultState}
@@ -371,9 +365,8 @@ process_command({{checkpoint, DependencyVts}, TxId}, State = #state{partition = 
 -spec create_and_add_local_journal_entry(jsn_state(), txid(), journal_entry_type(), journal_entry_args(), state()) -> journal_entry().
 create_and_add_local_journal_entry(JsnState, TxId, Type, Args, #state{partition = Partition, table_name = TableName}) ->
     JournalEntry = gingko_journal_utils:create_local_journal_entry(JsnState, TxId, Type, Args),
-    %%TODO if add_journal_entry fails then we should crash because this non recoverable
-    ok = gingko_log_utils:add_journal_entry(JournalEntry, TableName),
-    ok = gingko_utils:call_gingko_sync(Partition, ?INTER_DC_LOG, {journal_entry, JournalEntry}),
+    gingko_log_utils:add_journal_entry(JournalEntry, TableName),
+    ok = gingko_dc_utils:call_gingko_sync(Partition, ?INTER_DC_LOG, {journal_entry, JournalEntry}),
     JournalEntry.
 
 -spec add_remote_txn([journal_entry()], state()) -> state().
@@ -391,8 +384,7 @@ add_remote_txn(SortedTxJournalEntryList = [BeginJournalEntry | _], State = #stat
                     end, {NextJsn, []}, SortedTxJournalEntryList),
             %%Keep it sorted
             ReversedFixedJournalEntries = lists:reverse(FixedJournalEntries),
-            ok = gingko_log_utils:add_journal_entry_list(ReversedFixedJournalEntries, TableName),
-            ok = gingko_log_utils:persist_journal_entries(TableName), %%TODO currently necessary to avoid potential GCSt bug in an extreme edge case
+            ok = gingko_log_utils:add_journal_entry_list(ReversedFixedJournalEntries, TableName), %%TODO currently necessary to avoid potential GCSt bug in an extreme edge case
             add_commit(BeginJournalEntry, CommitJournalEntry, State#state{next_jsn = NewNextJsn})
     end.
 
@@ -410,13 +402,13 @@ add_handoff_journal_entry(#journal_entry{tx_id = TxId, type = Type, args = Args}
 
 -spec next_jsn(state()) -> {jsn_state(), state()}.
 next_jsn(State = #state{next_jsn = NextJsn}) ->
-    DcId = gingko_utils:get_my_dcid(),
+    DcId = gingko_dc_utils:get_my_dcid(),
     JsnState = #jsn_state{next_jsn = NextJsn, dcid = DcId},
     {JsnState, State#state{next_jsn = NextJsn + 1}}.
 
 -spec update_dc_txn_states_and_latest_vts(state()) -> state().
-update_dc_txn_states_and_latest_vts(State = #state{dcid_to_dc_txn_tracking_state = DcIdToDcTxnTrackingState, latest_vts = LatestVts}) ->
-    LocalDcId = gingko_utils:get_my_dcid(),
+update_dc_txn_states_and_latest_vts(State = #state{partition = Partition, dcid_to_dc_txn_tracking_state = DcIdToDcTxnTrackingState, latest_vts = LatestVts}) ->
+    LocalDcId = gingko_dc_utils:get_my_dcid(),
     NewDcIdToDcTxnTrackingState =
         maps:map(
             fun(DcId, DcTxnTrackingState = #dc_txn_tracking_state{last_checkpoint_txn_tracking_num = LastCheckpointTxnTrackingNum, invalid_txn_tracking_num_gb_set = InvalidSet, valid_txn_tracking_num_gb_set = ValidSet}) ->
@@ -458,15 +450,17 @@ update_dc_txn_states_and_latest_vts(State = #state{dcid_to_dc_txn_tracking_state
     CompareLatestVts = vectorclock:set(LocalDcId, MyDcTime, LatestVts),
     case vectorclock:eq(NewLatestVts, CompareLatestVts) of
         true ->
-            State#state{latest_vts = vectorclock:set(LocalDcId, gingko_utils:get_timestamp(), NewLatestVts)}; %%TODO assumption that NewDcToLastValidTxnTrackingNum did not change from the old one
+            FinalLatestVts = vectorclock:set(LocalDcId, gingko_dc_utils:get_timestamp(), NewLatestVts),
+            gingko_dc_utils:update_partition_commit_vts(Partition, FinalLatestVts),
+            State#state{latest_vts = FinalLatestVts}; %%TODO assumption that NewDcToLastValidTxnTrackingNum did not change from the old one
         false ->
             update_dc_txn_states_and_latest_vts(State#state{dcid_to_dc_txn_tracking_state = NewDcIdToDcTxnTrackingState, latest_vts = NewLatestVts})
     end.
 
 %%TODO checkpoint recovery
 -spec initialize_state(state()) -> state().
-initialize_state(State = #state{table_name = TableName}) ->
-    MyDcId = gingko_utils:get_my_dcid(),
+initialize_state(State = #state{partition = Partition, table_name = TableName}) ->
+    MyDcId = gingko_dc_utils:get_my_dcid(),
     JournalEntryList = gingko_log_utils:remove_unresolved_or_aborted_transactions_and_return_remaining_journal_entry_list(TableName),
     NextJsn =
         case JournalEntryList of
@@ -542,8 +536,18 @@ initialize_state(State = #state{table_name = TableName}) ->
                         DcTxnTrackingState#dc_txn_tracking_state{invalid_txn_tracking_num_gb_set = InvalidTxnTrackingNumSet}
                 end
             end, InitialDcIdToDcTxnTrackingStateMap),
-
-    {_, LatestLocalVts} = maps:get(MyDcId, DcIdToInvalidTxnTrackingNumSetMap, {gingko_utils:get_default_txn_tracking_num(), vectorclock:new()}),
+    DefaultItem = {gingko_utils:get_default_txn_tracking_num(), vectorclock:new()},
+    DefaultInvalidTxnTrackingNumSet = gb_sets:add(DefaultItem, gb_sets:empty()),
+    LocalInvalidTxnTrackingNumSet = maps:get(MyDcId, DcIdToInvalidTxnTrackingNumSetMap, DefaultInvalidTxnTrackingNumSet),
+    {_, LatestLocalVts} =
+        case gb_sets:is_empty(LocalInvalidTxnTrackingNumSet) of
+            true ->
+                DefaultItem;
+            false ->
+                gb_sets:largest(LocalInvalidTxnTrackingNumSet)
+        end,
+    logger:error("VTS: ~p", [LatestLocalVts]),
+    gingko_dc_utils:update_partition_commit_vts(Partition, LatestLocalVts),
     NewState = State#state{latest_vts = LatestLocalVts, next_jsn = NextJsn, dcid_to_dc_txn_tracking_state = NewDcIdToDcTxnTrackingStateMap, initialized = true},
     update_dc_txn_states_and_latest_vts(NewState).
 
@@ -563,11 +567,11 @@ find_checkpoint_txn_tracking_num(_, DcTimestamp, [DcTxnTrackingNum | OtherDcTxnT
     find_checkpoint_txn_tracking_num(DcTxnTrackingNum, DcTimestamp, OtherDcTxnTrackingNum). %Previous pattern assures DcTimestamp > Timestamp
 
 -spec perform_journal_log_trimming_and_add_checkpoint_to_state(#{dcid() => txn_tracking_num()}, state()) -> state().
-perform_journal_log_trimming_and_add_checkpoint_to_state(DcIdToLastTxnTrackingNumMap, State = #state{dcid_to_dc_txn_tracking_state = DcIdToDcTxnTrackingState}) ->
+perform_journal_log_trimming_and_add_checkpoint_to_state(DcIdToLastTxnTrackingNumMap, State = #state{table_name = TableName, dcid_to_dc_txn_tracking_state = DcIdToDcTxnTrackingState}) ->
     ok =
-        case ?JOURNAL_TRIMMING_MODE of
+        case gingko_env_utils:get_journal_trimming_mode() of
             keep_all_checkpoints -> ok;
-            _ -> gingko_log_utils:perform_journal_log_trimming(State)
+            _ -> gingko_log_utils:perform_journal_log_trimming(TableName)
         end,
     NewDcIdToDcTxnTrackingState =
         maps:map(
