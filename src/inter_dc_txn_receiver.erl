@@ -89,9 +89,7 @@ handle_info(Info = {zmq, _Socket, InterDcTxnBinary, _Flags}, State) ->
     default_gen_server_behaviour:handle_info(?MODULE, Info, State),
     InterDcTxn = inter_dc_txn:from_binary(InterDcTxnBinary),
     Partition = InterDcTxn#inter_dc_txn.partition,
-    JournalEntryList = InterDcTxn#inter_dc_txn.journal_entries,
-    SortedJournalEntryList = gingko_utils:sort_journal_entries_of_same_tx(JournalEntryList),
-    gingko_dc_utils:call_gingko_async(Partition, ?GINGKO_LOG, {add_remote_txn, SortedJournalEntryList}),
+    gingko_dc_utils:call_gingko_async(Partition, ?GINGKO_LOG, {add_remote_txn, InterDcTxn}),
     {noreply, State};
 
 handle_info(Info, State) -> default_gen_server_behaviour:handle_info_crash(?MODULE, Info, State).
@@ -99,11 +97,11 @@ handle_info(Info, State) -> default_gen_server_behaviour:handle_info_crash(?MODU
 terminate(Reason, State = #state{dcid_to_txn_sockets = DCIDToTxnSockets}) ->
     default_gen_server_behaviour:terminate(?MODULE, Reason, State),
     maps:fold(
-        fun(_, Map, _) ->
-            maps:fold(
-                fun(_, Socket, _) ->
+        fun(_, List, _) ->
+            lists:foreach(
+                fun(Socket) ->
                     zmq_utils:close_socket(Socket)
-                end, ok, Map)
+                end, List)
         end, ok, DCIDToTxnSockets).
 
 code_change(OldVsn, State, Extra) -> default_gen_server_behaviour:code_change(?MODULE, OldVsn, State, Extra).
@@ -138,9 +136,9 @@ connect_to_nodes([NodeAddressList | Rest], SocketAcc) ->
 connect_to_node({_, []}) ->
     logger:error("Unable to subscribe to DC Node"),
     {error, connection_error};
-connect_to_node({Node, [NodeAddress | Rest]}) ->
+connect_to_node({Node, [Address | Rest]}) ->
     %% Test the connection
-    TemporarySocket = zmq_utils:create_connect_socket(sub, false, NodeAddress),
+    TemporarySocket = zmq_utils:create_subscriber_connect_socket(false, Address),
     ok = zmq_utils:set_receive_timeout(TemporarySocket, ?ZMQ_TIMEOUT),
     ok = zmq_utils:set_receive_filter(TemporarySocket, <<>>),
     Result = zmq_utils:try_recv(TemporarySocket),
@@ -148,11 +146,11 @@ connect_to_node({Node, [NodeAddress | Rest]}) ->
     case Result of
         {ok, _} ->
             %% Create a subscriber socket for the specified DC
-            Socket = zmq_utils:create_connect_socket(sub, true, NodeAddress),
+            Socket = zmq_utils:create_subscriber_connect_socket(true, Address),
             lists:foreach(
                 fun(Partition) ->
                     %% Make the socket subscribe to messages prefixed with the given partition number
-                    ok = zmq_utils:set_receive_filter(Socket, inter_dc_utils:partition_to_binary(Partition))
+                    ok = zmq_utils:set_receive_filter(Socket, inter_dc_txn:partition_to_binary(Partition))
                 end, gingko_dc_utils:get_my_partitions()),
             {ok, Socket};
         _ ->

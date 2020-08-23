@@ -35,22 +35,22 @@
 
 %% common_test callbacks
 -export([
-         init_per_suite/1,
-         end_per_suite/1,
-         init_per_testcase/2,
-         end_per_testcase/2,
-         all/0
-        ]).
+    init_per_suite/1,
+    end_per_suite/1,
+    init_per_testcase/2,
+    end_per_testcase/2,
+    all/0
+]).
 
 %% tests
 -export([
-         static_txn_single_object/1,
-         static_txn_single_object_clock/1,
-         static_txn_multi_objects/1,
-         static_txn_multi_objects_clock/1,
-         interactive_txn/1,
-         interactive_txn_abort/1
-        ]).
+    static_txn_single_object/1,
+    static_txn_single_object_clock/1,
+    static_txn_multi_objects/1,
+    static_txn_multi_objects_clock/1,
+    interactive_txn/1,
+    interactive_txn_abort/1
+]).
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
@@ -58,28 +58,25 @@
 init_per_suite(Config) ->
     test_utils:init_single_dc(?MODULE, Config).
 
-
 end_per_suite(Config) ->
     Config.
 
-
-init_per_testcase(_Name, Config) ->
+init_per_testcase(Name, Config) ->
+    ct:pal("[ STARTING ] ~p", [Name]),
     Config.
 
-
 end_per_testcase(Name, _) ->
-    ct:print("[ OK ] ~p", [Name]),
+    ct:pal("[ OK ] ~p", [Name]),
     ok.
-
 
 all() ->
     [
-     static_txn_single_object,
-     static_txn_single_object_clock,
-     static_txn_multi_objects,
-     static_txn_multi_objects_clock,
-     interactive_txn,
-     interactive_txn_abort
+        static_txn_single_object,
+        static_txn_single_object_clock,
+        static_txn_multi_objects,
+        static_txn_multi_objects_clock,
+        interactive_txn,
+        interactive_txn_abort
     ].
 
 
@@ -118,13 +115,17 @@ static_txn_multi_objects(Config) ->
     Type = antidote_crdt_counter_pn,
     Keys = [antidote_static_m1, antidote_static_m2, antidote_static_m3, antidote_static_m4],
     IncValues = [1, 2, 3, 4],
-    Objects = lists:map(fun(Key) ->
-                                {Key, Type, Bucket}
-                        end, Keys
-                       ),
-    Updates = lists:map(fun({Object, IncVal}) ->
-                                {Object, increment, IncVal}
-                        end, lists:zip(Objects, IncValues)),
+    Objects =
+        lists:map(
+            fun(Key) ->
+                {Key, Type, Bucket}
+            end, Keys
+        ),
+    Updates =
+        lists:map(
+            fun({Object, IncVal}) ->
+                {Object, increment, IncVal}
+            end, lists:zip(Objects, IncValues)),
 
     {ok, _} = rpc:call(Node, antidote, update_objects, [ignore, [], Updates]),
     {ok, Res, _} = rpc:call(Node, antidote, read_objects, [ignore, [], Objects]),
@@ -138,11 +139,11 @@ static_txn_multi_objects_clock(Config) ->
     Keys = [antidote_static_mc1, antidote_static_mc2, antidote_static_mc3, antidote_static_mc4],
     IncValues = [1, 2, 3, 4],
     Objects = lists:map(fun(Key) ->
-                                {Key, Type, Bucket}
+        {Key, Type, Bucket}
                         end, Keys
-                       ),
+    ),
     Updates = lists:map(fun({Object, IncVal}) ->
-                                {Object, increment, IncVal}
+        {Object, increment, IncVal}
                         end, lists:zip(Objects, IncValues)),
 
     {ok, Clock1} = rpc:call(Node, antidote, update_objects, [ignore, [], Updates]),
@@ -160,13 +161,16 @@ interactive_txn(Config) ->
     Type = antidote_crdt_counter_pn,
     Keys = [antidote_int_m1, antidote_int_m2, antidote_int_m3, antidote_int_m4],
     IncValues = [1, 2, 3, 4],
-    Objects = lists:map(fun(Key) ->
-                                {Key, Type, Bucket}
-                        end, Keys
-                       ),
-    Updates = lists:map(fun({Object, IncVal}) ->
-                                {Object, increment, IncVal}
-                        end, lists:zip(Objects, IncValues)),
+    Objects =
+        lists:map(
+            fun(Key) ->
+                {Key, Type, Bucket}
+            end, Keys),
+    Updates =
+        lists:map(
+            fun({Object, IncVal}) ->
+                {Object, increment, IncVal}
+            end, lists:zip(Objects, IncValues)),
     {ok, TxId} = rpc:call(Node, antidote, start_transaction, [ignore, []]),
     %% update objects one by one.
     txn_seq_update_check(Node, TxId, Updates),
@@ -200,14 +204,16 @@ interactive_txn_abort(Config) ->
 
 
 txn_seq_read_check(Node, TxId, Objects, ExpectedValues) ->
-    lists:map(fun({Object, Expected}) ->
-                      {ok, [Val]} = rpc:call(Node, antidote, read_objects, [[Object], TxId]),
-                      ?assertEqual(Expected, Val)
-              end, lists:zip(Objects, ExpectedValues)).
+    lists:map(
+        fun({Object, Expected}) ->
+            {ok, [Val]} = rpc:call(Node, antidote, read_objects, [[Object], TxId]),
+            ?assertEqual(Expected, Val)
+        end, lists:zip(Objects, ExpectedValues)).
 
 
 txn_seq_update_check(Node, TxId, Updates) ->
-    lists:map(fun(Update) ->
-                      Res = rpc:call(Node, antidote, update_objects, [[Update], TxId]),
-                      ?assertMatch(ok, Res)
-              end, Updates).
+    lists:map(
+        fun(Update) ->
+            Res = rpc:call(Node, antidote, update_objects, [[Update], TxId]),
+            ?assertMatch(ok, Res)
+        end, Updates).

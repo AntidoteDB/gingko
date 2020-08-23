@@ -51,6 +51,12 @@
     set_max_tx_run_time_millis/1,
     get_checkpoint_interval_millis/0,
     set_checkpoint_interval_millis/1,
+    get_missing_txn_check_interval_millis/0,
+    set_missing_txn_check_interval_millis/1,
+    get_bcounter_transfer_interval_millis/0,
+    set_bcounter_transfer_interval_millis/1,
+    get_inter_dc_txn_ping_interval_millis/0,
+    set_inter_dc_txn_ping_interval_millis/1,
     get_dc_state_interval_millis/0,
     set_dc_state_interval_millis/1,
     get_data_dir/0,
@@ -160,12 +166,33 @@ get_checkpoint_interval_millis() ->
 set_checkpoint_interval_millis(Millis) when is_integer(Millis) andalso Millis >= 0 ->
     set_gingko_env(?CHECKPOINT_INTERVAL_OPTION_NAME, Millis).
 
+-spec get_missing_txn_check_interval_millis() -> millisecond().
+get_missing_txn_check_interval_millis() ->
+    get_gingko_env(?MISSING_TXN_CHECK_INTERVAL_OPTION_NAME, ?MISSING_TXN_CHECK_INTERVAL_OPTION_DEFAULT).
+-spec set_missing_txn_check_interval_millis(millisecond()) -> ok.
+set_missing_txn_check_interval_millis(Millis) when is_integer(Millis) andalso Millis >= 0 ->
+    set_gingko_env(?MISSING_TXN_CHECK_INTERVAL_OPTION_NAME, Millis).
+
 -spec get_dc_state_interval_millis() -> millisecond().
 get_dc_state_interval_millis() ->
     get_gingko_env(?DC_STATE_INTERVAL_OPTION_NAME, ?DC_STATE_INTERVAL_OPTION_DEFAULT).
 -spec set_dc_state_interval_millis(millisecond()) -> ok.
 set_dc_state_interval_millis(Millis) when is_integer(Millis) andalso Millis >= 0 ->
     set_gingko_env(?DC_STATE_INTERVAL_OPTION_NAME, Millis).
+
+-spec get_bcounter_transfer_interval_millis() -> millisecond().
+get_bcounter_transfer_interval_millis() ->
+    get_gingko_env(?BCOUNTER_TRANSFER_INTERVAL_OPTION_NAME, ?BCOUNTER_TRANSFER_INTERVAL_OPTION_DEFAULT).
+-spec set_bcounter_transfer_interval_millis(millisecond()) -> ok.
+set_bcounter_transfer_interval_millis(Millis) when is_integer(Millis) andalso Millis >= 0 ->
+    set_gingko_env(?BCOUNTER_TRANSFER_INTERVAL_OPTION_NAME, Millis).
+
+-spec get_inter_dc_txn_ping_interval_millis() -> millisecond().
+get_inter_dc_txn_ping_interval_millis() ->
+    get_gingko_env(?INTER_DC_TXN_PING_INTERVAL_OPTION_NAME, ?INTER_DC_TXN_PING_INTERVAL_OPTION_DEFAULT).
+-spec set_inter_dc_txn_ping_interval_millis(millisecond()) -> ok.
+set_inter_dc_txn_ping_interval_millis(Millis) when is_integer(Millis) andalso Millis >= 0 ->
+    set_gingko_env(?INTER_DC_TXN_PING_INTERVAL_OPTION_NAME, Millis).
 
 -spec get_data_dir() -> file:filename().
 get_data_dir() ->

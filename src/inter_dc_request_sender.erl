@@ -200,9 +200,9 @@ connect_to_nodes([NodeAddressList | Rest], SocketAcc) ->
 connect_to_node({Node, []}) ->
     logger:error("Unable to connect to node: ~p", [Node]),
     {error, connection_error};
-connect_to_node({Node, [NodeAddress | Rest]}) ->
+connect_to_node({Node, [Address | Rest]}) ->
     %% Test the connection
-    TemporarySocket = zmq_utils:create_connect_socket(req, false, NodeAddress),
+    TemporarySocket = zmq_utils:create_client_connect_socket(false, Address),
     ok = zmq_utils:set_receive_timeout(TemporarySocket, ?ZMQ_TIMEOUT),
     %% Always use 0 as the id of the check up message
     RequestRecord = inter_dc_request:create_request_record({0, ?HEALTH_CHECK_MSG}, {all, all}, none),
@@ -218,7 +218,7 @@ connect_to_node({Node, [NodeAddress | Rest]}) ->
             %% check that an ok msg was received
             #response_record{request_record = RequestRecord, response = ?OK_MSG} = ResponseRecord,
             %% Create a subscriber socket for the specified DC
-            Socket = zmq_utils:create_connect_socket(req, true, NodeAddress),
+            Socket = zmq_utils:create_client_connect_socket(true, Address),
             %% For each partition in the current node:
             {ok, Socket};
         _ ->

@@ -87,24 +87,26 @@ wait_until_result(Fun, ExpectedResult, Retry, Delay) when Retry > 0 ->
             {fail, ActualResult};
         _ ->
             timer:sleep(Delay),
-            wait_until_result(Fun, ExpectedResult, Retry-1, Delay)
+            wait_until_result(Fun, ExpectedResult, Retry - 1, Delay)
     end.
 
 
 %% @doc Waits until no connection to the target node can be established anymore.
 -spec wait_until_offline(node()) -> any().
 wait_until_offline(Node) ->
-    wait_until(fun() ->
-        pang == net_adm:ping(Node)
-               end, retries(), retry_delay()).
+    wait_until(
+        fun() ->
+            pang == net_adm:ping(Node)
+        end, retries(), retry_delay()).
 
 
 %% @doc Waits until node1 can or connect to node2
 -spec wait_until_connection(node(), node(), pang | pong) -> any().
 wait_until_connection(Node1, Node2, Expected) ->
-    wait_until(fun() ->
-        Expected == rpc:call(Node1, net_adm, ping, [Node2])
-               end, retries(), retry_delay()).
+    wait_until(
+        fun() ->
+            Expected == rpc:call(Node1, net_adm, ping, [Node2])
+        end, retries(), retry_delay()).
 
 
 %% @doc Waits until node1 cannot connect to node2 anymore
@@ -122,9 +124,10 @@ wait_until_connected(Node1, Node2) ->
 %% @doc Waits until a certain registered name pops up on the remote node.
 -spec wait_until_registered(node(), any()) -> any().
 wait_until_registered(Node, Name) ->
-    IsNameRegisteredMember = fun() ->
-                Registered = rpc:call(Node, erlang, registered, []),
-                lists:member(Name, Registered)
+    IsNameRegisteredMember =
+        fun() ->
+            Registered = rpc:call(Node, erlang, registered, []),
+            lists:member(Name, Registered)
         end,
     Delay = rt_retry_delay(),
     Retry = 360000 div Delay,
@@ -134,7 +137,7 @@ wait_until_registered(Node, Name) ->
 %% @doc Waits until nodes agree about ownership
 -spec wait_until_nodes_agree_about_ownership([node()]) -> any().
 wait_until_nodes_agree_about_ownership(Nodes) ->
-    Results = [ wait_until_owners_according_to(Node, Nodes) || Node <- Nodes ],
+    Results = [wait_until_owners_according_to(Node, Nodes) || Node <- Nodes],
     ?assert(lists:all(fun(X) -> ok =:= X end, Results)).
 
 
@@ -142,9 +145,10 @@ wait_until_nodes_agree_about_ownership(Nodes) ->
 -spec wait_until_owners_according_to(node(), [node()]) -> ok.
 wait_until_owners_according_to(Node, NodeRingOwners) ->
     ExpectedOwners = lists:usort(NodeRingOwners),
-    AreNodesOwners = fun(N) ->
-        riak_utils:owners_according_to(N) =:= ExpectedOwners
-                     end,
+    AreNodesOwners =
+        fun(N) ->
+            riak_utils:owners_according_to(N) =:= ExpectedOwners
+        end,
     ?assertEqual(ok, wait_until(Node, AreNodesOwners)),
     ok.
 
@@ -154,25 +158,4 @@ rt_retry_delay() -> 500.
 
 retry_delay() -> 1000.
 
-retries() -> 60*2.
-
-%% UNUSED FUNCTIONS
-
-%wait_until_left(Nodes, LeavingNode) ->
-%    wait_until(fun() ->
-%                lists:all(fun(X) -> X == true end,
-%                          pmap(fun(Node) ->
-%                                not
-%                                lists:member(LeavingNode,
-%                                             get_cluster_members(Node))
-%                        end, Nodes))
-%        end, 60*2, 500).
-
-%wait_until_joined(Nodes, ExpectedCluster) ->
-%    wait_until(fun() ->
-%                lists:all(fun(X) -> X == true end,
-%                          pmap(fun(Node) ->
-%                                lists:sort(ExpectedCluster) ==
-%                                lists:sort(get_cluster_members(Node))
-%                        end, Nodes))
-%        end, 60*2, 500).
+retries() -> 60 * 2.

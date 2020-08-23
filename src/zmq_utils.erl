@@ -29,9 +29,11 @@
 -module(zmq_utils).
 -include("inter_dc.hrl").
 
--export([create_connect_socket/3,
-    create_bind_socket/3,
-    set_socket_option/3,
+-export([
+    create_subscriber_connect_socket/2,
+    create_publisher_bind_socket/1,
+    create_client_connect_socket/2,
+    create_server_bind_socket/1,
     set_receive_filter/2,
     set_receive_timeout/2,
     close_socket/1,
@@ -53,6 +55,22 @@ create_socket(Type, Active) ->
             general_utils:print_and_return_unexpected_error(?MODULE, ?FUNCTION_NAME, [Type, Active], Error, [ZmqContext, TypeArgs])
     end.
 
+-spec create_subscriber_connect_socket(boolean(), socket_address()) -> zmq_socket() | no_return().
+create_subscriber_connect_socket(Active, Address) ->
+    create_connect_socket(sub, Active, Address).
+
+-spec create_publisher_bind_socket(inet:port_number()) -> zmq_socket() | no_return().
+create_publisher_bind_socket(Port) ->
+    create_bind_socket(pub, false, Port).
+
+-spec create_client_connect_socket(boolean(), socket_address()) -> zmq_socket() | no_return().
+create_client_connect_socket(Active, Address) ->
+    create_connect_socket(req, Active, Address).
+
+-spec create_server_bind_socket(inet:port_number()) -> zmq_socket() | no_return().
+create_server_bind_socket(Port) ->
+    create_bind_socket(xrep, true, Port).
+
 -spec create_connect_socket(zmq_socket_type(), boolean(), socket_address()) -> zmq_socket() | no_return().
 create_connect_socket(Type, Active, Address) ->
     Socket = create_socket(Type, Active),
@@ -72,7 +90,6 @@ create_bind_socket(Type, Active, Port) ->
         Error ->
             general_utils:print_and_return_unexpected_error(?MODULE, ?FUNCTION_NAME, [Type, Active, Port], Error, [Socket, ConnectionString])
     end.
-
 
 -spec connection_string(socket_address()) -> string().
 connection_string({Ip, Port}) ->

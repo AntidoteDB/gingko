@@ -85,8 +85,7 @@ get_node_of_partition(Partition) ->
 %% The partitions indices are 160-bit numbers that equally division the keyspace.
 %% For example, for a cluster with 8 partitions, the indices would take following values:
 %% 0, 1 * 2^157, 2 * 2^157, 3 * 2^157, 4 * 2^157, 5 * 2^157, 6 * 2^157, 7 * 2^157.
-%% The partition numbers are erlang integers. To obtain the binary representation of the index,
-%% use the inter_dc_txn:partition_to_bin/1 function.
+%% The partition numbers are erlang integers.
 -spec get_all_partitions() -> [partition()].
 get_all_partitions() ->
     lists:map(fun({Partition, _}) -> Partition end, get_all_partition_node_tuples()).

@@ -239,13 +239,13 @@ connect_nodes_to_remote_dcs(Descriptors, Nodes) ->
     end.
 
 -spec disconnect_remote_dc_from_nodes(descriptor(), [node()]) -> ok.
-disconnect_remote_dc_from_nodes(#descriptor{dcid = DcId}, Nodes) ->
-    case DcId == gingko_dc_utils:get_my_dcid() of
+disconnect_remote_dc_from_nodes(#descriptor{dcid = DCID}, Nodes) ->
+    case DCID == gingko_dc_utils:get_my_dcid() of
         true -> ok;
         false ->
-            logger:notice("Forgetting DC ~p", [DcId]),
-            lists:foreach(fun(Node) -> ok = rpc:call(Node, inter_dc_request_sender, delete_dc, [DcId]) end, Nodes),
-            lists:foreach(fun(Node) -> ok = rpc:call(Node, inter_dc_txn_receiver, delete_dc, [DcId]) end, Nodes)
+            logger:notice("Forgetting DC ~p", [DCID]),
+            lists:foreach(fun(Node) -> ok = rpc:call(Node, inter_dc_request_sender, delete_dc, [DCID]) end, Nodes),
+            lists:foreach(fun(Node) -> ok = rpc:call(Node, inter_dc_txn_receiver, delete_dc, [DCID]) end, Nodes)
     end.
 
 -spec disconnect_remote_dcs_from_all_nodes([descriptor()]) -> ok.

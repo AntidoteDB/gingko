@@ -1,4 +1,6 @@
 -include_lib("riak_core/include/riak_core_vnode.hrl").
+-export_type([cache_entry/0, ct_config/0, reason/0, invalid_txn_tracking_num/0, txn_tracking_num/0, jsn_state/0, journal_entry/0, operation_type/0, checkpoint_entry/0, type_op/0, table_name/0, timestamp/0, millisecond/0, microsecond/0, percent/0, eviction_strategy/0, journal_trimming_mode/0]).
+
 -define(BUCKET, <<"gingko">>).
 -define(DATA_DIR_OPTION_NAME, data_dir).
 -define(DATA_DIR_OPTION_DEFAULT, "gingko_data").
@@ -27,11 +29,13 @@
 -define(REQUEST_PORT_OPTION_DEFAULT, 8085).
 -define(MAX_TX_RUN_TIME_OPTION_NAME, max_tx_run_time_millis).
 -define(CHECKPOINT_INTERVAL_OPTION_NAME, checkpoint_interval_millis).
--define(MAX_TX_RUN_TIME_OPTION_DEFAULT, 30 * ?DEFAULT_WAIT_TIME_SUPER_LONG). %%TODO currently 5 minutes
--define(CHECKPOINT_INTERVAL_OPTION_DEFAULT, 60 * ?DEFAULT_WAIT_TIME_SUPER_LONG). %%TODO currently 10 minutes
+-define(MAX_TX_RUN_TIME_OPTION_DEFAULT, 30 * ?DEFAULT_WAIT_TIME_SUPER_LONG). %%currently 5 minutes
+-define(CHECKPOINT_INTERVAL_OPTION_DEFAULT, 60 * ?DEFAULT_WAIT_TIME_SUPER_LONG). %%currently 10 minutes
+-define(MISSING_TXN_CHECK_INTERVAL_OPTION_NAME, missing_txn_check_interval_millis).
+-define(MISSING_TXN_CHECK_INTERVAL_OPTION_DEFAULT, 3000).
 
 -define(DC_STATE_INTERVAL_OPTION_NAME, dc_state_interval_millis).
--define(DC_STATE_INTERVAL_OPTION_DEFAULT, ?DEFAULT_WAIT_TIME_LONG). %%TODO
+-define(DC_STATE_INTERVAL_OPTION_DEFAULT, 1000).
 
 -define(CACHE_MAX_OCCUPANCY_OPTION_NAME, max_occupancy).
 -define(CACHE_MAX_OCCUPANCY_OPTION_DEFAULT, 100).
@@ -54,9 +58,12 @@
 -define(REQUEST_TIMEOUT, 500000). % In Microseconds
 %% Frequency at which manager requests remote resources.
 
+-define(BCOUNTER_TRANSFER_INTERVAL_OPTION_NAME, bcounter_transfer_interval_millis).
+-define(BCOUNTER_TRANSFER_INTERVAL_OPTION_DEFAULT, 1000). %in Milliseconds
 
--define(TRANSFER_FREQ, 1000). %in Milliseconds
--define(TXN_PING_FREQ, 1000). %in Milliseconds
+-define(INTER_DC_TXN_PING_INTERVAL_OPTION_NAME, txn_ping_interval_millis).
+-define(INTER_DC_TXN_PING_INTERVAL_OPTION_DEFAULT, 1000). %in Milliseconds
+
 -define(ZMQ_TIMEOUT, 5000).
 -define(COMM_TIMEOUT, 10000).
 -define(DEFAULT_WAIT_TIME_SUPER_SHORT, 10). %% in milliseconds
@@ -155,11 +162,10 @@
 }).
 -type update_args() :: #update_args{}.
 
--type journal_entry_args() :: begin_txn_args() | prepare_txn_args() | commit_txn_args() | abort_txn_args() | checkpoint_args() | update_args().
-
 -type jsn() :: non_neg_integer().
 -type journal_entry_type() :: begin_txn | prepare_txn | commit_txn | abort_txn | checkpoint | checkpoint_commit | update.
 -type operation_type() :: journal_entry_type() | read | transaction.
+-type journal_entry_args() :: begin_txn_args() | prepare_txn_args() | commit_txn_args() | abort_txn_args() | checkpoint_args() | update_args().
 
 -record(journal_entry, {
     jsn :: jsn(),

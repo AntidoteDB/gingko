@@ -202,12 +202,15 @@ maps_inner_append(OuterKey, InnerKey, InnerValue, Map) ->
 
 -spec concat_and_make_atom([string() | atom()]) -> atom().
 concat_and_make_atom(StringOrAtomList) ->
-    list_to_atom(lists:append(lists:map(fun(Item) ->
-        case is_atom(Item) of
-            true -> atom_to_list(Item);
-            false -> Item
-        end
-                                        end, StringOrAtomList))).
+    list_to_atom(
+        lists:append(
+            lists:map(
+                fun(Item) ->
+                    case is_atom(Item) of
+                        true -> atom_to_list(Item);
+                        false -> Item
+                    end
+                end, StringOrAtomList))).
 
 -spec atom_replace(atom(), atom(), string()) -> atom().
 atom_replace(Atom, AtomToReplace, ReplacementString) ->
@@ -222,8 +225,8 @@ atom_replace(Atom, AtomToReplace, ReplacementString) ->
 %% TODO test
 -spec parallel_map(fun((TypeA | {MapKeyType, MapValueType}) -> TypeB), [TypeA] | #{MapKeyType => MapValueType}) -> [TypeB].
 parallel_map(_, []) -> [];
-parallel_map(Function, [Element]) -> [Function(Element)];
-parallel_map(Function, List) when is_list(List) ->
+parallel_map(Function, [Element]) when is_function(Function, 1) -> [Function(Element)];
+parallel_map(Function, List) when is_function(Function, 1) andalso is_list(List) ->
     Parent = self(),
     lists:foldl(
         fun(ListElem, IndexAcc) ->
@@ -234,14 +237,13 @@ parallel_map(Function, List) when is_list(List) ->
         end, 0, List),
     ReceivedUnorderedList = [receive {pmap, Index, FunctionResult} -> {Index, FunctionResult} end || _ <- List],
     {_, ReceivedOrderedList} = lists:unzip(lists:keysort(1, ReceivedUnorderedList)),
-    ReceivedOrderedList;
-parallel_map(Function, Map) when is_map(Map) -> parallel_map(Function, maps:to_list(Map)).
+    ReceivedOrderedList.
 
 
 %% Parallel version of lists:foreach/2
 %% For each list element a new process is started that executes the given function
 -spec parallel_foreach(fun((TypeA) -> any()), [TypeA]) -> ok.
-parallel_foreach(Function, List) ->
+parallel_foreach(Function, List) when is_function(Function, 1) andalso is_list(List) ->
     lists:foreach(fun(ListElem) -> spawn_link(fun() -> Function(ListElem) end) end, List).
 
 

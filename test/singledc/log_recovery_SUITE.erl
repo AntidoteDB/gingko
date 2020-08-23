@@ -31,11 +31,11 @@
 
 %% common_test callbacks
 -export([
-         init_per_suite/1,
-         end_per_suite/1,
-         init_per_testcase/2,
-         end_per_testcase/2,
-         all/0]).
+    init_per_suite/1,
+    end_per_suite/1,
+    init_per_testcase/2,
+    end_per_testcase/2,
+    all/0]).
 
 %% tests
 -export([read_pncounter_log_recovery_test/1]).
@@ -49,15 +49,18 @@ init_per_suite(Config) ->
 end_per_suite(Config) ->
     Config.
 
-init_per_testcase(_Case, Config) ->
+init_per_testcase(Name, Config) ->
+    ct:pal("[ STARTING ] ~p", [Name]),
     Config.
 
-end_per_testcase(_, _) ->
+end_per_testcase(Name, _) ->
+    ct:pal("[ OK ] ~p", [Name]),
     ok.
 
-all() -> [
-    read_pncounter_log_recovery_test
-].
+all() ->
+    [
+        read_pncounter_log_recovery_test
+    ].
 
 
 %% First we remember the initial time of the counter (with value 0).
@@ -72,38 +75,31 @@ read_pncounter_log_recovery_test(Config) ->
     Key = log_value_test,
     Obj = {Key, Type, Bucket},
 
-    case rpc:call(Node, application, get_env, [antidote, enable_logging]) of
-        {ok, false} ->
-            ct:pal("Logging not enabled!"),
-            pass;
-        _ ->
-            {ok, TxId} = rpc:call(Node, antidote, start_transaction, [ignore, []]),
-            increment_counter(Node, Obj, 15),
+    {ok, TxId} = rpc:call(Node, antidote, start_transaction, [ignore, []]),
+    increment_counter(Node, Obj, 15),
 
-            %% value from old snapshot is 0
-            {ok, [ReadResult1]} = rpc:call(Node,
-                antidote, read_objects, [[Obj], TxId]),
-            ?assertEqual(0, ReadResult1),
+    %% value from old snapshot is 0
+    {ok, [ReadResult1]} = rpc:call(Node,
+        antidote, read_objects, [[Obj], TxId]),
+    ?assertEqual(0, ReadResult1),
 
-            %% read value in txn is 15
-            {ok, [ReadResult2], CommitTime} = rpc:call(Node,
-                antidote, read_objects, [ignore, [], [Obj]]),
+    %% read value in txn is 15
+    {ok, [ReadResult2], CommitTime} = rpc:call(Node,
+        antidote, read_objects, [ignore, [], [Obj]]),
 
-            ?assertEqual(15, ReadResult2),
+    ?assertEqual(15, ReadResult2),
 
-            ct:log("Killing and restarting the nodes"),
-            %% Shut down the nodes
-            Nodes = test_utils:kill_and_restart_nodes(Nodes, Config),
-            ct:log("Vnodes are started up"),
+    ct:pal("Killing and restarting the nodes"),
+    %% Shut down the nodes
+    Nodes = test_utils:kill_and_restart_nodes(Nodes, Config),
+    ct:pal("Vnodes are started up"),
 
-            %% Read the value again
-            {ok, [ReadResult3], _CT} = rpc:call(Node, antidote, read_objects,
-                [CommitTime, [], [Obj]]),
-            ?assertEqual(15, ReadResult3),
+    %% Read the value again
+    {ok, [ReadResult3], _CT} = rpc:call(Node, antidote, read_objects,
+        [CommitTime, [], [Obj]]),
+    ?assertEqual(15, ReadResult3),
 
-            pass
-    end.
-
+    pass.
 
 
 %% Auxiliary method to increment a counter N times.

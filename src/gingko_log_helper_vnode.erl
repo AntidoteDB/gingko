@@ -40,7 +40,7 @@
     handle_overload_info/2]).
 
 -record(state, {
-    partition = 0 :: partition(),
+    partition :: partition(),
     table_name :: atom()
 }).
 -type state() :: #state{}.

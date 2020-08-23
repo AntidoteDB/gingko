@@ -49,7 +49,6 @@ handle_cast(Request, State) ->
     {reply, _Result, NewState} = gingko_log_helper_vnode:handle_command(Request, {raw, undefined, self()}, State),
     {noreply, NewState}.
 
--spec handle_info(term(), term()) -> no_return().
 handle_info(Info, State) ->
     {reply, _Result, NewState} = gingko_log_helper_vnode:handle_command(Info, {raw, undefined, self()}, State),
     {noreply, NewState}.

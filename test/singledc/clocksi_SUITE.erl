@@ -64,29 +64,30 @@ init_per_suite(Config) ->
 end_per_suite(Config) ->
     Config.
 
-init_per_testcase(_Case, Config) ->
+init_per_testcase(Name, Config) ->
+    ct:pal("[ STARTING ] ~p", [Name]),
     Config.
 
 end_per_testcase(Name, _) ->
-    ct:print("[ OK ] ~p", [Name]),
+    ct:pal("[ OK ] ~p", [Name]),
     ok.
 
-all() -> [
-    clocksi_test1,
-    clocksi_test2,
-    clocksi_test4,
-    clocksi_test5,
-    clocksi_multiple_updates_per_txn_test,
-    clocksi_test_read_wait,
-    clocksi_single_key_update_read_test,
-    clocksi_multiple_key_update_read_test,
-    clocksi_test_no_update_property,
-    clocksi_multiple_read_update_test,
-    clocksi_concurrency_test,
-    clocksi_parallel_ops_test,
-    clocksi_static_parallel_writes_test
-].
-
+all() ->
+    [
+        clocksi_test1,
+        clocksi_test2,
+        clocksi_test4,
+        clocksi_test5,
+        clocksi_multiple_updates_per_txn_test,
+        clocksi_test_read_wait,
+        clocksi_single_key_update_read_test,
+        clocksi_multiple_key_update_read_test,
+        clocksi_test_no_update_property,
+        clocksi_multiple_read_update_test,
+        clocksi_concurrency_test,
+        clocksi_parallel_ops_test,
+        clocksi_static_parallel_writes_test
+    ].
 
 clocksi_test1(Config) ->
     Bucket = ?BUCKET,
@@ -115,9 +116,9 @@ clocksi_test1(Config) ->
 clocksi_test2(Config) ->
     Bucket = ?BUCKET,
     Node = proplists:get_value(node, Config),
-    Key1=clocksi_test2_key1,
-    Key2=clocksi_test2_key2,
-    Key3=clocksi_test2_key3,
+    Key1 = clocksi_test2_key1,
+    Key2 = clocksi_test2_key2,
+    Key3 = clocksi_test2_key3,
 
     {ok, TxId} = rpc:call(Node, antidote, start_transaction, [ignore, []]),
     antidote_test_utils:check_read_key(Node, Key1, antidote_crdt_counter_pn, 0, ignore, TxId, Bucket),
@@ -228,7 +229,6 @@ clocksi_multiple_key_update_read_test(Config) ->
     pass.
 
 
-
 %% @doc The following function tests that ClockSI does not read values
 %%      inserted by a tx with higher commit timestamp than the snapshot time
 %%      of the reading tx.
@@ -246,7 +246,7 @@ clocksi_test_read_wait(Config) ->
 
     %% Start a different tx and try to read the key
     {ok, TxId2} = rpc:call(Node, antidote, start_transaction, [ignore, []]),
-    ct:log("Tx2 started with id : ~p", [TxId2]),
+    ct:pal("Tx2 started with id : ~p", [TxId2]),
     Pid = spawn_link(antidote_test_utils, spawn_read, [Node, TxId2, self(), Key, Type, Bucket]),
 
     %% Delay first transaction
@@ -254,7 +254,7 @@ clocksi_test_read_wait(Config) ->
 
     %% Commit the first tx.
     {ok, _} = rpc:call(Node, gingko, commit_txn, [TxId1]),
-    ct:log("Tx1 committed."),
+    ct:pal("Tx1 committed."),
 
     receive
         {Pid, ReadResult1} ->
@@ -264,7 +264,7 @@ clocksi_test_read_wait(Config) ->
 
     %% Prepare and commit the second transaction.
     _CommitTime2 = rpc:call(Node, antidote, commit_transaction, [TxId2]),
-    ct:log("Tx2 committed."),
+    ct:pal("Tx2 committed."),
     pass.
 
 
@@ -275,7 +275,7 @@ clocksi_test_no_update_property(Config) ->
     Type = antidote_crdt_counter_pn,
 
     {ok, _} = rpc:call(Node, antidote, update_objects,
-                      [ignore, [], [{{Key, Type, Bucket}, increment, 1}]]),
+        [ignore, [], [{{Key, Type, Bucket}, increment, 1}]]),
 
     pass.
 
@@ -290,12 +290,13 @@ clocksi_multiple_read_update_test(Config) ->
     Obj = {Key, Type, Bucket},
 
     {ok, [Result1], _} = rpc:call(Node, antidote, read_objects, [ignore, [], [Obj]]),
-    lists:foreach(fun(_)->
-                          read_update_run(Node, Key, Bucket) end,
-                  lists:seq(1, NTimes)),
+    lists:foreach(
+        fun(_) ->
+            read_update_run(Node, Key, Bucket)
+        end, lists:seq(1, NTimes)),
     {ok, [Result2], _} = rpc:call(Node, antidote, read_objects, [ignore, [], [Obj]]),
 
-    ?assertEqual(Result1+NTimes, Result2),
+    ?assertEqual(Result1 + NTimes, Result2),
     pass.
 
 %% @doc Test updating prior to a read.
@@ -306,7 +307,7 @@ read_update_run(Node, Key, Bucket) ->
     {ok, [Result1], _} = rpc:call(Node, antidote, read_objects, [ignore, [], [Obj]]),
     antidote_test_utils:update_counters(Node, [Key], [1], ignore, static, Bucket),
     {ok, [Result2], _} = rpc:call(Node, antidote, read_objects, [ignore, [], [Obj]]),
-    ?assertEqual(Result1+1, Result2),
+    ?assertEqual(Result1 + 1, Result2),
     pass.
 
 
@@ -324,14 +325,16 @@ clocksi_concurrency_test(Config) ->
     rpc:call(Node, gingko, prepare_txn, [TxId1]),
     {ok, TxId2} = rpc:call(Node, antidote, start_transaction, [ignore, []]),
     Pid = self(),
-    OtherPid = spawn_link( fun() ->
-                   antidote_test_utils:update_counters(Node, [Key], [1], ignore, TxId2, Bucket),
-                   rpc:call(Node, gingko, prepare_txn, [TxId2]),
-                   {ok, _}= rpc:call(Node, gingko, commit_txn, [TxId2]),
-                   Pid ! ok
-           end),
+    OtherPid =
+        spawn_link(
+            fun() ->
+                antidote_test_utils:update_counters(Node, [Key], [1], ignore, TxId2, Bucket),
+                rpc:call(Node, gingko, prepare_txn, [TxId2]),
+                {ok, _} = rpc:call(Node, gingko, commit_txn, [TxId2]),
+                Pid ! ok
+            end),
 
-    {ok, _}= rpc:call(Node, gingko, commit_txn, [TxId1]),
+    {ok, _} = rpc:call(Node, gingko, commit_txn, [TxId1]),
     receive
         ok ->
             antidote_test_utils:check_read_key(Node, Key, Type, 2, ignore, static, Bucket),
@@ -354,27 +357,27 @@ clocksi_parallel_ops_test(Config) ->
 
     %% update 5 different objects
     ok = rpc:call(Node, antidote, update_objects,
-                  [[{BoundObject1, increment, 1},
-                    {BoundObject2, increment, 2},
-                    {BoundObject3, increment, 3},
-                    {BoundObject4, increment, 4},
-                    {BoundObject5, increment, 5}],
-                   TxId]),
+        [[{BoundObject1, increment, 1},
+            {BoundObject2, increment, 2},
+            {BoundObject3, increment, 3},
+            {BoundObject4, increment, 4},
+            {BoundObject5, increment, 5}],
+            TxId]),
 
     %% read the objects in the same transaction to see that the updates
     %% are seen.
     Res = rpc:call(Node, antidote, read_objects, [[BoundObject1,
-                                                   BoundObject2, BoundObject3, BoundObject4, BoundObject5], TxId]),
+        BoundObject2, BoundObject3, BoundObject4, BoundObject5], TxId]),
     ?assertMatch({ok, [1, 2, 3, 4, 5]}, Res),
 
     %% update 5 times the first object.
     ok = rpc:call(Node, antidote, update_objects,
-                  [[{BoundObject1, increment, 1},
-                    {BoundObject1, increment, 1},
-                    {BoundObject1, increment, 1},
-                    {BoundObject1, increment, 1},
-                    {BoundObject1, increment, 1}],
-                   TxId]),
+        [[{BoundObject1, increment, 1},
+            {BoundObject1, increment, 1},
+            {BoundObject1, increment, 1},
+            {BoundObject1, increment, 1},
+            {BoundObject1, increment, 1}],
+            TxId]),
     %% see that these updates are seen too.
     Res1 = rpc:call(Node, antidote, read_objects, [[BoundObject1], TxId]),
     ?assertMatch({ok, [6]}, Res1),
@@ -383,7 +386,7 @@ clocksi_parallel_ops_test(Config) ->
     %% start a new transaction that reads the updated objects.
     {ok, TxId2} = rpc:call(Node, antidote, start_transaction, [ignore, []]),
     Res2 = rpc:call(Node, antidote, read_objects, [[BoundObject1,
-                                                    BoundObject2, BoundObject3, BoundObject4, BoundObject5], TxId2]),
+        BoundObject2, BoundObject3, BoundObject4, BoundObject5], TxId2]),
     ?assertMatch({ok, [6, 2, 3, 4, 5]}, Res2),
     {ok, _CT2} = rpc:call(Node, antidote, commit_transaction, [TxId2]).
 
@@ -402,38 +405,38 @@ clocksi_static_parallel_writes_test(Config) ->
     BoundObject5 = {parallel_key10, antidote_crdt_counter_pn, Bucket},
     %% update 5 different objects
     {ok, CT} = rpc:call(Node, antidote, update_objects,
-                        [ignore, [],
-                         [{BoundObject1, increment, 1},
-                          {BoundObject2, increment, 2},
-                          {BoundObject3, increment, 3},
-                          {BoundObject4, increment, 4},
-                          {BoundObject5, increment, 5}]
-                        ]),
+        [ignore, [],
+            [{BoundObject1, increment, 1},
+                {BoundObject2, increment, 2},
+                {BoundObject3, increment, 3},
+                {BoundObject4, increment, 4},
+                {BoundObject5, increment, 5}]
+        ]),
 
-    ct:log("updated 5 objects no problem"),
+    ct:pal("updated 5 objects no problem"),
 
     {ok, Res, CT1} = rpc:call(Node, antidote, read_objects,
-                              [CT, [], [BoundObject1,
-                                        BoundObject2, BoundObject3,
-                                        BoundObject4, BoundObject5]
-                              ]),
+        [CT, [], [BoundObject1,
+            BoundObject2, BoundObject3,
+            BoundObject4, BoundObject5]
+        ]),
     ?assertMatch([1, 2, 3, 4, 5], Res),
 
-    ct:log("read 5 objects no problem"),
+    ct:pal("read 5 objects no problem"),
 
     %% update 5 times the first object.
     {ok, CT2} = rpc:call(Node, antidote, update_objects,
-                         [CT1, [],
-                          [{BoundObject1, increment, 1},
-                           {BoundObject1, increment, 1},
-                           {BoundObject1, increment, 1},
-                           {BoundObject1, increment, 1},
-                           {BoundObject1, increment, 1}]
-                         ]),
+        [CT1, [],
+            [{BoundObject1, increment, 1},
+                {BoundObject1, increment, 1},
+                {BoundObject1, increment, 1},
+                {BoundObject1, increment, 1},
+                {BoundObject1, increment, 1}]
+        ]),
 
-    ct:log("updated 5 objects concurrently"),
+    ct:pal("updated 5 objects concurrently"),
 
     {ok, Res1, _CT4} = rpc:call(Node, antidote, read_objects,
-                                [CT2, [], [BoundObject1]]),
+        [CT2, [], [BoundObject1]]),
     ?assertMatch([6], Res1),
     pass.

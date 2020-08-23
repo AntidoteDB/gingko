@@ -49,20 +49,21 @@
 init_per_suite(Config) ->
     test_utils:init_multi_dc(?MODULE, Config).
 
-
 end_per_suite(Config) ->
     Config.
 
-init_per_testcase(_Case, Config) ->
+init_per_testcase(Name, Config) ->
+    ct:pal("[ STARTING ] ~p", [Name]),
     Config.
 
 end_per_testcase(Name, _) ->
-    ct:print("[ OK ] ~p", [Name]),
+    ct:pal("[ OK ] ~p", [Name]),
     ok.
 
-all() -> [
-%%    append_failure_test
-].
+all() ->
+    [
+        append_failure_test
+    ].
 
 
 append_failure_test(Config) ->
@@ -81,7 +82,7 @@ append_failure_test(Config) ->
             ?assertEqual(1, Val1),
 
             %% Partition the network.
-            ct:log("About to partition: ~p from: ~p", [KeyNodeList, Nodes -- KeyNodeList]),
+            ct:pal("About to partition: ~p from: ~p", [KeyNodeList, Nodes -- KeyNodeList]),
             test_utils:partition_cluster(KeyNodeList, Nodes -- KeyNodeList),
 
             %% Heal the partition.

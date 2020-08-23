@@ -98,12 +98,10 @@ check_node_restart() ->
                     %% Ensure all connections were successful, crash otherwise
                     true;
                 false ->
-                    logger:error("BAD1"),
                     mnesia:stop(),
                     false
             end;
         false ->
-            logger:error("BAD2"),
             mnesia:stop(),
             false
     end.

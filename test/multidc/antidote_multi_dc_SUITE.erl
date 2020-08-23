@@ -59,19 +59,20 @@ init_per_suite(Config) ->
 end_per_suite(Config) ->
     Config.
 
-init_per_testcase(_Name, Config) ->
+init_per_testcase(Name, Config) ->
+    ct:pal("[ STARTING ] ~p", [Name]),
     Config.
 
 end_per_testcase(Name, _) ->
-    ct:print("[ OK ] ~p", [Name]),
+    ct:pal("[ OK ] ~p", [Name]),
     ok.
 
 all() ->
     [
-%%        recreate_dc,
-%%        dc_count,
-%%        dummy_test,
-%%        random_test
+        recreate_dc,
+        dc_count,
+        dummy_test,
+        random_test
     ].
 
 %% Tests that add_nodes_to_dc is idempotent
@@ -86,28 +87,31 @@ recreate_dc(Config) ->
             ok = rpc:call(Node1, antidote_dc_manager, add_nodes_to_dc, [[Node1, Node2]]),
             ok = rpc:call(Node1, antidote_dc_manager, add_nodes_to_dc, [[Node1, Node2]]),
             ok = rpc:call(Node2, antidote_dc_manager, add_nodes_to_dc, [[Node1, Node2]])
-
     end.
 
 dc_count(Config) ->
     Clusters = proplists:get_value(clusters, Config),
     AllNodes = lists:flatten(Clusters),
-    [First | AllOtherDcids] = lists:map(fun(Node) ->
-        Result = rpc:call(Node, inter_dc_meta_data_manager, get_connected_dcids_and_mine, []),
-        logger:error("Result: ~p", [Result]),
-        Result
-                                        end, AllNodes),
-    logger:error("First DcIds: ~p", [First]),
-    true = lists:all(fun(List) ->
-        logger:error("DcIds: ~p", [List]),
-        general_utils:set_equals_on_lists(First, List) end, AllOtherDcids),
+    [First | AllOtherDcids] =
+        lists:map(
+            fun(Node) ->
+                Result = rpc:call(Node, inter_dc_meta_data_manager, get_connected_dcids_and_mine, []),
+                logger:error("Result: ~p", [Result]),
+                Result
+            end, AllNodes),
+    logger:error("First DCIDs: ~p", [First]),
+    true =
+        lists:all(
+            fun(List) ->
+                logger:error("DCIDs: ~p", [List]),
+                general_utils:set_equals_on_lists(First, List)
+            end, AllOtherDcids),
     ok.
 
 dummy_test(Config) ->
     case gingko_env_utils:get_use_single_server() of
         true -> pass;
         false ->
-
             Bucket = ?BUCKET,
             [[Node1, Node2] | _] = proplists:get_value(clusters, Config),
             [Node1, Node2] = proplists:get_value(nodes, Config),
@@ -120,14 +124,14 @@ dummy_test(Config) ->
             {ok, _} = rpc:call(Node1, antidote, update_objects, [ignore, [], [Update]]),
             {ok, _} = rpc:call(Node2, antidote, update_objects, [ignore, [], [Update]]),
             %% Propagation of updates
-            F = fun() ->
-                {ok, [Val], _CommitTime} = rpc:call(Node2, antidote, read_objects, [ignore, [], [Object]]),
-                Val
+            F =
+                fun() ->
+                    {ok, [Val], _CommitTime} = rpc:call(Node2, antidote, read_objects, [ignore, [], [Object]]),
+                    Val
                 end,
             Delay = 100,
             Retry = 360000 div Delay, %wait for max 1 min
             ok = time_utils:wait_until_result(F, 3, Retry, Delay)
-
     end.
 
 
@@ -148,19 +152,21 @@ random_test(Config) ->
     ListIds = [rand:uniform(N) || _ <- lists:seq(1, NumWrites)], % TODO avoid non-determinism in tests
 
     Obj = {log_test_key1, antidote_crdt_counter_pn, Bucket},
-    F = fun(Elem) ->
-        Node = lists:nth(Elem, Nodes),
-        ct:log("Increment at node: ~p", [Node]),
-        {ok, _} = rpc:call(Node, antidote, update_objects,
-            [ignore, [], [{Obj, increment, 1}]])
+    F =
+        fun(Elem) ->
+            Node = lists:nth(Elem, Nodes),
+            ct:pal("Increment at node: ~p", [Node]),
+            {ok, _} = rpc:call(Node, antidote, update_objects,
+                [ignore, [], [{Obj, increment, 1}]])
         end,
     lists:foreach(F, ListIds),
 
     FirstNode = hd(Nodes),
 
-    G = fun() ->
-        {ok, [Res], _} = rpc:call(FirstNode, antidote, read_objects, [ignore, [], [Obj]]),
-        Res
+    G =
+        fun() ->
+            {ok, [Res], _} = rpc:call(FirstNode, antidote, read_objects, [ignore, [], [Obj]]),
+            Res
         end,
     Delay = 1000,
     Retry = 360000 div Delay, %wait for max 1 min

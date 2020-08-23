@@ -51,10 +51,12 @@
 -type last_transfers() :: orddict:orddict({key(), dcid()}, erlang:timestamp()).
 -type request_queue() :: orddict:orddict(key(), [{non_neg_integer(), erlang:timestamp()}]).
 
--record(state, {request_queue = orddict:new() :: request_queue(),
+-record(state, {
+    request_queue = orddict:new() :: request_queue(),
     last_transfers = orddict:new() :: last_transfers(),
-    transfer_timer :: reference()}).
--define(DATA_TYPE, antidote_crdt_counter_b).
+    transfer_timer = none :: none | reference()
+}).
+-type state() :: #state{}.
 
 %%%===================================================================
 %%% Public API
@@ -72,12 +74,12 @@ generate_downstream(Key, {decrement, {Value, _DCID}}, BCounter) ->
 %% Operation is always safe.
 generate_downstream(_Key, {increment, {Amount, _DCID}}, BCounter) ->
     DCID = gingko_dc_utils:get_my_dcid(),
-    ?DATA_TYPE:downstream({increment, {Amount, DCID}}, BCounter);
+    antidote_crdt_counter_b:downstream({increment, {Amount, DCID}}, BCounter);
 
 %% @doc Processes a transfer operation between two owners of the
 %% counter.
 generate_downstream(_Key, {transfer, {Amount, ToDCID, FromDCID}}, BCounter) ->
-    ?DATA_TYPE:downstream({transfer, {Amount, ToDCID, FromDCID}}, BCounter).
+    antidote_crdt_counter_b:downstream({transfer, {Amount, ToDCID, FromDCID}}, BCounter).
 
 %% @doc Handles a remote transfer request.
 -spec process_transfer({transfer, {key(), non_neg_integer(), dcid()}}) -> ok.
@@ -93,8 +95,7 @@ start_link() ->
 
 init([]) ->
     default_gen_server_behaviour:init(?MODULE, []),
-    Timer = erlang:send_after(?TRANSFER_FREQ, self(), transfer_periodic),
-    {ok, #state{transfer_timer = Timer}}.
+    {ok, update_timer(#state{})}.
 
 handle_call(Request = hello, From, State) ->
     default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
@@ -103,9 +104,9 @@ handle_call(Request = hello, From, State) ->
 handle_call(Request = {consume, Key, {Op, {Amount, _}}, BCounter}, From, State = #state{request_queue = RequestQueue}) ->
     default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
     DCID = gingko_dc_utils:get_my_dcid(),
-    case ?DATA_TYPE:generate_downstream_check({Op, Amount}, DCID, BCounter, Amount) of
+    case antidote_crdt_counter_b:generate_downstream_check({Op, Amount}, DCID, BCounter, Amount) of
         {error, no_permissions} = FailedResult ->
-            Available = ?DATA_TYPE:localPermissions(DCID, BCounter),
+            Available = antidote_crdt_counter_b:localPermissions(DCID, BCounter),
             UpdatedRequestQueue = queue_request(Key, Amount - Available, RequestQueue),
             {reply, FailedResult, State#state{request_queue = UpdatedRequestQueue}};
         Result ->
@@ -118,7 +119,7 @@ handle_cast(Request = {transfer, {Key, Amount, RequesterDCID}}, State = #state{l
     DCID = gingko_dc_utils:get_my_dcid(),
     case can_process(Key, RequesterDCID, NewLastTransfers) of
         true ->
-            BCounterKey = {Key, ?DATA_TYPE},
+            BCounterKey = {Key, antidote_crdt_counter_b},
             % try to transfer locks, might return {error,no_permissions} if not enough permissions are available locally
             _ = gingko:update_txn({BCounterKey, {transfer, {Amount, RequesterDCID, DCID}}}),
             {noreply, State#state{last_transfers = orddict:store({Key, RequesterDCID}, erlang:timestamp(), NewLastTransfers)}};
@@ -126,9 +127,8 @@ handle_cast(Request = {transfer, {Key, Amount, RequesterDCID}}, State = #state{l
             {noreply, State#state{last_transfers = NewLastTransfers}}
     end.
 
-handle_info(Info = transfer_periodic, State = #state{request_queue = RequestQueue, transfer_timer = TransferTimer}) ->
+handle_info(Info = transfer_periodic, State = #state{request_queue = RequestQueue}) ->
     default_gen_server_behaviour:handle_info(?MODULE, Info, State),
-    _ = erlang:cancel_timer(TransferTimer),
     ClearedRequestQueue = clear_pending_request(RequestQueue, ?REQUEST_TIMEOUT),
     NewRequestQueue =
         orddict:fold(
@@ -149,8 +149,7 @@ handle_info(Info = transfer_periodic, State = #state{request_queue = RequestQueu
                         end
                 end
             end, orddict:new(), ClearedRequestQueue),
-    NewTransferTimer = erlang:send_after(?TRANSFER_FREQ, self(), transfer_periodic),
-    {noreply, State#state{transfer_timer = NewTransferTimer, request_queue = NewRequestQueue}}.
+    {noreply, update_timer(State#state{request_queue = NewRequestQueue})}.
 
 terminate(Reason, State) ->
     default_gen_server_behaviour:terminate(?MODULE, Reason, State).
@@ -176,7 +175,7 @@ queue_request(Key, Amount, RequestQueue) ->
 request_remote(0, _Key) -> 0;
 request_remote(RequiredSum, Key) ->
     DCID = gingko_dc_utils:get_my_dcid(),
-    BCounterKey = {Key, ?DATA_TYPE},
+    BCounterKey = {Key, antidote_crdt_counter_b},
     {ok, BCounter} = gingko:read(BCounterKey),
     PrefList = pref_list(BCounter),
     lists:foldl(
@@ -204,7 +203,7 @@ pref_list(BCounter) ->
     DCID = gingko_dc_utils:get_my_dcid(),
     OtherDCDescriptors = inter_dc_meta_data_manager:get_dc_descriptors(),
     OtherDCIDs = [DescriptorDCID || #descriptor{dcid = DescriptorDCID} <- OtherDCDescriptors, DescriptorDCID /= DCID],
-    OtherDCPermissions = [{OtherDCID, ?DATA_TYPE:localPermissions(OtherDCID, BCounter)} || OtherDCID <- OtherDCIDs],
+    OtherDCPermissions = [{OtherDCID, antidote_crdt_counter_b:localPermissions(OtherDCID, BCounter)} || OtherDCID <- OtherDCIDs],
     lists:sort(fun({_, A}, {_, B}) -> A =< B end, OtherDCPermissions).
 
 -spec cancel_consecutive_request(last_transfers(), microsecond()) -> last_transfers().
@@ -238,5 +237,10 @@ can_process(Key, RequesterDCID, LastTransfers) ->
                 error -> true
             end;
         true -> false
-    end
-.
+    end.
+
+-spec update_timer(state()) -> state().
+update_timer(State = #state{transfer_timer = Timer}) ->
+    TransferIntervalMillis = gingko_env_utils:get_bcounter_transfer_interval_millis(),
+    TransferTimer = gingko_dc_utils:update_timer(Timer, true, TransferIntervalMillis, transfer_periodic, false),
+    State#state{transfer_timer = TransferTimer}.

@@ -31,10 +31,10 @@
 
 %% common_test callbacks
 -export([init_per_suite/1,
-         end_per_suite/1,
-         init_per_testcase/2,
-         end_per_testcase/2,
-         all/0]).
+    end_per_suite/1,
+    init_per_testcase/2,
+    end_per_testcase/2,
+    all/0]).
 
 %% tests
 -export([new_bcounter_test/1]).
@@ -45,40 +45,24 @@
 -define(TYPE, antidote_crdt_counter_b).
 -define(RETRY_COUNT, 10).
 
-
-init_per_suite(InitialConfig) ->
-    Config = test_utils:init_single_dc(?MODULE, InitialConfig),
-    Clusters = proplists:get_value(clusters, Config),
-    Nodes = lists:flatten(Clusters),
-
-    % Ensure that write operations are certified
-    general_utils:parallel_map(fun(Node) ->
-        rpc:call(Node, application, set_env, [antidote, txn_cert, true])
-                    end, Nodes),
-
-    % Check that indeed transactions certification is turned on
-    {ok, true} = rpc:call(hd(hd(Clusters)), application, get_env, [antidote, txn_cert]),
-
-    Config.
-
+init_per_suite(Config) ->
+    test_utils:init_single_dc(?MODULE, Config).
 
 end_per_suite(Config) ->
     Config.
 
-
-init_per_testcase(_Case, Config) ->
+init_per_testcase(Name, Config) ->
+    ct:pal("[ STARTING ] ~p", [Name]),
     Config.
 
-
 end_per_testcase(Name, _) ->
-    ct:print("[ OK ] ~p", [Name]),
+    ct:pal("[ OK ] ~p", [Name]),
     ok.
 
-
-all() -> [
-         new_bcounter_test
-        ].
-
+all() ->
+    [
+        new_bcounter_test
+    ].
 
 %% Test creating a new `bcounter()'.
 new_bcounter_test(Config) ->
@@ -92,7 +76,7 @@ new_bcounter_test(Config) ->
     check_read(Node, Key, 0, Bucket).
 
 read_si(Node, Key, CommitTime, Bucket) ->
-    ct:log("Read si ~p", [Key]),
+    ct:pal("Read si ~p", [Key]),
     rpc:call(Node, antidote, read_objects, [CommitTime, [], [{Key, ?TYPE, Bucket}]]).
 
 
@@ -101,4 +85,4 @@ check_read(Node, Key, Expected, CommitTime, Bucket) ->
     ?assertEqual(Expected, ?TYPE:permissions(Obj)).
 
 check_read(Node, Key, Expected, Bucket) ->
-  check_read(Node, Key, Expected, ignore, Bucket).
+    check_read(Node, Key, Expected, ignore, Bucket).

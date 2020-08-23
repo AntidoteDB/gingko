@@ -29,10 +29,10 @@
     create_checkpoint_operation/2]).
 
 -spec create_local_journal_entry(jsn_state(), txid(), journal_entry_type(), journal_entry_args()) -> journal_entry().
-create_local_journal_entry(#jsn_state{next_jsn = Jsn, dcid = DcId}, TxId, Type, Args) ->
+create_local_journal_entry(#jsn_state{next_jsn = Jsn, dcid = DCID}, TxId, Type, Args) ->
     #journal_entry{
         jsn = Jsn,
-        dcid = DcId,
+        dcid = DCID,
         tx_id = TxId,
         type = Type,
         args = Args
@@ -59,5 +59,5 @@ create_abort_operation() ->
     {abort_txn, #abort_txn_args{}}.
 
 -spec create_checkpoint_operation(vectorclock(), #{dcid() => txn_tracking_num()}) -> {journal_entry_type(), journal_entry_args()}.
-create_checkpoint_operation(DependencyVts, DcIdToLastTxNum) ->
-    {checkpoint, #checkpoint_args{dependency_vts = DependencyVts, dcid_to_last_txn_tracking_num = DcIdToLastTxNum}}.
+create_checkpoint_operation(DependencyVts, DCIDToLastTxNum) ->
+    {checkpoint, #checkpoint_args{dependency_vts = DependencyVts, dcid_to_last_txn_tracking_num = DCIDToLastTxNum}}.

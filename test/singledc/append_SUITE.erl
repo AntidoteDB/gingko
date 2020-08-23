@@ -30,17 +30,17 @@
 -include("gingko.hrl").
 %% common_test callbacks
 -export([
-         init_per_suite/1,
-         end_per_suite/1,
-         init_per_testcase/2,
-         end_per_testcase/2,
-         all/0
-        ]).
+    init_per_suite/1,
+    end_per_suite/1,
+    init_per_testcase/2,
+    end_per_testcase/2,
+    all/0
+]).
 
 %% tests
 -export([
-         append_test/1
-        ]).
+    append_test/1
+]).
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
@@ -51,31 +51,32 @@ init_per_suite(Config) ->
 end_per_suite(Config) ->
     Config.
 
-init_per_testcase(_Case, Config) ->
+init_per_testcase(Name, Config) ->
+    ct:pal("[ STARTING ] ~p", [Name]),
     Config.
 
 end_per_testcase(Name, _) ->
-    ct:print("[ OK ] ~p", [Name]),
+    ct:pal("[ OK ] ~p", [Name]),
     ok.
 
 all() ->
     [
-     append_test
+        append_test
     ].
 
 append_test(Config) ->
     Bucket = ?BUCKET,
     Node = proplists:get_value(node, Config),
-    ct:log("Starting write operation 1"),
+    ct:pal("Starting write operation 1"),
     antidote_test_utils:increment_pn_counter(Node, append_key1, Bucket),
 
-    ct:log("Starting write operation 2"),
+    ct:pal("Starting write operation 2"),
     antidote_test_utils:increment_pn_counter(Node, append_key2, Bucket),
 
-    ct:log("Starting read operation 1"),
+    ct:pal("Starting read operation 1"),
     {Val1, _} = antidote_test_utils:read_pn_counter(Node, append_key1, Bucket),
     ?assertEqual(1, Val1),
 
-    ct:log("Starting read operation 2"),
+    ct:pal("Starting read operation 2"),
     {Val2, _} = antidote_test_utils:read_pn_counter(Node, append_key2, Bucket),
     ?assertEqual(1, Val2).

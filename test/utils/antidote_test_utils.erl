@@ -80,14 +80,6 @@ read_b_counter_commit(Node, Key, Bucket, CommitTime) ->
     {ok, [Value], CommitTime} = rpc:call(Node, antidote, read_objects, [CommitTime, [], [Obj]]),
     {?TYPE_B:permissions(Value), CommitTime}.
 
-
-
-
-
-
-
-
-
 %% ------------------
 %% From clocksi_SUITE
 %% ------------------
@@ -99,11 +91,11 @@ check_read_key(Node, Key, Type, Expected, Clock, TxId, Bucket, ProtocolModule) -
     check_read(Node, [{Key, Type, Bucket}], [Expected], Clock, TxId, ProtocolModule).
 
 check_read_keys(Node, Keys, Type, Expected, Clock, TxId, Bucket) ->
-    Objects = lists:map(fun(Key) ->
-        {Key, Type, Bucket}
-                        end,
-        Keys
-    ),
+    Objects =
+        lists:map(
+            fun(Key) ->
+                {Key, Type, Bucket}
+            end, Keys),
     check_read(Node, Objects, Expected, Clock, TxId).
 
 check_read(Node, Objects, Expected, Clock, TxId) ->
@@ -125,38 +117,38 @@ update_counters(Node, Keys, IncValues, Clock, TxId, Bucket) ->
     update_counters(Node, Keys, IncValues, Clock, TxId, Bucket, antidote).
 
 update_counters(Node, Keys, IncValues, Clock, TxId, Bucket, ProtocolModule) ->
-    Updates = lists:map(fun({Key, Inc}) ->
-        {{Key, antidote_crdt_counter_pn, Bucket}, increment, Inc}
-                        end,
-        lists:zip(Keys, IncValues)
-    ),
+    Updates =
+        lists:map(
+            fun({Key, Inc}) ->
+                {{Key, antidote_crdt_counter_pn, Bucket}, increment, Inc}
+            end, lists:zip(Keys, IncValues)),
 
     case TxId of
         static ->
             {ok, CT} = rpc:call(Node, antidote, update_objects, [Clock, [], Updates]),
             {ok, CT};
-        _->
+        _ ->
             ok = rpc:call(Node, antidote, update_objects, [Updates, TxId]),
             ok
     end.
 
 
 update_sets(Node, Keys, Ops, TxId, Bucket) ->
-    Updates = lists:map(fun({Key, {Op, Param}}) ->
-        {{Key, antidote_crdt_set_aw, Bucket}, Op, Param}
-                        end,
-        lists:zip(Keys, Ops)
-    ),
+    Updates =
+        lists:map(
+            fun({Key, {Op, Param}}) ->
+                {{Key, antidote_crdt_set_aw, Bucket}, Op, Param}
+            end, lists:zip(Keys, Ops)),
     ok = rpc:call(Node, antidote, update_objects, [Updates, TxId]),
     ok.
 
 
 update_sets_clock(Node, Keys, Ops, Clock, Bucket) ->
-    Updates = lists:map(fun({Key, {Op, Param}}) ->
+    Updates =
+        lists:map(
+            fun({Key, {Op, Param}}) ->
         {{Key, antidote_crdt_set_aw, Bucket}, Op, Param}
-                        end,
-        lists:zip(Keys, Ops)
-    ),
+                        end, lists:zip(Keys, Ops)),
     {ok, CT} = rpc:call(Node, antidote, update_objects, [Clock, [], Updates]),
     {ok, CT}.
 
@@ -177,16 +169,15 @@ get_random_key() ->
     rand:uniform(1000).  % TODO use deterministic keys in testcase
 
 
-find_key_same_node(FirstNode, IndexNode, Num) ->
+find_key_same_node(FirstNode, GivenPartitionNodeTuple, Num) ->
     NewKey = list_to_atom(atom_to_list(aaa) ++ integer_to_list(Num)),
-    Preflist = rpc:call(FirstNode, antidote_utils, get_preflist_from_key, [aaa]),
-    case hd(Preflist) == IndexNode of
+    PartitionNodeTuple = rpc:call(FirstNode, gingko_dc_utils, get_key_partition_node_tuple, [aaa]),
+    case PartitionNodeTuple == GivenPartitionNodeTuple of
         true ->
             NewKey;
         false ->
-            find_key_same_node(FirstNode, IndexNode, Num+1)
+            find_key_same_node(FirstNode, GivenPartitionNodeTuple, Num + 1)
     end.
-
 
 
 %% inter dc utils

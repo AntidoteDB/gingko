@@ -41,10 +41,9 @@
 
 -type cache_map() :: #{key_struct() => #{vectorclock() => cache_entry()}}.
 
-%TODO think of default values
 -record(state, {
-    partition = 0 :: partition(),
-    key_cache_entry_map = #{} :: cache_map(), %TODO double map for optimization later
+    partition :: partition(),
+    key_cache_entry_map = #{} :: cache_map(),
     reset_used_timer = none :: none | reference(),
     eviction_timer = none :: none | reference()
 }).
@@ -62,13 +61,9 @@
 start_vnode(I) ->
     riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
 
-%% @doc Opens the persistent copy of the Log.
-%%      The name of the Log in disk is a combination of the the word
-%%      `log' and the partition identifier.
 init([Partition]) ->
     default_vnode_behaviour:init(?MODULE, [Partition]),
-    NewState = reset_timers(#state{partition = Partition}),
-    {ok, NewState}.
+    {ok, update_timers(#state{partition = Partition})}.
 
 handle_command(Request = hello, Sender, State) ->
     default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
@@ -86,7 +81,7 @@ handle_command(Request = {get, KeyStruct, DependencyVts, ValidJournalEntries}, S
 
 handle_command(Request = reset_cache_timers, Sender, State) ->
     default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
-    {reply, ok, reset_timers(State)};
+    {reply, ok, update_timers(State)};
 
 handle_command(Request = {checkpoint_cache_cleanup, CheckpointVts}, Sender, State) ->
     default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
@@ -94,11 +89,11 @@ handle_command(Request = {checkpoint_cache_cleanup, CheckpointVts}, Sender, Stat
 
 handle_command(Request = reset_used_event, Sender, State) ->
     default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
-    {reply, ok, reset_used(State)};
+    {reply, ok, restart_reset_used_timer(reset_used(State))};
 
 handle_command(Request = eviction_event, Sender, State) ->
     default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
-    {reply, ok, start_eviction_process(State)};
+    {reply, ok, restart_eviction_timer(start_eviction_process(State))};
 
 handle_command(Request, Sender, State) -> default_vnode_behaviour:handle_command_crash(?MODULE, Request, Sender, State).
 handoff_starting(TargetNode, State) -> default_vnode_behaviour:handoff_starting(?MODULE, TargetNode, State).
@@ -127,13 +122,21 @@ handle_overload_info(Request, Partition) -> default_vnode_behaviour:handle_overl
 %%% Internal functions
 %%%===================================================================
 
--spec reset_timers(state()) -> state().
-reset_timers(State = #state{reset_used_timer = CurrentResetUsedTimer, eviction_timer = CurrentEvictionTimer}) ->
+-spec restart_reset_used_timer(state()) -> state().
+restart_reset_used_timer(State = #state{reset_used_timer = CurrentResetUsedTimer}) ->
     ResetUsedIntervalMillis = gingko_env_utils:get_cache_reset_used_interval_millis(),
-    EvictionIntervalMillis = gingko_env_utils:get_cache_eviction_interval_millis(),
     NewResetUsedTimer = gingko_dc_utils:update_timer(CurrentResetUsedTimer, true, ResetUsedIntervalMillis, reset_used_event, true),
+    State#state{reset_used_timer = NewResetUsedTimer}.
+
+-spec restart_eviction_timer(state()) -> state().
+restart_eviction_timer(State = #state{eviction_timer = CurrentEvictionTimer}) ->
+    EvictionIntervalMillis = gingko_env_utils:get_cache_eviction_interval_millis(),
     NewEvictionTimer = gingko_dc_utils:update_timer(CurrentEvictionTimer, true, EvictionIntervalMillis, eviction_event, true),
-    State#state{reset_used_timer = NewResetUsedTimer, eviction_timer = NewEvictionTimer}.
+    State#state{eviction_timer = NewEvictionTimer}.
+
+-spec update_timers(state()) -> state().
+update_timers(State) ->
+    restart_eviction_timer(restart_reset_used_timer(State)).
 
 -spec get_internal(key_struct(), vectorclock(), load_from_log | [journal_entry()], state()) -> {{ok, snapshot()}, state()} | {{error, reason()}, state()}.
 get_internal(KeyStruct, DependencyVts, ValidJournalEntryListOrLoadFromLog, State) ->
@@ -178,7 +181,7 @@ load_key_into_cache(KeyStruct, DependencyVts, ValidJournalEntryListOrLoadFromLog
     case JournalEntryListResult of
         {ok, JournalEntryList} ->
             CheckpointJournalEntryList = gingko_utils:get_journal_entries_of_type(JournalEntryList, checkpoint_commit),
-            ReverseVtsSortedCheckpointJournalEntryList = lists:reverse(gingko_utils:sort_same_journal_entry_type_list_by_vts( CheckpointJournalEntryList)),
+            ReverseVtsSortedCheckpointJournalEntryList = lists:reverse(gingko_utils:sort_same_journal_entry_type_list_by_vts(CheckpointJournalEntryList)),
             CheckpointVtsOrNone =
                 case ReverseVtsSortedCheckpointJournalEntryList of
                     [] -> none;

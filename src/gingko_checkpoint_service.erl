@@ -56,7 +56,7 @@ start_link() -> gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 init([]) ->
     default_gen_server_behaviour:init(?MODULE, []),
-    {ok, #state{}}.
+    {ok, update_timer(#state{})}.
 
 handle_call(Request = hello, From, State) ->
     default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
@@ -75,13 +75,13 @@ handle_cast(Request = {update_checkpoint_service, Active}, State) ->
 
 handle_cast(Request, State) -> default_gen_server_behaviour:handle_cast_crash(?MODULE, Request, State).
 
-handle_info(Info = checkpoint, State = #state{checkpoint_timer = CheckpointTimer}) ->
+handle_info(Info = checkpoint, State = #state{active = Active}) ->
     default_gen_server_behaviour:handle_info(?MODULE, Info, State),
-    erlang:cancel_timer(CheckpointTimer),
-    internal_checkpoint(),
-    CheckpointIntervalMillis = gingko_env_utils:get_checkpoint_interval_millis(),
-    NewCheckpointTimer = erlang:send_after(CheckpointIntervalMillis, self(), checkpoint),
-    {noreply, State#state{checkpoint_timer = NewCheckpointTimer}};
+    case Active of
+        true -> internal_checkpoint();
+        false -> ok
+    end,
+    {noreply, update_timer(State)};
 
 handle_info(Info, State) -> default_gen_server_behaviour:handle_info_crash(?MODULE, Info, State).
 terminate(Reason, State) -> default_gen_server_behaviour:terminate(?MODULE, Reason, State).

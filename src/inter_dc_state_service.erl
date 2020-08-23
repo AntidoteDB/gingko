@@ -52,6 +52,7 @@ update_dc_state_service(Active) ->
 update_dc_state(DcState) ->
     gen_server:cast(?MODULE, {update_dc_state, DcState}).
 
+-spec get_GCSt() -> vectorclock().
 get_GCSt() ->
     gen_server:call(?MODULE, get_gcst).
 
@@ -97,15 +98,15 @@ handle_cast(Request = {update_dc_state, DcState = #dc_state{dcid = DCID}}, State
 
 handle_cast(Request, State) -> default_gen_server_behaviour:handle_cast_crash(?MODULE, Request, State).
 
-handle_info(Info = dc_state, State) ->
+handle_info(Info = dc_state, State = #state{active = Active}) ->
     default_gen_server_behaviour:handle_info(?MODULE, Info, State),
-    OldTimer = State#state.dc_state_timer,
-    erlang:cancel_timer(OldTimer),
-    MyDcState = #dc_state{dcid = gingko_dc_utils:get_my_dcid(), last_update = gingko_dc_utils:get_timestamp(), dcsf = gingko_dc_utils:get_DCSf_vts()},
-    inter_dc_request_sender:perform_dc_state_request(MyDcState),
-    DcStateIntervalMillis = gingko_env_utils:get_dc_state_interval_millis(),
-    NewTimer = erlang:send_after(DcStateIntervalMillis, self(), dc_state),
-    {noreply, State#state{dc_state_timer = NewTimer}};
+    case Active of
+        true ->
+            MyDcState = #dc_state{dcid = gingko_dc_utils:get_my_dcid(), last_update = gingko_dc_utils:get_timestamp(), dcsf = gingko_dc_utils:get_DCSf_vts()},
+            inter_dc_request_sender:perform_dc_state_request(MyDcState);
+        false -> ok
+    end,
+    {noreply, update_timer(State)};
 
 handle_info(Info, State) -> default_gen_server_behaviour:handle_info_crash(?MODULE, Info, State).
 terminate(Reason, State) -> default_gen_server_behaviour:terminate(?MODULE, Reason, State).

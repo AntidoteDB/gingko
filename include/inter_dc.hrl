@@ -1,4 +1,6 @@
 -include("gingko.hrl").
+-export_type([dc_state/0, response_record/0, partition_vts/0, tx_vts/0, dc_info_entry/0, inter_dc_txn/0, zmq_sender_id/0, zmq_socket_option_value/0, zmq_socket_option/0, zmq_send_recv_flags/0, zmq_data/0, zmq_endpoint/0, zmq_context/0, zmq_socket_type/0, zmq_socket/0]).
+
 -define(DC_CONNECT_RETRIES, 5).
 -define(DC_CONNECT_RETRY_SLEEP, 1000).
 %% The following are binary codes defining the message
@@ -24,9 +26,6 @@
 -type target_dcid() :: dcid() | all.
 -type target_partition() :: partition() | all.
 
-%%-type socket_address() :: {inet:ip_address() | string(), inet:port_number()}.
-%%-type node_address_list() :: {node(), [socket_address()]}.
-%%-type dc_address_list() :: [node_address_list()].
 -type zmq_socket() :: {pos_integer(), binary()}.%%erlzmq_socket().
 -type zmq_socket_type() :: pair | pub | sub | req | rep | dealer | router | xreq | xrep |
 pull | push | xpub | xsub.
@@ -36,7 +35,7 @@ pull | push | xpub | xsub.
 -type zmq_send_recv_flag() :: dontwait | sndmore | recvmore | {timeout, timeout()}.
 -type zmq_send_recv_flags() :: [zmq_send_recv_flag()].
 -type zmq_socket_option() :: affinity | identity | subscribe | unsubscribe | rate | recovery_ivl | sndbuf | rcvbuf | rcvmore | fd | events | linger | reconnect_ivl | backlog |reconnect_ivl_max | maxmsgsize | sndhwm | rcvhwm | multicast_hops | rcvtimeo | sndtimeo | ipv4only.
--type zmq_socket_option_value() :: integer() | iolist() | binary().S
+-type zmq_socket_option_value() :: integer() | iolist() | binary().
 %%Empty is ping and all inter_dc_journal_entries must have the same txid
 
 -type response_return_function() :: fun((term(), request_entry()) -> ok).
@@ -46,6 +45,7 @@ pull | push | xpub | xsub.
 -record(inter_dc_txn, {
     partition :: partition(),
     source_dcid :: dcid(),
+    last_sent_txn_tracking_num :: txn_tracking_num(),
     journal_entries :: [journal_entry()]
 }).
 -type inter_dc_txn() :: #inter_dc_txn{}.

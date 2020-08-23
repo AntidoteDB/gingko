@@ -244,7 +244,6 @@ web_ports(dev16) -> 10165.
 -spec kill_and_restart_nodes([node()], [tuple()]) -> [node()].
 kill_and_restart_nodes(NodeList, Config) ->
     NewNodeList = brutal_kill_nodes(NodeList),
-    %%ct:sleep(100000),
     restart_nodes(NewNodeList, Config).
 
 
@@ -278,10 +277,10 @@ restart_nodes(NodeList, Config) ->
         fun(Node) ->
             ct:pal("Restarting node ~p", [Node]),
 
-            ct:log("Starting and waiting until vnodes are restarted at node ~w", [Node]),
+            ct:pal("Starting and waiting until vnodes are restarted at node ~w", [Node]),
             start_node(get_node_name(Node), Config),
 
-            ct:log("Waiting until ring converged @ ~p", [Node]),
+            ct:pal("Waiting until ring converged @ ~p", [Node]),
             riak_utils:wait_until_ring_converged([Node])
         end, NodeList),
     NodeList.
@@ -296,22 +295,22 @@ get_node_name(NodeAtom) ->
 
 -spec partition_cluster([node()], [node()]) -> ok.
 partition_cluster(ANodes, BNodes) ->
-    general_utils:parallel_map(fun({Node1, Node2}) ->
-        true = rpc:call(Node1, erlang, set_cookie, [Node2, canttouchthis]),
-        true = rpc:call(Node1, erlang, disconnect_node, [Node2]),
-        ok = time_utils:wait_until_disconnected(Node1, Node2)
-                               end,
-        [{Node1, Node2} || Node1 <- ANodes, Node2 <- BNodes]),
+    general_utils:parallel_map(
+        fun({Node1, Node2}) ->
+            true = rpc:call(Node1, erlang, set_cookie, [Node2, canttouchthis]),
+            true = rpc:call(Node1, erlang, disconnect_node, [Node2]),
+            ok = time_utils:wait_until_disconnected(Node1, Node2)
+        end, [{Node1, Node2} || Node1 <- ANodes, Node2 <- BNodes]),
     ok.
 
 -spec heal_cluster([node()], [node()]) -> ok.
 heal_cluster(ANodes, BNodes) ->
     GoodCookie = erlang:get_cookie(),
-    general_utils:parallel_map(fun({Node1, Node2}) ->
-        true = rpc:call(Node1, erlang, set_cookie, [Node2, GoodCookie]),
-        ok = time_utils:wait_until_connected(Node1, Node2)
-                               end,
-        [{Node1, Node2} || Node1 <- ANodes, Node2 <- BNodes]),
+    general_utils:parallel_map(
+        fun({Node1, Node2}) ->
+            true = rpc:call(Node1, erlang, set_cookie, [Node2, GoodCookie]),
+            ok = time_utils:wait_until_connected(Node1, Node2)
+        end, [{Node1, Node2} || Node1 <- ANodes, Node2 <- BNodes]),
     ok.
 
 

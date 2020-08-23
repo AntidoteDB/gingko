@@ -23,12 +23,7 @@
 -export([get_request_address/0,
     get_request_address_list/0,
     get_txn_address/0,
-    get_txn_address_list/0,
-    partition_to_binary/1,
-    partition_from_binary/1,
-    partition_and_rest_binary/1,
-    pad/2,
-    pad_or_trim/2]).
+    get_txn_address_list/0]).
 
 -spec get_ip() -> inet:ip_address().
 get_ip() ->
@@ -69,40 +64,7 @@ get_txn_address_list() ->
     Port = gingko_env_utils:get_txn_port(),
     [{Ip, Port} || Ip <- get_ip_list_without_local_ip()].
 
--spec pad(non_neg_integer(), binary()) -> binary().
-pad(Width, Binary) ->
-    case Width - byte_size(Binary) of
-        N when N =< 0 -> Binary;
-        N -> <<0:(N * 8), Binary/binary>>
-    end.
-
-%% Takes a binary and makes it size width
-%% if it is too small than it adds 0s
-%% otherwise it trims bits from the left size
--spec pad_or_trim(non_neg_integer(), binary()) -> binary().
-pad_or_trim(Width, Binary) ->
-    case Width - byte_size(Binary) of
-        N when N == 0 -> Binary;
-        N when N < 0 ->
-            Pos = trunc(abs(N)),
-            <<_:Pos/binary, Rest:Width/binary>> = Binary,
-            Rest;
-        N -> <<0:(N * 8), Binary/binary>>
-    end.
-
--spec partition_to_binary(partition()) -> binary().
-partition_to_binary(Partition) ->
-    pad(?PARTITION_BYTE_LENGTH, binary:encode_unsigned(Partition)).
-
--spec partition_from_binary(binary()) -> partition().
-partition_from_binary(PartitionBinary) ->
-    binary:decode_unsigned(PartitionBinary).
-
--spec partition_and_rest_binary(binary()) -> {binary(), binary()}.
-partition_and_rest_binary(Binary) ->
-    <<Partition:?PARTITION_BYTE_LENGTH/big-unsigned-integer-unit:8, RestBinary/binary>> = Binary,
-    {Partition, RestBinary}.
-
+-spec sort_dc_address_list(dc_address_list()) -> dc_address_list().
 sort_dc_address_list(DcAddressList) ->
     lists:sort(
         lists:map(
@@ -110,5 +72,6 @@ sort_dc_address_list(DcAddressList) ->
                 {Node, lists:sort(SocketAddressList)}
             end, DcAddressList)).
 
+-spec sort_descriptor(descriptor()) -> descriptor().
 sort_descriptor(Descriptor = #descriptor{txn_dc_address_list = TxnDcAddressList, request_dc_address_list = RequestDcAddressList}) ->
     Descriptor#descriptor{txn_dc_address_list = sort_dc_address_list(TxnDcAddressList), request_dc_address_list = sort_dc_address_list(RequestDcAddressList)}.

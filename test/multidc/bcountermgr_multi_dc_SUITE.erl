@@ -51,43 +51,28 @@
 -define(TYPE, antidote_crdt_counter_b).
 -define(RETRY_COUNT, 10).
 
-
-init_per_suite(InitialConfig) ->
-    Config = test_utils:init_multi_dc(?MODULE, InitialConfig),
-    Clusters = proplists:get_value(clusters, Config),
-    Nodes = lists:flatten(Clusters),
-
-    % Ensure that write operations are certified
-    general_utils:parallel_map(fun(Node) ->
-        rpc:call(Node, application, set_env, [antidote, txn_cert, true])
-                               end, Nodes),
-
-    % Check that indeed transactions certification is turned on
-    {ok, true} = rpc:call(hd(hd(Clusters)), application, get_env, [antidote, txn_cert]),
-
-    Config.
-
+init_per_suite(Config) ->
+    test_utils:init_multi_dc(?MODULE, Config).
 
 end_per_suite(Config) ->
     Config.
 
-
-init_per_testcase(_Case, Config) ->
+init_per_testcase(Name, Config) ->
+    ct:pal("[ STARTING ] ~p", [Name]),
     Config.
 
-
 end_per_testcase(Name, _) ->
-    ct:print("[ OK ] ~p", [Name]),
+    ct:pal("[ OK ] ~p", [Name]),
     ok.
 
-
-all() -> [
-%%    test_dec_success,
-%%    test_dec_fail,
-%%    test_dec_multi_success0,
-%%    test_dec_multi_success1,
-%%    conditional_write_test_run
-].
+all() ->
+    [
+        test_dec_success,
+        test_dec_fail,
+        test_dec_multi_success0,
+        test_dec_multi_success1,
+        conditional_write_test_run
+    ].
 
 
 test_dec_success(Config) ->
@@ -148,7 +133,6 @@ conditional_write_test_run(Config) ->
     case gingko_env_utils:get_use_single_server() of
         true -> pass;
         false ->
-
             Bucket = ?BUCKET,
             Nodes = proplists:get_value(nodes, Config),
             [Node1, Node2 | _OtherNodes] = Nodes,
@@ -187,7 +171,7 @@ execute_op(Node, Op, Key, Amount, Actor, Bucket) ->
 
 %%Auxiliary functions.
 execute_op_success(Node, Op, Key, Amount, Actor, Try, Bucket) ->
-    ct:log("Execute OP ~p", [Key]),
+    ct:pal("Execute OP ~p", [Key]),
     Result = rpc:call(Node, antidote, update_objects,
         [ignore, [],
             [{{Key, ?TYPE, Bucket}, Op, {Amount, Actor}}]
@@ -203,7 +187,7 @@ execute_op_success(Node, Op, Key, Amount, Actor, Try, Bucket) ->
 
 
 read_si(Node, Key, CommitTime, Bucket) ->
-    ct:log("Read si ~p", [Key]),
+    ct:pal("Read si ~p", [Key]),
     rpc:call(Node, antidote, read_objects, [CommitTime, [], [{Key, ?TYPE, Bucket}]]).
 
 

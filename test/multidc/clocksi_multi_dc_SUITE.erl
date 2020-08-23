@@ -54,17 +54,19 @@ init_per_suite(Config) ->
 end_per_suite(Config) ->
     Config.
 
-init_per_testcase(_Case, Config) ->
+init_per_testcase(Name, Config) ->
+    ct:pal("[ STARTING ] ~p", [Name]),
     Config.
 
 end_per_testcase(Name, _) ->
-    ct:print("[ OK ] ~p", [Name]),
+    ct:pal("[ OK ] ~p", [Name]),
     ok.
 
-all() -> [
-%%    clocksi_read_time_test,
-%%    clocksi_prepare_test
-].
+all() ->
+    [
+        clocksi_prepare_test,
+        clocksi_read_time_test
+    ].
 
 %% @doc This test makes sure to block pending reads when a prepare is in progress
 %% that could violate atomicity if not blocked
@@ -73,8 +75,8 @@ clocksi_prepare_test(Config) ->
     Nodes = proplists:get_value(nodes, Config),
     FirstNode = hd(Nodes),
     Key = clocksi_test_prepare_keydscsv1,
-    Preflist = rpc:call(FirstNode, antidote_utils, get_preflist_from_key, [aaa]),
-    IndexNode = hd(Preflist),
+
+    IndexNode = rpc:call(FirstNode, gingko_dc_utils, get_key_partition_node_tuple, [aaa]),
 
     Key2 = antidote_test_utils:find_key_same_node(FirstNode, IndexNode, 1),
 
@@ -85,7 +87,7 @@ clocksi_prepare_test(Config) ->
     antidote_test_utils:check_read_key(FirstNode, Key, antidote_crdt_counter_pn, 1, ignore, TxId, Bucket),
 
     %% Start 2 phase commit, but do not commit
-    ok=rpc:call(FirstNode, gingko, prepare_txn, [TxId]),
+    ok = rpc:call(FirstNode, gingko, prepare_txn, [TxId]),
 
     timer:sleep(3000),
 
@@ -93,7 +95,7 @@ clocksi_prepare_test(Config) ->
 
     timer:sleep(3000),
     %% start another transaction that updates the same partition
-    {ok, TxId1 } = rpc:call(FirstNode, antidote, start_transaction, [ignore, []]),
+    {ok, TxId1} = rpc:call(FirstNode, antidote, start_transaction, [ignore, []]),
     antidote_test_utils:update_counters(FirstNode, [Key2], [1], ignore, TxId1, Bucket),
     antidote_test_utils:check_read_key(FirstNode, Key2, antidote_crdt_counter_pn, 1, ignore, TxId1, Bucket),
 
@@ -113,7 +115,6 @@ clocksi_prepare_test(Config) ->
     pass.
 
 
-
 %% @doc The following function tests that ClockSI waits, when reading,
 %%      for a tx that has updated an element that it wants to read and
 %%      has a smaller TxId, but has not yet committed.
@@ -123,23 +124,23 @@ clocksi_read_time_test(Config) ->
     %% Start a new tx,  perform an update over key abc, and send prepare.
     Key1 = clocksi_test_read_time_key1,
     FirstNode = hd(Nodes),
-    LastNode= lists:last(Nodes),
+    LastNode = lists:last(Nodes),
 
     {ok, TxId} = rpc:call(FirstNode, antidote, start_transaction, [ignore, []]),
-    ct:log("Tx1 Started, id : ~p", [TxId]),
+    ct:pal("Tx1 Started, id : ~p", [TxId]),
     %% start a different tx and try to read key read_time.
     {ok, TxId1} = rpc:call(LastNode, antidote, start_transaction, [ignore, []]),
 
-    ct:log("Tx2 Started, id : ~p", [TxId1]),
+    ct:pal("Tx2 Started, id : ~p", [TxId1]),
     antidote_test_utils:update_counters(FirstNode, [Key1], [1], ignore, TxId, Bucket),
     ok = rpc:call(FirstNode, gingko, prepare_txn, [TxId]),
     %% try to read key read_time.
     %% commit the first tx.
     End = rpc:call(FirstNode, gingko, commit_txn, [TxId]),
     ?assertMatch({ok, _}, End),
-    ct:log("Tx1 Committed."),
+    ct:pal("Tx1 Committed."),
 
-    ct:log("Tx2 Reading..."),
+    ct:pal("Tx2 Reading..."),
     antidote_test_utils:check_read_key(FirstNode, Key1, antidote_crdt_counter_pn, 0, ignore, TxId1, Bucket),
 
     %% prepare and commit the second transaction.

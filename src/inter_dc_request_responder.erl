@@ -49,7 +49,7 @@ start_link() -> gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 init([]) ->
     default_gen_server_behaviour:init(?MODULE, []),
     {_, RequestPort} = inter_dc_utils:get_request_address(),
-    RequestSocket = zmq_utils:create_bind_socket(xrep, true, RequestPort),
+    RequestSocket = zmq_utils:create_server_bind_socket(RequestPort),
     {ok, #state{request_socket = RequestSocket}}.
 
 handle_call(Request = hello, From, State) ->
@@ -57,6 +57,7 @@ handle_call(Request = hello, From, State) ->
     {reply, ok, State};
 
 handle_call(Request, From, State) -> default_gen_server_behaviour:handle_call_crash(?MODULE, Request, From, State).
+
 -spec handle_cast(term(), state()) -> no_return().
 handle_cast(Request, State) -> default_gen_server_behaviour:handle_cast_crash(?MODULE, Request, State).
 
@@ -95,16 +96,14 @@ code_change(OldVsn, State, Extra) -> default_gen_server_behaviour:code_change(?M
 -spec process_request(request_record(), zmq_sender_id(), zmq_socket()) -> ok.
 process_request(RequestRecord = #request_record{request_type = ?HEALTH_CHECK_MSG}, ZmqSenderId, Socket) ->
     send_response(?OK_MSG, RequestRecord, ZmqSenderId, Socket);
-process_request(RequestRecord = #request_record{request_type = ?DCSF_MSG, request_args = RequestArgs}, ZmqSenderId, Socket) ->
-    inter_dc_state_service:update_dc_state(RequestArgs),
+process_request(RequestRecord = #request_record{request_type = ?DCSF_MSG, request_args = DcState = #dc_state{}}, ZmqSenderId, Socket) ->
+    inter_dc_state_service:update_dc_state(DcState),
     send_response(?OK_MSG, RequestRecord, ZmqSenderId, Socket);
-process_request(RequestRecord = #request_record{request_type = ?JOURNAL_READ_REQUEST, target_partition = TargetPartition, request_args = RequestArgs}, ZmqSenderId, Socket) ->
-    TxnTrackingNumList = RequestArgs,
-    {ok, JournalEntryList} = gingko_dc_utils:call_gingko_sync(TargetPartition, ?GINGKO_LOG, {get_txns, TxnTrackingNumList}),
-    send_response(JournalEntryList, RequestRecord, ZmqSenderId, Socket);
-process_request(RequestRecord = #request_record{request_type = ?BCOUNTER_REQUEST, request_args = RequestArgs}, ZmqSenderId, Socket) ->
-    {transfer, {_Key, _Amount, _RemoteDCID}} = RequestArgs,
-    ok = bcounter_manager:process_transfer(RequestArgs),
+process_request(RequestRecord = #request_record{request_type = ?JOURNAL_READ_REQUEST, target_partition = TargetPartition, request_args = TxnNumList}, ZmqSenderId, Socket) when is_list(TxnNumList) ->
+    {ok, InterDcTxnList} = gingko_dc_utils:call_gingko_sync(TargetPartition, ?GINGKO_LOG, {get_remote_txns, TxnNumList}),
+    send_response(InterDcTxnList, RequestRecord, ZmqSenderId, Socket);
+process_request(RequestRecord = #request_record{request_type = ?BCOUNTER_REQUEST, request_args = TransferOp = {transfer, {_Key, _Amount, _RemoteDCID}}}, ZmqSenderId, Socket) ->
+    ok = bcounter_manager:process_transfer(TransferOp),
     send_response(?OK_MSG, RequestRecord, ZmqSenderId, Socket);
 process_request(RequestRecord, ZmqSenderId, Socket) ->
     send_response(?REQUEST_NOT_SUPPORTED_MSG, RequestRecord, ZmqSenderId, Socket).

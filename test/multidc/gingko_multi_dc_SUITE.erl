@@ -19,7 +19,7 @@
 %% Description and complete License: see LICENSE file.
 %% -------------------------------------------------------------------
 
--module(gingko_SUITE).
+-module(gingko_multi_dc_SUITE).
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
 
 -include_lib("common_test/include/ct.hrl").
@@ -31,14 +31,14 @@
 
 all() ->
     [
-%%        simple_integration_test, two_transactions, replication_test, checkpoint_test
+        simple_integration_test,
+        two_transactions,
+        replication_test,
+        checkpoint_test
     ].
 %TODO reimplement
 init_per_suite(Config) ->
-    %NewConfig = test_utils:init_single_dc(?MODULE, Config),
-    NewConfig = test_utils:init_single_dc(?MODULE, Config),
-    [Nodes | _] = proplists:get_value(clusters, NewConfig),
-    NewConfig.
+    test_utils:init_multi_dc(?MODULE, Config).
 
 end_per_suite(Config) ->
     Config.
@@ -46,7 +46,6 @@ end_per_suite(Config) ->
 init_per_testcase(Name, Config) ->
     ct:pal("[ STARTING ] ~p", [Name]),
     Config.
-
 
 end_per_testcase(Name, _) ->
     ct:pal("[ OK ] ~p", [Name]),
@@ -56,7 +55,7 @@ simple_integration_test(Config) ->
     [Cluster | _] = proplists:get_value(clusters, Config),
     Node = lists:nth(1, Cluster),
     ct:pal("Node: ~p", [Node]),
-    {ok, TxId1} = rpc:call(Node, gingko, begin_txn, []),
+    TxId1 = rpc:call(Node, gingko, begin_txn, []),
     {Key1, Type1, TypeOp1} = {1, antidote_crdt_counter_pn, {increment, 1}},
     {Key2, Type2, TypeOp2} = {2, antidote_crdt_counter_pn, {increment, 1}},
     ok = rpc:call(Node, gingko, update, [{Key1, Type1}, TypeOp1, TxId1]),
@@ -66,15 +65,15 @@ simple_integration_test(Config) ->
     {ok, _CommitVts} = rpc:call(Node, gingko, prepare_and_commit_txn, [TxId1]).
 
 simple_transaction(Node, Key, Type, TypeOp, ExpectedResult) ->
-    {ok, TxId} = rpc:call(Node, gingko, begin_txn, []),
+    TxId = rpc:call(Node, gingko, begin_txn, []),
     ok = rpc:call(Node, gingko, update, [{Key, Type}, TypeOp, TxId]),
     {ok, ExpectedResult} = rpc:call(Node, gingko, read, [{Key, Type}, TxId]),
     {ok, _CommitVts} = rpc:call(Node, gingko, prepare_and_commit_txn, [TxId]).
 
 two_transactions(Config) ->
     Node = proplists:get_value(node, Config),
-    {ok, TxId1} = rpc:call(Node, gingko, begin_txn, []),
-    {ok, TxId2} = rpc:call(Node, gingko, begin_txn, []),
+    TxId1 = rpc:call(Node, gingko, begin_txn, []),
+    TxId2 = rpc:call(Node, gingko, begin_txn, []),
 
     {Key1, Type1, TypeOp1} = {1, antidote_crdt_counter_pn, {increment, 1}},
     ok = rpc:call(Node, gingko, update, [{Key1, Type1}, TypeOp1, TxId1]),
@@ -94,7 +93,7 @@ replication_test(Config) ->
         [_SingleCluster1] -> ok;
         MultipleClusters1 ->
             general_utils:parallel_foreach(
-                fun([FirstNode|_]) ->
+                fun([FirstNode | _]) ->
                     simple_transaction(FirstNode, 3, antidote_crdt_counter_pn, {increment, 1}, 1)
                 end, MultipleClusters1),
             timer:sleep(5000)
@@ -106,7 +105,7 @@ replication_test(Config) ->
         MultipleClusters2 ->
             NumberOfClusters = length(MultipleClusters2),
             general_utils:parallel_foreach(
-                fun([FirstNode|_]) ->
+                fun([FirstNode | _]) ->
                     simple_transaction(FirstNode, 3, antidote_crdt_counter_pn, {increment, 1}, NumberOfClusters + 1)
                 end, MultipleClusters2)
     end.

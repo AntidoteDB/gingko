@@ -49,7 +49,8 @@
     is_prepared = false :: boolean(),
     is_finished = false :: boolean(),
     partition_to_ops_map = #{} :: #{partition() => [tx_op_num()]},
-    tx_end_timer = none :: none | reference()
+    tx_end_timer = none :: none | reference(),
+    dependency_vts_not_valid_retries = 3 :: non_neg_integer() %%TODO maybe environment variable
 }).
 -type state() :: #state{}.
 
@@ -100,8 +101,7 @@ init([DependencyVts]) ->
     default_gen_server_behaviour:init(?MODULE, []),
     TxId = #tx_id{server_pid = self(), local_start_time = gingko_dc_utils:get_timestamp()},
     gingko_dc_utils:add_tx_dependency_vts(TxId, DependencyVts),
-    TxEndTimer = erlang:send_after(gingko_env_utils:get_max_tx_run_time_millis(), self(), terminate),
-    {ok, #state{tx_id = TxId, dependency_vts = DependencyVts, tx_end_timer = TxEndTimer}}.
+    {ok, update_timer(false, #state{tx_id = TxId, dependency_vts = DependencyVts})}.
 
 handle_call(Request = hello, From, State) ->
     default_gen_server_behaviour:handle_call(?MODULE, Request, From, State),
@@ -117,9 +117,11 @@ handle_call({Request = {_Op, _Args}, TxId}, From, State = #state{tx_id = TxId}) 
     {reply, Result, NewState};
 
 handle_call(Request, From, State) -> default_gen_server_behaviour:handle_call_crash(?MODULE, Request, From, State).
+
 -spec handle_cast(term(), term()) -> no_return().
 handle_cast(Request, State) -> default_gen_server_behaviour:handle_cast_crash(?MODULE, Request, State).
-handle_info(Info = terminate, State = #state{is_finished = IsFinished, tx_end_timer = TxEndTimer}) ->
+
+handle_info(Info = terminate_tx, State = #state{is_finished = IsFinished, tx_end_timer = TxEndTimer}) ->
     default_gen_server_behaviour:handle_info(?MODULE, Info, State),
     erlang:cancel_timer(TxEndTimer),
     {_, NewState} =
@@ -128,6 +130,7 @@ handle_info(Info = terminate, State = #state{is_finished = IsFinished, tx_end_ti
             false -> internal_abort(State)
         end,
     {stop, normal, NewState#state{tx_end_timer = none, is_finished = true}};
+
 handle_info(Info, State) -> default_gen_server_behaviour:handle_info_crash(?MODULE, Info, State).
 
 terminate(Reason, State = #state{tx_id = TxId}) ->
@@ -140,40 +143,49 @@ code_change(OldVsn, State, Extra) -> default_gen_server_behaviour:code_change(?M
 %%% Internal functions
 %%%===================================================================
 
+handle_error({error, dependency_vts_not_valid}, Command, State = #state{dependency_vts_not_valid_retries = Retries}) when Retries > 0 ->
+    timer:sleep(1000),
+    process_command(Command, State#state{dependency_vts_not_valid_retries = Retries - 1});
+handle_error(Error = {error, _}, _, State) -> {Error, finish_tx_error(State)}.
+
 -spec process_command({Op :: operation_type(), Args :: term()}, state()) ->
     {ok | {ok, snapshot()} | {ok, vectorclock()} | {error, reason()}, state()}.
-process_command({read, KeyStruct}, State = #state{tx_id = TxId, dependency_vts = DependencyVts, is_prepared = false, is_finished = false}) ->%%TODO key
+process_command(Command = {read, KeyStruct}, State = #state{tx_id = TxId, dependency_vts = DependencyVts, is_prepared = false, is_finished = false}) ->%%TODO key
     Partition = gingko_dc_utils:get_key_partition(KeyStruct),
-    Result =
-        case is_running_on_partition(Partition, State) of
-            false ->
-                gingko_dc_utils:call_gingko_sync(Partition, ?GINGKO_CACHE, {get, KeyStruct, DependencyVts});
-            true ->
-                gingko_dc_utils:call_gingko_sync(Partition, ?GINGKO_LOG_HELPER, {{read, KeyStruct}, TxId})
-        end,
-    {Result, State};
-
-process_command({update, Update = {KeyStruct, _TypeOp}}, State = #state{tx_id = TxId, dependency_vts = DependencyVts, is_prepared = false, is_finished = false, partition_to_ops_map = Map}) when map_size(Map) == 0 ->
-    Partition = gingko_dc_utils:get_key_partition(KeyStruct),
-    BeginResult =
-        case is_running_on_partition(Partition, State) of
-            false -> gingko_dc_utils:call_gingko_sync(Partition, ?GINGKO_LOG, {{begin_txn, DependencyVts}, TxId});
-            true -> ok
-        end,
-    case BeginResult of
-        ok ->
-            {TxOpNumber, NewState} = get_next_tx_op_number_and_update_state(Partition, State),
-            Result = gingko_dc_utils:call_gingko_sync(Partition, ?GINGKO_LOG_HELPER, {{update, {Update, TxOpNumber}}, TxId}),
-            {Result, NewState};
-        Error -> {Error, finish_tx_error(State)}
+    try
+        {ok, Snapshot} =
+            case is_running_on_partition(Partition, State) of
+                false ->
+                    gingko_dc_utils:call_gingko_sync(Partition, ?GINGKO_CACHE, {get, KeyStruct, DependencyVts});
+                true ->
+                    gingko_dc_utils:call_gingko_sync(Partition, ?GINGKO_LOG_HELPER, {{read, KeyStruct}, TxId})
+            end,
+        {{ok, Snapshot}, State}
+    catch
+        error:{badmatch, Error = {error, _}} -> handle_error(Error, Command, State)
     end;
-%%TODO abort failed transactions directly
+
+process_command(Command = {update, Update = {KeyStruct, _TypeOp}}, State = #state{tx_id = TxId, dependency_vts = DependencyVts, is_prepared = false, is_finished = false}) ->
+    Partition = gingko_dc_utils:get_key_partition(KeyStruct),
+    try
+        ok =
+            case is_running_on_partition(Partition, State) of
+                false -> gingko_dc_utils:call_gingko_sync(Partition, ?GINGKO_LOG, {{begin_txn, DependencyVts}, TxId});
+                true -> ok
+            end,
+        {TxOpNumber, NewState} = get_next_tx_op_number_and_update_state(Partition, State),
+        ok = gingko_dc_utils:call_gingko_sync(Partition, ?GINGKO_LOG_HELPER, {{update, {Update, TxOpNumber}}, TxId}),
+        {ok, NewState}
+    catch
+        error:{badmatch, Error = {error, _}} -> handle_error(Error, Command, State)
+    end;
+
 process_command({transaction, []}, State = #state{is_prepared = false, is_finished = false, partition_to_ops_map = Map}) when map_size(Map) == 0 ->
     CommitVts = gingko_dc_utils:get_DCSf_vts(),
     Result = {ok, CommitVts},
     {Result, finish_tx_success(State)};
 
-process_command({transaction, [Update = {KeyStruct, _TypeOp}]}, State = #state{tx_id = TxId, dependency_vts = DependencyVts, is_prepared = false, is_finished = false, partition_to_ops_map = Map}) when map_size(Map) == 0 ->
+process_command(Command = {transaction, [Update = {KeyStruct, _TypeOp}]}, State = #state{tx_id = TxId, dependency_vts = DependencyVts, is_prepared = false, is_finished = false, partition_to_ops_map = Map}) when map_size(Map) == 0 ->
     Partition = gingko_dc_utils:get_key_partition(KeyStruct),
     try
         ok = gingko_dc_utils:call_gingko_sync(Partition, ?GINGKO_LOG, {{begin_txn, DependencyVts}, TxId}),
@@ -183,9 +195,10 @@ process_command({transaction, [Update = {KeyStruct, _TypeOp}]}, State = #state{t
         ok = gingko_dc_utils:call_gingko_sync(Partition, ?GINGKO_LOG, {{commit_txn, CommitVts}, TxId}),
         {{ok, CommitVts}, finish_tx_success(State)}
     catch
-        error:{badmatch, Error = {error, _}} -> {Error, finish_tx_error(State)}
+        error:{badmatch, Error = {error, _}} -> handle_error(Error, Command, State)
     end;
 
+%%TODO maybe implement retries
 process_command({transaction, Updates}, State = #state{tx_id = TxId, dependency_vts = DependencyVts, is_prepared = false, is_finished = false, partition_to_ops_map = Map}) when map_size(Map) == 0 ->
     {_, NewIndexedUpdates} =
         lists:foldl(
@@ -210,7 +223,6 @@ process_command({transaction, Updates}, State = #state{tx_id = TxId, dependency_
                     BeginResult = gingko_dc_utils:call_gingko_sync(Partition, ?GINGKO_LOG, {{begin_txn, DependencyVts}, TxId}),
                     case BeginResult of
                         ok ->
-
                             lists:map(
                                 fun({Index, Update}) ->
                                     UpdateResult = gingko_dc_utils:call_gingko_sync(Partition, ?GINGKO_LOG_HELPER, {{update, {Update, Index}}, TxId}),
@@ -237,7 +249,10 @@ process_command({transaction, Updates}, State = #state{tx_id = TxId, dependency_
             PrepareResults =
                 general_utils:parallel_map(
                     fun({Partition, IndexedUpdates}) ->
-                        TxnOpNumList = lists:map(fun({Index, _}) -> Index end, IndexedUpdates),
+                        TxnOpNumList = lists:map(
+                            fun({Index, _}) ->
+                                Index
+                            end, IndexedUpdates),
                         gingko_dc_utils:call_gingko_sync(Partition, ?GINGKO_LOG, {{prepare_txn, {Partitions, TxnOpNumList}}, TxId})
                     end, PartitionToIndexedUpdatesList),
             AllOk = general_utils:list_all_equal(ok, PrepareResults),
@@ -257,7 +272,7 @@ process_command({transaction, Updates}, State = #state{tx_id = TxId, dependency_
                     case AnyOk of
                         true -> {{ok, CommitVts}, finish_tx_success(State)};
                         false ->
-                            {{error, "Commit might have failed"}, finish_tx_error(State)} %%TODO behaviour undefined
+                            {{error, "Commit might have failed"}, finish_tx_success(State)} %%TODO behaviour undefined
                     end;
                 false -> {{error, {"Prepare Validation failed", PrepareResults}}, finish_tx_error(State)}
             end;
@@ -273,7 +288,7 @@ process_command({prepare_txn, none}, State = #state{tx_id = TxId, is_prepared = 
         general_utils:parallel_map(
             fun({Partition, TxOpNumList}) ->
                 gingko_dc_utils:call_gingko_sync(Partition, ?GINGKO_LOG, {{prepare_txn, {Partitions, TxOpNumList}}, TxId})
-            end, PartitionToOpsMap),
+            end, maps:to_list(PartitionToOpsMap)),
     AllOk = general_utils:list_all_equal(ok, PrepareResults),
     case AllOk of
         true -> {ok, State#state{is_prepared = true}};
@@ -312,7 +327,6 @@ process_command(Request, State) ->
 
 internal_abort(State = #state{partition_to_ops_map = Map}) when map_size(Map) == 0 ->
     {ok, State#state{is_finished = true}};%%this is fine because if the transaction did no updates then we don't need to log it
-
 internal_abort(State = #state{tx_id = TxId, partition_to_ops_map = PartitionToOpsMap}) ->
     Partitions = maps:keys(PartitionToOpsMap),
     AbortResults =
@@ -343,13 +357,19 @@ is_running_on_partition(Partition, #state{partition_to_ops_map = PartitionToOpsM
     maps:is_key(Partition, PartitionToOpsMap).
 
 -spec finish_tx_success(state()) -> state().
-finish_tx_success(State = #state{tx_end_timer = TxEndTimer}) ->
-    erlang:cancel_timer(TxEndTimer),
-    NewTxEndTimer = erlang:send_after(?DEFAULT_WAIT_TIME_SHORT, self(), terminate),
-    State#state{is_finished = true, tx_end_timer = NewTxEndTimer}.
+finish_tx_success(State) ->
+    update_timer(true, State#state{is_finished = true}).
 
 -spec finish_tx_error(state()) -> state().
-finish_tx_error(State = #state{tx_end_timer = TxEndTimer}) ->
-    erlang:cancel_timer(TxEndTimer),
-    NewTxEndTimer = erlang:send_after(?DEFAULT_WAIT_TIME_SHORT, self(), terminate),
-    State#state{is_finished = false, tx_end_timer = NewTxEndTimer}.
+finish_tx_error(State) ->
+    update_timer(true, State#state{is_finished = false}).
+
+-spec update_timer(boolean(), state()) -> state().
+update_timer(EndTxNow, State = #state{tx_end_timer = Timer}) ->
+    MaxTxRunTimeMillis =
+        case EndTxNow of
+            true -> ?DEFAULT_WAIT_TIME_SHORT;
+            false -> gingko_env_utils:get_max_tx_run_time_millis()
+        end,
+    TxEndTimer = gingko_dc_utils:update_timer(Timer, true, MaxTxRunTimeMillis, terminate_tx, false),
+    State#state{tx_end_timer = TxEndTimer}.

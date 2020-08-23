@@ -60,11 +60,12 @@ wait_until_ring_converged(Nodes) ->
 %% on-going or pending ownership transfers.
 -spec wait_until_no_pending_changes([node()]) -> ok | fail.
 wait_until_no_pending_changes(Nodes) ->
-    F = fun() ->
-        rpc:multicall(Nodes, riak_core_vnode_manager, force_handoffs, []),
-        {Rings, BadNodes} = rpc:multicall(Nodes, riak_core_ring_manager, get_raw_ring, []),
-        Changes = [ riak_core_ring:pending_changes(Ring) =:= [] || {ok, Ring} <- Rings ],
-        BadNodes =:= [] andalso length(Changes) =:= length(Nodes) andalso lists:all(fun(T) -> T end, Changes)
+    F =
+        fun() ->
+            rpc:multicall(Nodes, riak_core_vnode_manager, force_handoffs, []),
+            {Rings, BadNodes} = rpc:multicall(Nodes, riak_core_ring_manager, get_raw_ring, []),
+            Changes = [riak_core_ring:pending_changes(Ring) =:= [] || {ok, Ring} <- Rings],
+            BadNodes =:= [] andalso length(Changes) =:= length(Nodes) andalso lists:all(fun(T) -> T end, Changes)
         end,
     ?assertEqual(ok, time_utils:wait_until(F)),
     ok.

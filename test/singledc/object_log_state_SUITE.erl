@@ -32,11 +32,11 @@
 
 %% common_test callbacks
 -export([
-         init_per_suite/1,
-         end_per_suite/1,
-         init_per_testcase/2,
-         end_per_testcase/2,
-         all/0]).
+    init_per_suite/1,
+    end_per_suite/1,
+    init_per_testcase/2,
+    end_per_testcase/2,
+    all/0]).
 
 %% tests
 -export([object_log_state_test/1]).
@@ -51,16 +51,18 @@ init_per_suite(Config) ->
 end_per_suite(Config) ->
     Config.
 
-init_per_testcase(_Case, Config) ->
+init_per_testcase(Name, Config) ->
+    ct:pal("[ STARTING ] ~p", [Name]),
     Config.
 
 end_per_testcase(Name, _) ->
-    ct:print("[ OK ] ~p", [Name]),
+    ct:pal("[ OK ] ~p", [Name]),
     ok.
 
-all() -> [
-    object_log_state_test
-].
+all() ->
+    [
+        object_log_state_test
+    ].
 
 object_log_state_test(Config) ->
     Node = proplists:get_value(node, Config),
@@ -88,13 +90,13 @@ object_log_state_test(Config) ->
 
 check_orset_state([], []) ->
     ok;
-check_orset_state([Val|Rest1], [{Val, [Binary]}|Rest2]) when is_binary(Binary) ->
+check_orset_state([Val | Rest1], [{Val, [Binary]} | Rest2]) when is_binary(Binary) ->
     check_orset_state(Rest1, Rest2).
 
 %% Auxiliary method to add a list of items to a set
 add_set(_FirstNode, _BoundObject, [], Commit) ->
     Commit;
-add_set(FirstNode, Object, [First|Rest], PrevCommit) ->
+add_set(FirstNode, Object, [First | Rest], PrevCommit) ->
     Update = {Object, add, First},
     ReadResult = rpc:call(FirstNode, antidote, read_objects, [ignore, [], [Object]]),
     ?assertMatch({ok, _, _}, ReadResult),

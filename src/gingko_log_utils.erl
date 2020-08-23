@@ -65,13 +65,13 @@ perform_tx_read(KeyStruct, TxId, TableName) ->
     end.
 
 -spec checkpoint([journal_entry()], vectorclock(), #{dcid() => txn_tracking_num()}) -> ok | {error, reason()}.
-checkpoint(ValidJournalEntryListBeforeCheckpoint, DependencyVts, NewCheckpointDcIdToLastTxnTrackingNumMap) ->
+checkpoint(ValidJournalEntryListBeforeCheckpoint, DependencyVts, NewCheckpointDCIDToLastTxnTrackingNumMap) ->
     CommitJournalEntries = gingko_utils:get_journal_entries_of_type(ValidJournalEntryListBeforeCheckpoint, commit_txn),
     ValidCommits =
         lists:filter(
-            fun(#journal_entry{dcid = DcId, args = #commit_txn_args{txn_tracking_num = {TxnNum, _, _}}}) ->
+            fun(#journal_entry{dcid = DCID, args = #commit_txn_args{txn_tracking_num = {TxnNum, _, _}}}) ->
                 {LastTxnOrderNum, _, _} =
-                    case maps:find(DcId, NewCheckpointDcIdToLastTxnTrackingNumMap) of
+                    case maps:find(DCID, NewCheckpointDCIDToLastTxnTrackingNumMap) of
                         {ok, LastTxnNum} -> LastTxnNum;
                         error -> gingko_utils:get_default_txn_tracking_num()
                     end,
@@ -220,9 +220,9 @@ read_journal_entries_with_multiple_tx_ids(TxIdList, TableName) ->
             end, TxIdList)).
 
 -spec read_journal_entries_with_dcid(dcid(), table_name()) -> [journal_entry()].
-read_journal_entries_with_dcid(DcId, TableName) ->
+read_journal_entries_with_dcid(DCID, TableName) ->
     JournalEntryPattern = mnesia:table_info(TableName, wild_pattern),
-    match_journal_entries(JournalEntryPattern#journal_entry{dcid = DcId}, TableName).
+    match_journal_entries(JournalEntryPattern#journal_entry{dcid = DCID}, TableName).
 
 -spec match_journal_entries(journal_entry() | term(), table_name()) -> [journal_entry()].
 match_journal_entries(MatchJournalEntry, TableName) ->
