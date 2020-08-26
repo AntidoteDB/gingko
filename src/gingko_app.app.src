@@ -18,5 +18,4 @@
         {env, [
             {data_dir, "data_gingko"}
         ]}
-
     ]}.

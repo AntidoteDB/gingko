@@ -36,6 +36,7 @@
     read_journal_entries_with_tx_id/2,
     read_journal_entries_with_multiple_tx_ids/2,
     read_journal_entries_with_dcid/2,
+    read_journal_entries_with_type/2,
     match_journal_entries/2,
 
     read_all_checkpoint_entry_keys/0,
@@ -169,8 +170,8 @@ create_journal_mnesia_table(TableName) ->
     mnesia_utils:get_mnesia_result(
         mnesia:create_table(TableName,
             [{attributes, record_info(fields, journal_entry)},
-                {index, [#journal_entry.tx_id]}, %%TODO maybe index of dcid and type (this may be too slow though)
-                {disc_copies, [node()]}, %%TODO instead of index we could use ets calls which are very fast
+                {index, [#journal_entry.tx_id]},
+                {disc_copies, [node()]},
                 {record_name, journal_entry},
                 {local_content, true}
             ])).
@@ -224,6 +225,11 @@ read_journal_entries_with_dcid(DCID, TableName) ->
     JournalEntryPattern = mnesia:table_info(TableName, wild_pattern),
     match_journal_entries(JournalEntryPattern#journal_entry{dcid = DCID}, TableName).
 
+-spec read_journal_entries_with_type(journal_entry_type(), table_name()) -> [journal_entry()].
+read_journal_entries_with_type(JournalEntryType, TableName) ->
+    JournalEntryPattern = mnesia:table_info(TableName, wild_pattern),
+    match_journal_entries(JournalEntryPattern#journal_entry{dcid = JournalEntryType}, TableName).
+
 -spec match_journal_entries(journal_entry() | term(), table_name()) -> [journal_entry()].
 match_journal_entries(MatchJournalEntry, TableName) ->
     mnesia:dirty_match_object(TableName, MatchJournalEntry).
@@ -262,3 +268,69 @@ add_or_update_checkpoint_entries(SnapshotList) ->
                 end, SnapshotList)
         end,
     mnesia_utils:run_transaction(F).
+
+%%TODO these functions are required to solve transaction failure after the prepare was successful
+%%TODO they are not implemented to their full extent
+
+%%-spec get_txn_result(txid(), state()) -> undefined | abort_txn | {commit_txn, journal_entry()}.
+%%get_txn_result(TxId, #state{table_name = TableName}) ->
+%%    JournalEntryList = gingko_log_utils:read_journal_entries_with_tx_id(TxId, TableName),
+%%    case gingko_utils:contains_journal_entry_type(abort_txn, JournalEntryList) of
+%%        true -> abort_txn;
+%%        false ->
+%%            case gingko_utils:contains_journal_entry_type(commit_txn, JournalEntryList) of
+%%                true ->
+%%                    %TODO
+%%                    [CommitJournalEntry] =
+%%                        lists:filter(
+%%                            fun(#journal_entry{type = Type}) ->
+%%                                Type == commit_txn
+%%                            end, JournalEntryList),
+%%                    {commit_txn, CommitJournalEntry};
+%%                false ->
+%%                    undefined
+%%            end
+%%    end
+
+%%TODO check running transactions and find out whether they have been committed
+%%TODO basically continously check prepared transactions
+%%TODO this is slow
+%%check_txn_status(#state{partition = Partition, table_name = TableName}) ->
+%%    TxIdToPrepareEntries =
+%%        general_utils:group_by_map(
+%%            fun(#journal_entry{tx_id = TxId}) ->
+%%                TxId
+%%            end, gingko_log_utils:read_journal_entries_with_type(prepare_txn, TableName)),
+%%    CommitTxIdEntries =
+%%        lists:map(
+%%            fun(#journal_entry{tx_id = TxId}) ->
+%%                TxId
+%%            end, gingko_log_utils:read_journal_entries_with_type(commit_txn, TableName)),
+%%    AbortTxIdEntries =
+%%        lists:map(
+%%            fun(#journal_entry{tx_id = TxId}) ->
+%%                TxId
+%%            end, gingko_log_utils:read_journal_entries_with_type(abort_txn, TableName)),
+%%    FinishedTxIdSet = sets:from_list(AbortTxIdEntries ++ CommitTxIdEntries),
+%%    RemainingPrepares =
+%%        maps:values(
+%%            maps:filter(
+%%                fun(TxId, _) ->
+%%                    not sets:is_element(TxId, FinishedTxIdSet)
+%%                end, TxIdToPrepareEntries)),
+%%    Results = lists:map(
+%%        fun(#journal_entry{tx_id = TxId, args = #prepare_txn_args{partitions = Partitions}}) ->
+%%            %%TODO first check if transaction server is alive (a bit difficult to test since may run on a different node)
+%%            OtherPartitions = lists:delete(Partition, Partitions),
+%%            general_utils:parallel_map(
+%%                fun(OtherPartition) ->
+%%                    gingko_dc_utils:call_gingko_sync(OtherPartition, ?GINGKO_LOG, {get_txn_result, TxId})
+%%                end, OtherPartitions)
+%%        end, RemainingPrepares),
+%%    case sets:del_element(undefined, sets:from_list(Results)) of
+%%        [] ->
+%%            TxIdNode = node(TxId#tx_id.server_pid),
+%%            IsAlive = rpc:call(),
+%%        %%TODO if tx_server is not running abort
+%%
+%%    end

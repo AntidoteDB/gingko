@@ -110,9 +110,11 @@ replication_test(Config) ->
                 end, MultipleClusters2)
     end.
 
-
-
 checkpoint_test(Config) ->
     Node = proplists:get_value(node, Config),
-
+    simple_transaction(Node, 3, antidote_crdt_counter_pn, {increment, 1}, 1),
+    rpc:call(Node, gingko, checkpoint, []),
+    simple_transaction(Node, 3, antidote_crdt_counter_pn, {increment, 1}, 2),
+    rpc:call(Node, gingko, checkpoint, []),
+    2 =  mnesia_utils:run_transaction(fun() -> mnesia:read({checkpoint_entry, 3}) end),
     ok.

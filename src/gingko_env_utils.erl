@@ -62,8 +62,6 @@
     get_data_dir/0,
     set_data_dir/1]).
 
-%%TODO consider better type checking
-
 -spec get_default_config() -> key_value_list().
 get_default_config() ->
     [

@@ -106,14 +106,7 @@ plan_and_commit(NewNodeMembers) ->
     %% this prevents writing to a ring which has not finished its balancing yet and therefore causes
     %% handoffs to be triggered
     %% FIXME this can be removed when #401 and #203 is fixed
-    %%riak_core_handoff_manager:set_concurrency(16),
-
-    %%riak_core_handoff_manager ! management_tick,
-    wait_until_ring_no_pending_changes(),
-    application:set_env(riak_core,
-        vnode_management_timer,
-        10000),
-    ok.
+    wait_until_ring_no_pending_changes().
 
 
 %% @doc Wait until all nodes in this ring believe there are no
@@ -151,7 +144,6 @@ wait_until_ring_ready(Node) ->
 connect_to_remote_dcs_and_start_dc(DCDescriptors) ->
     ok = connect_all_nodes_to_remote_dcs(DCDescriptors),
     ok = inter_dc_meta_data_manager:start_dc(),
-    %%TODO Check return for errors
     true = inter_dc_meta_data_manager:has_dc_started_and_is_healthy(),
     ok.
 

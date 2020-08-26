@@ -64,14 +64,15 @@ get_txn_address_list() ->
     Port = gingko_env_utils:get_txn_port(),
     [{Ip, Port} || Ip <- get_ip_list_without_local_ip()].
 
--spec sort_dc_address_list(dc_address_list()) -> dc_address_list().
-sort_dc_address_list(DcAddressList) ->
-    lists:sort(
-        lists:map(
-            fun({Node, SocketAddressList}) ->
-                {Node, lists:sort(SocketAddressList)}
-            end, DcAddressList)).
-
--spec sort_descriptor(descriptor()) -> descriptor().
-sort_descriptor(Descriptor = #descriptor{txn_dc_address_list = TxnDcAddressList, request_dc_address_list = RequestDcAddressList}) ->
-    Descriptor#descriptor{txn_dc_address_list = sort_dc_address_list(TxnDcAddressList), request_dc_address_list = sort_dc_address_list(RequestDcAddressList)}.
+%%TODO useful for comparison when clusters are merged
+%%-spec sort_dc_address_list(dc_address_list()) -> dc_address_list().
+%%sort_dc_address_list(DcAddressList) ->
+%%    lists:sort(
+%%        lists:map(
+%%            fun({Node, SocketAddressList}) ->
+%%                {Node, lists:sort(SocketAddressList)}
+%%            end, DcAddressList)).
+%%
+%%-spec sort_descriptor(descriptor()) -> descriptor().
+%%sort_descriptor(Descriptor = #descriptor{txn_dc_address_list = TxnDcAddressList, request_dc_address_list = RequestDcAddressList}) ->
+%%    Descriptor#descriptor{txn_dc_address_list = sort_dc_address_list(TxnDcAddressList), request_dc_address_list = sort_dc_address_list(RequestDcAddressList)}.

@@ -150,7 +150,7 @@ handle_error(Error = {error, _}, _, State) -> {Error, finish_tx_error(State)}.
 
 -spec process_command({Op :: operation_type(), Args :: term()}, state()) ->
     {ok | {ok, snapshot()} | {ok, vectorclock()} | {error, reason()}, state()}.
-process_command(Command = {read, KeyStruct}, State = #state{tx_id = TxId, dependency_vts = DependencyVts, is_prepared = false, is_finished = false}) ->%%TODO key
+process_command(Command = {read, KeyStruct}, State = #state{tx_id = TxId, dependency_vts = DependencyVts, is_prepared = false, is_finished = false}) ->
     Partition = gingko_dc_utils:get_key_partition(KeyStruct),
     try
         {ok, Snapshot} =
@@ -198,7 +198,7 @@ process_command(Command = {transaction, [Update = {KeyStruct, _TypeOp}]}, State 
         error:{badmatch, Error = {error, _}} -> handle_error(Error, Command, State)
     end;
 
-%%TODO maybe implement retries
+%%TODO maybe implement retries like for other ops
 process_command({transaction, Updates}, State = #state{tx_id = TxId, dependency_vts = DependencyVts, is_prepared = false, is_finished = false, partition_to_ops_map = Map}) when map_size(Map) == 0 ->
     {_, NewIndexedUpdates} =
         lists:foldl(

@@ -60,12 +60,11 @@
 %% Gets the current erlang timestamp and returns it as an integer that represents microseconds
 -spec get_timestamp() -> non_neg_integer().
 get_timestamp() ->
-    %%TODO check performance
     case gingko_env_utils:get_use_gingko_timestamp() of
         true ->
             gingko_time_manager:get_monotonic_system_time();
         false ->
-            general_utils:get_timestamp_in_microseconds() %TODO decide which timestamp to use
+            general_utils:get_timestamp_in_microseconds()
     end.
 
 -spec get_running_tx_list() -> [tx_vts()].

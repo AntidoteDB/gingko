@@ -222,8 +222,7 @@ atom_replace(Atom, AtomToReplace, ReplacementString) ->
 %% For each list element a new process is started that executes the given function
 %% The results are ordered in the same way as the original list
 %% Taken from antidote test_utils and updated readability
-%% TODO test
--spec parallel_map(fun((TypeA | {MapKeyType, MapValueType}) -> TypeB), [TypeA] | #{MapKeyType => MapValueType}) -> [TypeB].
+-spec parallel_map(fun((TypeA) -> TypeB), [TypeA]) -> [TypeB].
 parallel_map(_, []) -> [];
 parallel_map(Function, [Element]) when is_function(Function, 1) -> [Function(Element)];
 parallel_map(Function, List) when is_function(Function, 1) andalso is_list(List) ->

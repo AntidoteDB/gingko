@@ -36,8 +36,6 @@
     terminate/2,
     code_change/3]).
 
-%%TODO assign sockets to partitions (needs updates during handoffs)
-
 -record(state, {
     dcid_to_request_sockets = #{} :: #{dcid() => [zmq_socket()]},
     next_request_id :: non_neg_integer(),
@@ -49,7 +47,7 @@
 %%% Public API
 %%%===================================================================
 
--spec perform_journal_read_request({dcid(), partition()}, [txid()], fun((term(), request_entry()) -> ok))
+-spec perform_journal_read_request({dcid(), partition()}, [txn_num()], fun((term(), request_entry()) -> ok))
         -> ok.
 perform_journal_read_request({TargetDCID, TargetPartition}, TxnNumList, ReturnToSenderFunc) ->
     gen_server:cast(?MODULE, {request, ?JOURNAL_READ_REQUEST, {TargetDCID, TargetPartition}, TxnNumList, ReturnToSenderFunc}).

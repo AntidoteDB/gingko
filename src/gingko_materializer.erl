@@ -36,30 +36,38 @@
 
 -spec materialize_snapshot(snapshot(), [journal_entry()], vectorclock()) -> snapshot().
 materialize_snapshot(Snapshot = #snapshot{snapshot_vts = Vts}, _, Vts) -> Snapshot;
-materialize_snapshot(Snapshot = #snapshot{key_struct = KeyStruct, snapshot_vts = SnapshotVts}, JournalEntryList, DependencyVts) when length(JournalEntryList) > 0 ->
+materialize_snapshot(Snapshot = #snapshot{key_struct = KeyStruct, commit_vts = SnapshotCommitVts, snapshot_vts = SnapshotVts}, JournalEntryList, DependencyVts) ->
     %%TODO maybe add additional checks
     %%TODO if list is empty and Dependency Vts is higher then it should crash
     CommitVtsDownstreamOpListTupleList = get_commit_vts_downstream_op_list_tuple_list(JournalEntryList, KeyStruct),
-    %%TODO optimization is to create these three lists at the same time
-    %%Get commits that are newer than / concurrent to the snapshot vts and older than / equal to the dependency vts
-    FilteredCommitVtsDownstreamOpListTupleList =
-        lists:filter(
-            fun({CommitVts, _}) ->
-                (not vectorclock:le(CommitVts, SnapshotVts)) %%Assures that strictly older commits are ignored and concurrent commits are kept
-                    andalso vectorclock:le(CommitVts, DependencyVts)
-            end, CommitVtsDownstreamOpListTupleList),
-    %%Sorts commits so they are applied in the correct order
-    SortedFilteredCommitVtsDownstreamOpListTupleList =
-        gingko_utils:sort_by_vts(
-            fun({CommitVts, _}) ->
-                CommitVts
-            end, FilteredCommitVtsDownstreamOpListTupleList),
-    NewSnapshot = materialize_update_payload(Snapshot, SortedFilteredCommitVtsDownstreamOpListTupleList),
+    case CommitVtsDownstreamOpListTupleList of
+        [] ->
+            case SnapshotCommitVts == vectorclock:new() of
+                  true -> Snapshot#snapshot{snapshot_vts = DependencyVts};
+                  false -> error("Not allowed!")
+              end;
+        _ ->
+            %%TODO optimization is to create these three lists at the same time
+            %%Get commits that are newer than / concurrent to the snapshot vts and older than / equal to the dependency vts
+            FilteredCommitVtsDownstreamOpListTupleList =
+                lists:filter(
+                    fun({CommitVts, _}) ->
+                        (not vectorclock:le(CommitVts, SnapshotVts)) %%Assures that strictly older commits are ignored and concurrent commits are kept
+                            andalso vectorclock:le(CommitVts, DependencyVts)
+                    end, CommitVtsDownstreamOpListTupleList),
+            %%Sorts commits so they are applied in the correct order
+            SortedFilteredCommitVtsDownstreamOpListTupleList =
+                gingko_utils:sort_by_vts(
+                    fun({CommitVts, _}) ->
+                        CommitVts
+                    end, FilteredCommitVtsDownstreamOpListTupleList),
+            NewSnapshot = materialize_update_payload(Snapshot, SortedFilteredCommitVtsDownstreamOpListTupleList),
 
-    %%Calculate maximum valid snapshot vts so that a key that rarely updated is valid longer
-    NewSnapshotVts = optimize_snapshot_vts(CommitVtsDownstreamOpListTupleList, DependencyVts),
+            %%Calculate maximum valid snapshot vts so that a key that rarely updated is valid longer
+            NewSnapshotVts = optimize_snapshot_vts(CommitVtsDownstreamOpListTupleList, DependencyVts),
 
-    NewSnapshot#snapshot{snapshot_vts = NewSnapshotVts}.
+            NewSnapshot#snapshot{snapshot_vts = NewSnapshotVts}
+    end.
 
 -spec materialize_tx_snapshot(snapshot(), [downstream_op()]) -> snapshot().
 materialize_tx_snapshot(Snapshot, []) ->

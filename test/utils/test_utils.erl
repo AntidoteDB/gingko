@@ -67,7 +67,7 @@ init_single_dc(Suite, Config) ->
     ClusterConfiguration =
         case gingko_env_utils:get_use_single_server() of
             true -> [[dev1]];
-            false -> [[dev1]]%[[dev1, dev2, dev3, dev4]]%, dev3, dev4, dev5, dev6, dev7, dev8]],
+            false -> [[dev1, dev2]]%[[dev1, dev2, dev3, dev4]]%, dev3, dev4, dev5, dev6, dev7, dev8]],
         end,
     Clusters = start_and_connect_clusters([{suite_name, ?MODULE} | Config], ClusterConfiguration),
     Nodes = hd(Clusters),
@@ -80,7 +80,7 @@ init_multi_dc(Suite, Config) ->
     ClusterConfiguration =
         case gingko_env_utils:get_use_single_server() of
             true -> [[dev1], [dev2], [dev3], [dev4]];
-            false -> [[dev1, dev2], [dev3, dev4, dev5], [dev6, dev7, dev8, dev9]]
+            false -> [[dev1, dev2], [dev3, dev4, dev5]]%%, [dev6, dev7, dev8, dev9]]
         end,
     Clusters = start_and_connect_clusters([{suite_name, ?MODULE} | Config], ClusterConfiguration),
     Nodes = hd(Clusters),

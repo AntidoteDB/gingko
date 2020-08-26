@@ -69,9 +69,9 @@ end_per_testcase(Name, _) ->
 
 all() ->
     [
-        recreate_dc,
-        dc_count,
-        dummy_test,
+%%        recreate_dc,
+%%        dc_count,
+%%        dummy_test,
         random_test
     ].
 
@@ -84,29 +84,10 @@ recreate_dc(Config) ->
 
             [Node1, Node2 | _Nodes] = proplists:get_value(nodes, Config),
 
-            ok = rpc:call(Node1, antidote_dc_manager, add_nodes_to_dc, [[Node1, Node2]]),
-            ok = rpc:call(Node1, antidote_dc_manager, add_nodes_to_dc, [[Node1, Node2]]),
-            ok = rpc:call(Node2, antidote_dc_manager, add_nodes_to_dc, [[Node1, Node2]])
+            ok = rpc:call(Node1, inter_dc_manager, add_nodes_to_dc, [[Node1, Node2]]),
+            ok = rpc:call(Node1, inter_dc_manager, add_nodes_to_dc, [[Node1, Node2]]),
+            ok = rpc:call(Node2, inter_dc_manager, add_nodes_to_dc, [[Node1, Node2]])
     end.
-
-dc_count(Config) ->
-    Clusters = proplists:get_value(clusters, Config),
-    AllNodes = lists:flatten(Clusters),
-    [First | AllOtherDcids] =
-        lists:map(
-            fun(Node) ->
-                Result = rpc:call(Node, inter_dc_meta_data_manager, get_connected_dcids_and_mine, []),
-                logger:error("Result: ~p", [Result]),
-                Result
-            end, AllNodes),
-    logger:error("First DCIDs: ~p", [First]),
-    true =
-        lists:all(
-            fun(List) ->
-                logger:error("DCIDs: ~p", [List]),
-                general_utils:set_equals_on_lists(First, List)
-            end, AllOtherDcids),
-    ok.
 
 dummy_test(Config) ->
     case gingko_env_utils:get_use_single_server() of
@@ -172,3 +153,22 @@ random_test(Config) ->
     Retry = 360000 div Delay, %wait for max 1 min
     ok = time_utils:wait_until_result(G, NumWrites, Retry, Delay),
     pass.
+
+dc_count(Config) ->
+    Clusters = proplists:get_value(clusters, Config),
+    AllNodes = lists:flatten(Clusters),
+    [First | AllOtherDcids] =
+        lists:map(
+            fun(Node) ->
+                Result = rpc:call(Node, inter_dc_meta_data_manager, get_connected_dcids_and_mine, []),
+                logger:error("Result: ~p", [Result]),
+                Result
+            end, AllNodes),
+    logger:error("First DCIDs: ~p", [First]),
+    true =
+        lists:all(
+            fun(List) ->
+                logger:error("DCIDs: ~p", [List]),
+                general_utils:set_equals_on_lists(First, List)
+            end, AllOtherDcids),
+    ok.

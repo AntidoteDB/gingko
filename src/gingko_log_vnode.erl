@@ -53,7 +53,8 @@
     latest_vts = vectorclock:new() :: vectorclock(),
     dcid_to_dc_txn_tracking_state = #{} :: #{dcid() => dc_txn_tracking_state()},
     initialized = false :: boolean(),
-    missing_txn_check_timer = none :: none | reference()
+    missing_txn_check_timer = none :: none | reference(),
+    blocking_prepare_txns = [] :: [txid()]
 }).
 -type state() :: #state{}.
 
@@ -140,7 +141,7 @@ handle_command(Request = {get_remote_txns, TxnNumList}, Sender, State = #state{i
         end,
     {reply, Reply, State};
 
-handle_command(Request = {add_remote_txn, InterDcTxn}, Sender, State = #state{initialized = Initialized}) ->
+handle_command(Request = {add_remote_txn, InterDcTxn = #inter_dc_txn{}}, Sender, State = #state{initialized = Initialized}) ->
     default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
     {Reply, NewState} =
         case Initialized of
@@ -432,7 +433,7 @@ add_remote_txn(#inter_dc_txn{last_sent_txn_tracking_num = {0, _, _}}, State) -> 
 add_remote_txn(#inter_dc_txn{source_dcid = SourceDCID, last_sent_txn_tracking_num = LastSentTxnTrackingNum = {LastSentTxnNum, _, _}, journal_entries = []}, State = #state{partition = Partition, dcid_to_dc_txn_tracking_state = DCIDToDcTxnTrackingState}) ->
     #dc_txn_tracking_state{last_checkpoint_txn_tracking_num = {LastCheckpointTxnNum, _, _}, invalid_txn_tracking_num_gb_set = InvalidTxnTrackingNumSet, valid_txn_tracking_num_gb_set = ValidTxnTrackingNumSet} = maps:get(SourceDCID, DCIDToDcTxnTrackingState, #dc_txn_tracking_state{}),
     case LastSentTxnNum == LastCheckpointTxnNum orelse gb_sets:is_element(LastSentTxnTrackingNum, ValidTxnTrackingNumSet) of
-        true -> State;
+        true -> ok;
         false ->
             NextMissingTxnNum =
                 case gb_sets:is_empty(ValidTxnTrackingNumSet) of
@@ -453,7 +454,8 @@ add_remote_txn(#inter_dc_txn{source_dcid = SourceDCID, last_sent_txn_tracking_nu
                         lists:delete(InvalidTxnNum, CurrentTxnNumList)
                     end, TxnNumList, InvalidTxnNumList),
             gingko_dc_utils:call_gingko_async(Partition, ?INTER_DC_LOG, {request_remote_txns, SourceDCID, MissingTxnNumList})
-    end;
+    end,
+    State;
 add_remote_txn(#inter_dc_txn{journal_entries = JournalEntryList}, State = #state{next_jsn = NextJsn, table_name = TableName}) ->
     SortedTxJournalEntryList = [BeginJournalEntry | _] = gingko_utils:sort_journal_entries_of_same_tx(JournalEntryList),
     CommitJournalEntry = lists:last(SortedTxJournalEntryList),
@@ -678,7 +680,7 @@ add_commit(#journal_entry{dcid = DCID, args = #begin_txn_args{dependency_vts = D
         end,
     update_dc_txn_states_and_latest_vts(State#state{dcid_to_dc_txn_tracking_state = DCIDToDcTxnTrackingState#{DCID => NewDcTxnTrackingState}}).
 
--spec get_valid_journal_entries(vectorclock(), state()) -> {ok, [journal_entry()]} | {error, reason()}.
+-spec get_valid_journal_entries(vectorclock(), state()) -> {ok, [journal_entry()]} | {error, dependency_vts_not_valid}.
 get_valid_journal_entries(DependencyVts, #state{table_name = TableName, dcid_to_dc_txn_tracking_state = DCIDToDcTxnTrackingState, latest_vts = LatestVts}) ->
     case vectorclock:le(DependencyVts, LatestVts) of
         true ->

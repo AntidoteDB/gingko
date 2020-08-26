@@ -42,7 +42,6 @@
 %%% Public API
 %%%===================================================================
 
-%% TODO: persist added DCs in case of a node failure, reconnect on node restart.
 -spec add_dc(dcid(), dc_address_list()) -> ok | {error, reason()}.
 add_dc(DCID, DcAddressList) -> gen_server:call(?MODULE, {add_dc, DCID, DcAddressList}, ?COMM_TIMEOUT).
 
@@ -156,5 +155,3 @@ connect_to_node({Node, [Address | Rest]}) ->
         _ ->
             connect_to_node({Node, Rest})
     end.
-
-%TODO when handoff happens reapply_socket_filter() ->

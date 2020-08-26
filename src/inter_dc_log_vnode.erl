@@ -70,7 +70,6 @@ handle_command(Request = hello, Sender, State) ->
     {reply, ok, State};
 
 handle_command(Request = {journal_entry, JournalEntry = #journal_entry{tx_id = TxId}}, Sender, State = #state{txid_to_journal_entry_list_map = TxIdToJournalEntryListMap}) ->
-    %%TODO extra checks
     default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
     NewTxIdToJournalEntryListMap = general_utils:maps_append(TxId, JournalEntry, TxIdToJournalEntryListMap),
     NewState = broadcast_if_commit(JournalEntry, State#state{txid_to_journal_entry_list_map = NewTxIdToJournalEntryListMap}),
@@ -125,7 +124,6 @@ ping(State = #state{partition = Partition, last_sent_txn_timestamp = Timestamp, 
     CurrentTime = gingko_dc_utils:get_timestamp(),
     PingInterval = gingko_env_utils:get_inter_dc_txn_ping_interval_millis(),
     %%We send pings only to partitions that we have not sent transactions to in a while
-    %%TODO redo time difference (currently microseconds)
     case (CurrentTime - Timestamp) >= 1000 * PingInterval of
         true ->
             inter_dc_txn_sender:broadcast_ping(Partition, LastSentTxnTrackingNum),
@@ -146,7 +144,6 @@ broadcast_if_commit(_, State) -> State.
 request_remote_txns(_, [], _) -> ok;
 request_remote_txns(TargetDCID, TxnNumList, #state{partition = TargetPartition}) ->
     inter_dc_request_sender:perform_journal_read_request({TargetDCID, TargetPartition}, TxnNumList,
-        %%TODO dangerous when handoff happens
         fun(InterDcTxnList, _) ->
             %%Assume correctness here
             SortedInterDcTxnList =

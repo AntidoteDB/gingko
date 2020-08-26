@@ -171,13 +171,8 @@ get_or_load_cache_entry(KeyStruct, DependencyVts, ValidJournalEntryListOrLoadFro
     end.
 
 -spec load_key_into_cache(key_struct(), vectorclock(), load_from_log | [journal_entry()], state()) -> {ok, cache_entry(), state()} | {error, reason()}.
-load_key_into_cache(KeyStruct, DependencyVts, ValidJournalEntryListOrLoadFromLog, State = #state{partition = Partition, key_cache_entry_map = KeyCacheEntryMap}) ->
-    JournalEntryListResult =
-        case ValidJournalEntryListOrLoadFromLog of
-            load_from_log ->
-                gingko_dc_utils:call_gingko_sync(Partition, ?GINGKO_LOG, {get_valid_journal_entries, DependencyVts});
-            ValidJournalEntryList -> {ok, ValidJournalEntryList}
-        end,
+load_key_into_cache(KeyStruct, DependencyVts, ValidJournalEntryListOrLoadFromLog, State = #state{key_cache_entry_map = KeyCacheEntryMap}) ->
+    JournalEntryListResult = get_valid_journal_entries_safe(ValidJournalEntryListOrLoadFromLog, DependencyVts, State, 3),
     case JournalEntryListResult of
         {ok, JournalEntryList} ->
             CheckpointJournalEntryList = gingko_utils:get_journal_entries_of_type(JournalEntryList, checkpoint_commit),
@@ -207,11 +202,11 @@ load_key_into_cache(KeyStruct, DependencyVts, ValidJournalEntryListOrLoadFromLog
                             {CheckpointVts2, []} ->
                                 {true, gingko_log_utils:read_checkpoint_entry(KeyStruct, CheckpointVts2)};
                             {_, [{_, ValidCacheEntry} | _]} ->
-                                %%TODO can be optimized by picking the best commit vts
+%%TODO can be optimized by picking the best commit vts
                                 {false, gingko_utils:create_snapshot_from_cache_entry(ValidCacheEntry)}
                         end
                 end,
-            %%TODO This is a optimization as we want to avoid reading checkpoints if possible since we don't know the performance characteristics later
+%%TODO This is a optimization as we want to avoid reading checkpoints if possible since we don't know the performance characteristics later
             NewState =
                 case ReadCheckpoint of
                     true ->
@@ -244,6 +239,22 @@ update_cache_entry_in_state(CacheEntry = #cache_entry{snapshot = #snapshot{key_s
             State#state{key_cache_entry_map = NewKeyCacheEntryMap};
         false ->
             State %%This should not really happen
+    end.
+
+-spec get_valid_journal_entries_safe(load_from_log | [journal_entry()], vectorclock(), state(), non_neg_integer()) -> {ok, [journal_entry()]} | {error, reason()}.
+get_valid_journal_entries_safe(_, _, _, 0) -> {error, dependency_vts_not_valid};
+get_valid_journal_entries_safe(ValidJournalEntryListOrLoadFromLog, DependencyVts, #state{partition = Partition}, Retries) ->
+    JournalEntryListResult =
+        case ValidJournalEntryListOrLoadFromLog of
+            load_from_log ->
+                gingko_dc_utils:call_gingko_sync(Partition, ?GINGKO_LOG, {get_valid_journal_entries, DependencyVts});
+            ValidJournalEntryList -> {ok, ValidJournalEntryList}
+        end,
+    case JournalEntryListResult of
+        {ok, _} -> JournalEntryListResult;
+        {error, dependency_vts_not_valid} ->
+            timer:sleep(1000),
+            get_valid_journal_entries_safe(ValidJournalEntryListOrLoadFromLog, DependencyVts, #state{partition = Partition}, Retries - 1)
     end.
 
 -spec start_eviction_process(state()) -> state().

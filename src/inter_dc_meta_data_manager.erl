@@ -40,14 +40,13 @@
 -spec get_or_create_dc_info_entry() -> dc_info_entry().
 get_or_create_dc_info_entry() ->
     DCID = gingko_dc_utils:get_my_dcid(),
-    %%TODO check that table exists
     DcInfoEntryList = mnesia:dirty_read(?TABLE_NAME, DCID),
     {DcInfoEntry, MustBeUpdated} =
         case DcInfoEntryList of
             [] -> {#dc_info_entry{dcid = DCID, nodes = gingko_dc_utils:get_my_dc_nodes(), has_started = false, my_descriptor = inter_dc_manager:get_descriptor(), connected_descriptors = []}, true};
             [Descriptor] -> {Descriptor, false};
             [FirstDescriptor | _Descriptors] ->
-                {FirstDescriptor, true}%%TODO{error, {"BAD", DCID, Descriptors}}
+                {FirstDescriptor, true}
         end,
     case MustBeUpdated of
         true ->

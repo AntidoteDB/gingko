@@ -26,7 +26,6 @@
     from_binary/1,
     partition_to_binary/1]).
 
-%%TODO check correctness
 -spec from_journal_entries(partition(), txn_tracking_num(), [journal_entry()]) -> inter_dc_txn().
 from_journal_entries(Partition, LastSentTxnTrackingNum, JournalEntryList) ->
     #inter_dc_txn{partition = Partition, source_dcid = gingko_dc_utils:get_my_dcid(), last_sent_txn_tracking_num = LastSentTxnTrackingNum, journal_entries = JournalEntryList}.
@@ -59,29 +58,30 @@ pad(Width, Binary) ->
         N -> <<0:(N * 8), Binary/binary>>
     end.
 
-%% Takes a binary and makes it size width
-%% if it is too small than it adds 0s
-%% otherwise it trims bits from the left size
--spec pad_or_trim(non_neg_integer(), binary()) -> binary().
-pad_or_trim(Width, Binary) ->
-    case Width - byte_size(Binary) of
-        N when N == 0 -> Binary;
-        N when N < 0 ->
-            Pos = trunc(abs(N)),
-            <<_:Pos/binary, Rest:Width/binary>> = Binary,
-            Rest;
-        N -> <<0:(N * 8), Binary/binary>>
-    end.
-
 -spec partition_to_binary(partition()) -> binary().
 partition_to_binary(Partition) ->
     pad(?PARTITION_BYTE_LENGTH, binary:encode_unsigned(Partition)).
 
--spec partition_from_binary(binary()) -> partition().
-partition_from_binary(PartitionBinary) ->
-    binary:decode_unsigned(PartitionBinary).
-
--spec partition_and_rest_binary(binary()) -> {binary(), binary()}.
-partition_and_rest_binary(Binary) ->
-    <<Partition:?PARTITION_BYTE_LENGTH/big-unsigned-integer-unit:8, RestBinary/binary>> = Binary,
-    {Partition, RestBinary}.
+%%TODO Find out if these from AntidoteDB are still relevant
+%%%% Takes a binary and makes it size width
+%%%% if it is too small than it adds 0s
+%%%% otherwise it trims bits from the left size
+%%-spec pad_or_trim(non_neg_integer(), binary()) -> binary().
+%%pad_or_trim(Width, Binary) ->
+%%    case Width - byte_size(Binary) of
+%%        N when N == 0 -> Binary;
+%%        N when N < 0 ->
+%%            Pos = trunc(abs(N)),
+%%            <<_:Pos/binary, Rest:Width/binary>> = Binary,
+%%            Rest;
+%%        N -> <<0:(N * 8), Binary/binary>>
+%%    end.
+%%
+%%-spec partition_from_binary(binary()) -> partition().
+%%partition_from_binary(PartitionBinary) ->
+%%    binary:decode_unsigned(PartitionBinary).
+%%
+%%-spec partition_and_rest_binary(binary()) -> {binary(), binary()}.
+%%partition_and_rest_binary(Binary) ->
+%%    <<Partition:?PARTITION_BYTE_LENGTH/big-unsigned-integer-unit:8, RestBinary/binary>> = Binary,
+%%    {Partition, RestBinary}.
