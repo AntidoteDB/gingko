@@ -34,6 +34,12 @@ stage :
 test:
 	${REBAR} eunit skip_deps=true
 
+singledc:
+	${REBAR} ct --sname singledc --dir test/singledc
+
+multidc:
+	${REBAR} ct --sname multidc --dir test/multidc
+
 coverage:
 	${REBAR} cover --verbose
 

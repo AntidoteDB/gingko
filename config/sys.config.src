@@ -1,0 +1,51 @@
+[
+  "network.config",
+
+  %% logger config
+  {kernel, [
+    {logger, [
+
+      {handler, default, logger_std_h,
+        #{level => info,
+          formatter => {logger_formatter, #{single_line => false, max_size => 2048}},
+          config => #{type => standard_io}}},
+
+      {handler, debug, logger_std_h,
+        #{level => info,
+          formatter => {logger_formatter, #{single_line => true, max_size => 2048}},
+          config => #{type => {file, "${ROOT_DIR_PREFIX}${LOGGER_DIR_PREFIX}logger_logs/info.log"}}}},
+
+      {handler, errors, logger_std_h,
+        #{level => error,
+          formatter => {logger_formatter, #{single_line => false, max_size => 2048}},
+          config => #{type => {file, "${ROOT_DIR_PREFIX}${LOGGER_DIR_PREFIX}logger_logs/errors.log"}}}}
+    ]},
+    {logger_level, info}
+  ]},
+
+
+  {riak_core, [
+    %% riak directories
+    {ring_state_dir, "${ROOT_DIR_PREFIX}${DATA_DIR_PREFIX}data_riak_core"},
+    {platform_data_dir, "${ROOT_DIR_PREFIX}${DATA_DIR_PREFIX}data_riak_core"},
+
+    %% determines how many vnodes will be used
+    %% also determines the number of files the log is sliced into
+    %% has to be an exponent of 2
+    %% low number will decrease file accesses (good for testing) and boot time
+    %% high number enables scaling and generates smaller log files
+    {ring_creation_size, 64}
+  ]},
+
+
+  {setup, [
+    %% stops setup from creating strange folders (data@node() and log@node())
+    {verify_directories, false}
+  ]},
+
+
+  {gingko, [
+    %% antidote data directory
+    {data_dir, "${ROOT_DIR_PREFIX}${DATA_DIR_PREFIX}data_gingko"}
+  ]}
+].

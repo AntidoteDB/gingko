@@ -19,10 +19,8 @@
 -module(gingko_cache_vnode).
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
 -include("gingko.hrl").
--include_lib("kernel/include/logger.hrl").
 -behaviour(riak_core_vnode).
 
-%% API
 -export([start_vnode/1,
     init/1,
     handle_command/3,
@@ -41,419 +39,348 @@
     handle_overload_command/3,
     handle_overload_info/2]).
 
--type cache_dict() :: dict:dict(key_struct(), [cache_entry()]).
+-type cache_map() :: #{key_struct() => #{vectorclock() => cache_entry()}}.
 
-%TODO think of default values
 -record(state, {
-    partition :: partition_id(),
-    table_name :: atom(),
-    key_cache_entry_dict = dict:new() :: cache_dict(), %TODO double dict for optimization later
-    max_occupancy = 100 :: non_neg_integer(),
-    reset_used_interval_millis = 1000 :: non_neg_integer(),
+    partition :: partition(),
+    key_cache_entry_map = #{} :: cache_map(),
     reset_used_timer = none :: none | reference(),
-    eviction_interval_millis = 1000 :: non_neg_integer(),
-    eviction_timer = none :: none | reference(),
-    eviction_threshold_in_percent = 90 :: 0..100, %TODO values above 100 are simply 100
-    target_threshold_in_percent = 80 :: 0..100, %TODO think about this one (currently based on the eviction threshold)
-    eviction_strategy = interval :: interval | fifo | lru | lfu
-    %TODO decide on parameters
+    eviction_timer = none :: none | reference()
 }).
 -type state() :: #state{}.
+
+%%%===================================================================
+%%% Public API
+%%%===================================================================
+
+%%%===================================================================
+%%% Spawning and vnode implementation
+%%%===================================================================
 
 -spec start_vnode(integer()) -> any().
 start_vnode(I) ->
     riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
 
-%% @doc Opens the persistent copy of the Log.
-%%      The name of the Log in disk is a combination of the the word
-%%      `log' and the partition identifier.
 init([Partition]) ->
-    logger:debug("init(~nPartition: ~p~n)", [Partition]),
-    TableName = general_utils:concat_and_make_atom([integer_to_list(Partition), '_journal_entry']),
-    CacheConfig = [{partition, Partition}, {table_name, TableName}|gingko_app:get_default_config()],
-    NewState = apply_gingko_config(#state{}, CacheConfig),
-    {ok, NewState#state{key_cache_entry_dict = dict:new()}}.
+    default_vnode_behaviour:init(?MODULE, [Partition]),
+    {ok, update_timers(#state{partition = Partition})}.
 
-handle_command({get, KeyStruct, DependencyVts} = Request, Sender, State) ->
-    logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
-    {Reply, NewState} = get(KeyStruct, DependencyVts, State),
+handle_command(Request = hello, Sender, State) ->
+    default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
+    {reply, ok, State};
+
+handle_command(Request = {get, KeyStruct, DependencyVts}, Sender, State) ->
+    default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
+    {Reply, NewState} = get_internal(KeyStruct, DependencyVts, load_from_log, State),
     {reply, Reply, NewState};
 
-handle_command({update_cache_config, CacheConfig} = Request, Sender, State) ->
-    logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
-    {Reply, NewState} = {ok, apply_gingko_config(State, CacheConfig)},
+handle_command(Request = {get, KeyStruct, DependencyVts, ValidJournalEntries}, Sender, State) ->
+    default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
+    {Reply, NewState} = get_internal(KeyStruct, DependencyVts, ValidJournalEntries, State),
     {reply, Reply, NewState};
 
-handle_command({checkpoint_cache_cleanup, CheckpointVts} = Request, Sender, State) ->
-    logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
-    {Reply, NewState} = {ok, clean_up_cache_after_checkpoint(State, CheckpointVts)},
-    {reply, Reply, NewState};
+handle_command(Request = reset_cache_timers, Sender, State) ->
+    default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
+    {reply, ok, update_timers(State)};
 
-handle_command(Request, Sender, State) ->
-    logger:debug("handle_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
-    {noreply, State}.
+handle_command(Request = {checkpoint_cache_cleanup, CheckpointVts}, Sender, State) ->
+    default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
+    {reply, ok, clean_up_cache_after_checkpoint(State, CheckpointVts)};
 
-handoff_starting(TargetNode, State) ->
-    logger:debug("handoff_starting(~nTargetNode: ~p~nState: ~p~n)", [TargetNode, State]),
-    {true, State}.
+handle_command(Request = reset_used_event, Sender, State) ->
+    default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
+    {reply, ok, restart_reset_used_timer(reset_used(State))};
 
-handoff_cancelled(State) ->
-    logger:debug("handoff_cancelled(~nState: ~p~n)", [State]),
-    {ok, State}.
+handle_command(Request = eviction_event, Sender, State) ->
+    default_vnode_behaviour:handle_command(?MODULE, Request, Sender, State),
+    {reply, ok, restart_eviction_timer(start_eviction_process(State))};
 
-handoff_finished(TargetNode, State) ->
-    logger:debug("handoff_finished(~nTargetNode: ~p~nState: ~p~n)", [TargetNode, State]),
-    {ok, State}.
-
+handle_command(Request, Sender, State) -> default_vnode_behaviour:handle_command_crash(?MODULE, Request, Sender, State).
+handoff_starting(TargetNode, State) -> default_vnode_behaviour:handoff_starting(?MODULE, TargetNode, State).
+handoff_cancelled(State) -> default_vnode_behaviour:handoff_cancelled(?MODULE, State).
+handoff_finished(TargetNode, State) -> default_vnode_behaviour:handoff_finished(?MODULE, TargetNode, State).
 handle_handoff_command(Request, Sender, State) ->
-    logger:debug("handle_handoff_command(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
-    {noreply, State}.
-
-handle_handoff_data(BinaryData, State) ->
-    logger:debug("handle_handoff_data(~nData: ~p~nState: ~p~n)", [binary_to_term(BinaryData), State]),
-    {reply, ok, State}.
-
-encode_handoff_item(Key, Value) ->
-    logger:debug("encode_handoff_item(~nKey: ~p~nValue: ~p~n)", [Key, Value]),
-    term_to_binary({Key, Value}).
-
-is_empty(State) ->
-    logger:debug("is_empty(~nState: ~p~n)", [State]),
-    {true, State}.
-
-terminate(Reason, State) ->
-    logger:debug("terminate(~nReason: ~p~nState: ~p~n)", [Reason, State]),
-    ok.
-
-delete(State) ->
-    logger:debug("delete(~nRequest: ~p~n)", [State]),
-    {ok, State}.
+    default_vnode_behaviour:handle_handoff_command(?MODULE, Request, Sender, State).
+handle_handoff_data(BinaryData, State) -> default_vnode_behaviour:handle_handoff_data(?MODULE, BinaryData, State).
+encode_handoff_item(Key, Value) -> default_vnode_behaviour:encode_handoff_item(?MODULE, Key, Value).
+is_empty(State) -> default_vnode_behaviour:is_empty(?MODULE, State).
+terminate(Reason, State) -> default_vnode_behaviour:terminate(?MODULE, Reason, State).
+delete(State) -> default_vnode_behaviour:delete(?MODULE, State).
 
 handle_info(Request, State) ->
-    logger:debug("handle_info(~nRequest: ~p~nState: ~p~n)", [Request, State]),
-    {ok, State}.
+    default_vnode_behaviour:handle_info(?MODULE, Request, State),
+    handle_command(Request, {raw, undefined, undefined}, State).
 
-handle_exit(Pid, Reason, State) ->
-    logger:debug("handle_exit(~nPid: ~p~nReason: ~p~nState: ~p~n)", [Pid, Reason, State]),
-    {noreply, State}.
-
+handle_exit(Pid, Reason, State) -> default_vnode_behaviour:handle_exit(?MODULE, Pid, Reason, State).
 handle_coverage(Request, KeySpaces, Sender, State) ->
-    logger:debug("handle_coverage(~nRequest: ~p~nKeySpaces: ~p~nSender: ~p~nState: ~p~n)", [Request, KeySpaces, Sender, State]),
-    {stop, not_implemented, State}.
-
+    default_vnode_behaviour:handle_coverage(?MODULE, Request, KeySpaces, Sender, State).
 handle_overload_command(Request, Sender, Partition) ->
-    logger:debug("handle_overload_command(~nRequest: ~p~nSender: ~p~nPartition: ~p~n)", [Request, Sender, Partition]),
-    ok.
-
-handle_overload_info(Request, Partition) ->
-    logger:debug("handle_overload_info(~nRequest: ~p~nPartition: ~p~n)", [Request, Partition]),
-    ok.
+    default_vnode_behaviour:handle_overload_command(?MODULE, Request, Sender, Partition).
+handle_overload_info(Request, Partition) -> default_vnode_behaviour:handle_overload_info(?MODULE, Request, Partition).
 
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
 
--spec apply_gingko_config(state(), map_list()) -> state().
-apply_gingko_config(State, GingkoConfig) ->
-    Partition = general_utils:get_or_default_map_list(partition, GingkoConfig, error),
-    TableName = general_utils:get_or_default_map_list(table_name, GingkoConfig, error),
-    MaxOccupancy = general_utils:get_or_default_map_list(max_occupancy, GingkoConfig, State#state.max_occupancy),
-    EvictionStrategy = general_utils:get_or_default_map_list(eviction_strategy, GingkoConfig, State#state.eviction_strategy),
-    {UpdateResetUsedTimer, UsedResetIntervalMillis} =
-        general_utils:get_or_default_map_list_check(reset_used_interval_millis, GingkoConfig, State#state.reset_used_interval_millis),
-    {UpdateEvictionTimer, EvictionIntervalMillis} =
-        general_utils:get_or_default_map_list_check(eviction_interval_millis, GingkoConfig, State#state.eviction_interval_millis),
-    NewState = State#state{partition = Partition, table_name = TableName, max_occupancy = MaxOccupancy, reset_used_interval_millis = UsedResetIntervalMillis, eviction_interval_millis = EvictionIntervalMillis, eviction_strategy = EvictionStrategy},
-    update_timers(NewState, UpdateResetUsedTimer, UpdateEvictionTimer).
+-spec restart_reset_used_timer(state()) -> state().
+restart_reset_used_timer(State = #state{reset_used_timer = CurrentResetUsedTimer}) ->
+    ResetUsedIntervalMillis = gingko_env_utils:get_cache_reset_used_interval_millis(),
+    NewResetUsedTimer = gingko_dc_utils:update_timer(CurrentResetUsedTimer, true, ResetUsedIntervalMillis, reset_used_event, true),
+    State#state{reset_used_timer = NewResetUsedTimer}.
 
--spec update_timers(state(), boolean(), boolean()) -> state().
-update_timers(State, UpdateResetUsedTimer, UpdateEvictionTimer) ->
-    TimerResetUsed =
-        case State#state.reset_used_timer of
-            none ->
-                erlang:send_after(State#state.reset_used_interval_millis, self(), reset_used_event);
-            Reference1 ->
-                case UpdateResetUsedTimer of
-                    true ->
-                        erlang:cancel_timer(Reference1),
-                        erlang:send_after(State#state.reset_used_interval_millis, self(), reset_used_event);
-                    false -> Reference1
-                end
-        end,
-    TimerEviction =
-        case State#state.eviction_timer of
-            none ->
-                erlang:send_after(State#state.eviction_interval_millis, self(), eviction_event);
-            Reference2 ->
-                case UpdateEvictionTimer of
-                    true -> erlang:cancel_timer(Reference2),
-                        erlang:send_after(State#state.eviction_interval_millis, self(), eviction_event);
-                    false -> Reference2
-                end
-        end,
-    State#state{reset_used_timer = TimerResetUsed, eviction_timer = TimerEviction}.
+-spec restart_eviction_timer(state()) -> state().
+restart_eviction_timer(State = #state{eviction_timer = CurrentEvictionTimer}) ->
+    EvictionIntervalMillis = gingko_env_utils:get_cache_eviction_interval_millis(),
+    NewEvictionTimer = gingko_dc_utils:update_timer(CurrentEvictionTimer, true, EvictionIntervalMillis, eviction_event, true),
+    State#state{eviction_timer = NewEvictionTimer}.
 
--spec get(key_struct(), vectorclock(), state()) -> {{ok, snapshot()}, state()} | {{error, reason()}, state()}.
-get(KeyStruct, DependencyVts, State) ->
-    Result = get_or_load_cache_entry(KeyStruct, DependencyVts, State, false, false),
-    get_internal(Result, KeyStruct, DependencyVts).
+-spec update_timers(state()) -> state().
+update_timers(State) ->
+    restart_eviction_timer(restart_reset_used_timer(State)).
 
--spec get_internal({{ok, [cache_entry()], boolean()}, key_struct(), state()} | {{error, Reason}, state()}, key_struct(), vectorclock()) -> {{ok, snapshot()}, state()} | {{error, Reason}, state()}.
-get_internal(Result, KeyStruct, DependencyVts) ->
-    case Result of
-        {{error, Reason}, State} -> {{error, Reason}, State};
-        {{ok, CacheEntries, CacheUpdated}, State} ->
-            MatchingEntries = lists:filter(
-                fun(C) ->
-                    gingko_utils:is_in_vts_range(DependencyVts, {C#cache_entry.commit_vts, C#cache_entry.valid_vts})
-                %%TODO check: this should also mean visible
-                end, CacheEntries),
-            case MatchingEntries of
+-spec get_internal(key_struct(), vectorclock(), load_from_log | [journal_entry()], state()) -> {{ok, snapshot()}, state()} | {{error, reason()}, state()}.
+get_internal(KeyStruct, DependencyVts, ValidJournalEntryListOrLoadFromLog, State) ->
+    GetResult = get_or_load_cache_entry(KeyStruct, DependencyVts, ValidJournalEntryListOrLoadFromLog, State),
+    case GetResult of
+        {ok, #cache_entry{snapshot = Snapshot}, NewState} -> {{ok, Snapshot}, NewState};
+        Error -> {Error, State}
+    end.
+
+-spec get_or_load_cache_entry(key_struct(), vectorclock(), load_from_log | [journal_entry()], state()) -> {ok, cache_entry(), state()} | {error, reason()}.
+get_or_load_cache_entry(KeyStruct, DependencyVts, ValidJournalEntryListOrLoadFromLog, State = #state{key_cache_entry_map = KeyCacheEntryMap}) ->
+    FoundCommitVtsCacheEntryMap = maps:find(KeyStruct, KeyCacheEntryMap),
+    case FoundCommitVtsCacheEntryMap of
+        error ->
+            logger:debug("Cache Miss!"),
+            load_key_into_cache(KeyStruct, DependencyVts, ValidJournalEntryListOrLoadFromLog, State);
+        {ok, CommitVtsCacheEntryMap} ->
+            MatchingCacheEntryList =
+                lists:filter(
+                    fun(#cache_entry{snapshot = #snapshot{commit_vts = CommitVts, snapshot_vts = SnapshotVts}}) ->
+                        vectorclock:le(CommitVts, DependencyVts) andalso vectorclock:ge(SnapshotVts, DependencyVts)
+                    end, maps:values(CommitVtsCacheEntryMap)),
+            case MatchingCacheEntryList of
                 [] ->
-                    case CacheUpdated of
-                        true ->
-                            {{error, "Bad Cache Update"}, State};
-                        false ->
-                            NewResult = get_or_load_cache_entry(KeyStruct, DependencyVts, State, false, true),
-                            get_internal(NewResult, KeyStruct, DependencyVts)
-                    end;
-                [C] ->
-                    UpdatedCacheEntry = gingko_utils:update_cache_usage(C, true),
-                    {{ok, gingko_utils:create_snapshot_from_cache_entry(UpdatedCacheEntry)}, State};
-                _Multiple ->
-                    {{error, "Multiple cache entries with the same key and commit vts exist which should not happen!"}, State}
+                    logger:debug("Cache Miss!"), %%TODO metrics (maybe at least count hit and miss in state)
+                    load_key_into_cache(KeyStruct, DependencyVts, ValidJournalEntryListOrLoadFromLog, State);
+                [CacheEntry | _] ->
+                    logger:debug("Cache Hit!"),
+                    UpdatedCacheEntry = gingko_utils:update_cache_usage(CacheEntry, true),
+                    {ok, UpdatedCacheEntry, update_cache_entry_in_state(UpdatedCacheEntry, State)}
             end
     end.
 
--spec get_or_load_cache_entry(key_struct(), vectorclock(), state(), boolean(), boolean()) -> {{ok, [cache_entry()], boolean()}, state()} | {{error, reason()}, state()}.
-get_or_load_cache_entry(KeyStruct, DependencyVts, State, CacheUpdated, ForceUpdate) ->
-    case ForceUpdate of
-        true ->
-            NewState = load_key_into_cache(KeyStruct, State, DependencyVts),
-            get_or_load_cache_entry(KeyStruct, DependencyVts, NewState, true, false);
-        false ->
-            FoundCacheEntries = dict:find(KeyStruct, State#state.key_cache_entry_dict),
-            case FoundCacheEntries of
-                error ->
-                    case CacheUpdated of
-                        true -> {{error, "Bad Cache Update"}, State};
-                        false ->
-                            get_or_load_cache_entry(KeyStruct, DependencyVts, State, false, true)
-                    end;
-                {ok, CacheEntries} ->
-                    {{ok, CacheEntries, CacheUpdated}, State}
-            end
-    end.
-
--spec load_key_into_cache(key_struct(), state(), vectorclock()) -> state().
-load_key_into_cache(KeyStruct, State, DependencyVts) ->
-    SortedJournalEntries = gingko_log_utils:read_all_journal_entries_sorted(State#state.table_name),
-    CheckpointJournalEntries = lists:filter(fun(J) ->
-        gingko_utils:is_system_operation(J, checkpoint) end, lists:reverse(SortedJournalEntries)),
-    {MostRecentSnapshot, NewState} =
-        case CheckpointJournalEntries of
-            [] ->
-                CS1 = gingko_utils:create_new_snapshot(KeyStruct, vectorclock:new()),
-                {CS1, update_cache_entry_in_state(gingko_utils:create_cache_entry(CS1), State)};
-            [LastCheckpointJournalEntry | _Js] ->
-                FoundCacheEntries = dict:find(KeyStruct, State#state.key_cache_entry_dict),
-                CheckpointVts = LastCheckpointJournalEntry#journal_entry.operation#system_operation.op_args#checkpoint_args.dependency_vts,
-                case FoundCacheEntries of
-                    error ->
-                        CS2 = gingko_log_utils:read_checkpoint_entry(KeyStruct, CheckpointVts),
-                        {CS2, update_cache_entry_in_state(gingko_utils:create_cache_entry(CS2), State)};
-                    {ok, CacheEntries} ->
-                        ValidCacheEntries =
-                            lists:filter(
-                                fun(C) ->
-                                    gingko_utils:is_in_vts_range(C#cache_entry.commit_vts, {none, DependencyVts}) andalso
-                                        gingko_utils:is_in_vts_range(C#cache_entry.valid_vts, {CheckpointVts, DependencyVts})
-                                end, CacheEntries),
-                        case ValidCacheEntries of
-                            [] ->
-                                CS3 = gingko_log_utils:read_checkpoint_entry(KeyStruct, CheckpointVts),
-                                {CS3, update_cache_entry_in_state(gingko_utils:create_cache_entry(CS3), State)};
-                            [ValidCacheEntry | _FoundValidCacheEntries] ->
-                                CS4 = gingko_utils:create_snapshot_from_cache_entry(ValidCacheEntry),
-                                {CS4, State}
+-spec load_key_into_cache(key_struct(), vectorclock(), load_from_log | [journal_entry()], state()) -> {ok, cache_entry(), state()} | {error, reason()}.
+load_key_into_cache(KeyStruct, DependencyVts, ValidJournalEntryListOrLoadFromLog, State = #state{key_cache_entry_map = KeyCacheEntryMap}) ->
+    JournalEntryListResult = get_valid_journal_entries_safe(ValidJournalEntryListOrLoadFromLog, DependencyVts, State, 3),
+    case JournalEntryListResult of
+        {ok, JournalEntryList} ->
+            CheckpointJournalEntryList = gingko_utils:get_journal_entries_of_type(JournalEntryList, checkpoint_commit),
+            ReverseVtsSortedCheckpointJournalEntryList = lists:reverse(gingko_utils:sort_same_journal_entry_type_list_by_vts(CheckpointJournalEntryList)),
+            CheckpointVtsOrNone =
+                case ReverseVtsSortedCheckpointJournalEntryList of
+                    [] -> none;
+                    [#journal_entry{args = #checkpoint_args{dependency_vts = CheckpointVts}} | _] -> CheckpointVts
+                end,
+            FoundCommitVtsCacheEntryMap = maps:find(KeyStruct, KeyCacheEntryMap),
+            {ReadCheckpoint, MostRecentSnapshot} =
+                case {CheckpointVtsOrNone, FoundCommitVtsCacheEntryMap} of
+                    {none, error} ->
+                        {false, gingko_utils:create_new_snapshot(KeyStruct, vectorclock:new())};
+                    {CheckpointVts1, error} ->
+                        {true, gingko_log_utils:read_checkpoint_entry(KeyStruct, CheckpointVts1)};
+                    {_, {ok, CommitVtsCacheEntryMap}} ->
+                        ValidCommitVtsCacheEntryList =
+                            maps:to_list(maps:filter(
+                                fun(FoundCommitVts, #cache_entry{snapshot = #snapshot{commit_vts = FoundCommitVts, snapshot_vts = FoundSnapshotVts}}) ->
+                                    vectorclock:le(FoundCommitVts, DependencyVts)
+                                        andalso vectorclock:ge(FoundSnapshotVts, CheckpointVtsOrNone)
+                                end, CommitVtsCacheEntryMap)),
+                        case {CheckpointVtsOrNone, ValidCommitVtsCacheEntryList} of
+                            {none, []} ->
+                                {false, gingko_utils:create_new_snapshot(KeyStruct, vectorclock:new())};
+                            {CheckpointVts2, []} ->
+                                {true, gingko_log_utils:read_checkpoint_entry(KeyStruct, CheckpointVts2)};
+                            {_, [{_, ValidCacheEntry} | _]} ->
+%%TODO can be optimized by picking the best commit vts
+                                {false, gingko_utils:create_snapshot_from_cache_entry(ValidCacheEntry)}
                         end
-                end
-        end,
-    {ok, Snapshot} = gingko_materializer:materialize_snapshot(MostRecentSnapshot, SortedJournalEntries, DependencyVts),
-    CacheEntry = gingko_utils:create_cache_entry(Snapshot),
-    update_cache_entry_in_state(CacheEntry, NewState).
+                end,
+%%TODO This is a optimization as we want to avoid reading checkpoints if possible since we don't know the performance characteristics later
+            NewState =
+                case ReadCheckpoint of
+                    true ->
+                        update_cache_entry_in_state(gingko_utils:create_cache_entry(MostRecentSnapshot), State);
+                    false -> State
+                end,
+            UpdatedSnapshot = gingko_materializer:materialize_snapshot(MostRecentSnapshot, JournalEntryList, DependencyVts),
+            ReturnCacheEntry = gingko_utils:create_cache_entry(UpdatedSnapshot),
+            ReturnState = update_cache_entry_in_state(ReturnCacheEntry, NewState),
+            {ok, ReturnCacheEntry, ReturnState};
+        Error -> Error
+    end.
 
 -spec update_cache_entry_in_state(cache_entry(), state()) -> state().
-update_cache_entry_in_state(CacheEntry, State) ->
-    KeyStruct = CacheEntry#cache_entry.key_struct,
-    CommitVts = CacheEntry#cache_entry.commit_vts,
-    ValidVts = CacheEntry#cache_entry.valid_vts,
-    CacheDict = State#state.key_cache_entry_dict,
-    CacheEntryList = general_utils:get_or_default_dict(CacheDict, CacheEntry#cache_entry.key_struct, []),
-    MatchingEntries = lists:filter(fun(C) -> C#cache_entry.commit_vts == CommitVts end, CacheEntryList),
+update_cache_entry_in_state(CacheEntry = #cache_entry{snapshot = #snapshot{key_struct = KeyStruct, commit_vts = CommitVts, snapshot_vts = SnapshotVts}, usage = NewUsage}, State = #state{key_cache_entry_map = KeyCacheEntryMap}) ->
+    CommitVtsToCacheEntryMap = maps:get(KeyStruct, KeyCacheEntryMap, #{}),
+    MatchingCacheEntryResult = maps:find(CommitVts, CommitVtsToCacheEntryMap),
     UpdateNecessary =
-        case MatchingEntries of
-            [] -> true;
-            [C] -> gingko_utils:is_in_vts_range(ValidVts, {C#cache_entry.valid_vts, none});
-            _Multiple ->
-                logger:error("Multiple cache entries with the same key and commit vts exist which should not happen!~nExisting Cache Entries:~n~p~nCache Entry Update:~n~p~n", [CacheEntryList, CacheEntry]),
+        case MatchingCacheEntryResult of
+            {ok, #cache_entry{snapshot = #snapshot{snapshot_vts = FoundSnapshotVts}, usage = ExistingUsage}} ->
+                NewUsage /= ExistingUsage
+                    orelse vectorclock:gt(SnapshotVts, FoundSnapshotVts);
+            _ ->
                 true
         end,
     case UpdateNecessary of
         true ->
-            NewCacheList = [CacheEntry | lists:filter(fun(C) ->
-                C#cache_entry.commit_vts /= CommitVts end, CacheEntryList)],
-            NewCacheDict = dict:store(KeyStruct, NewCacheList, CacheDict),
-            State#state{key_cache_entry_dict = NewCacheDict};
+            NewCommitVtsToCacheEntryMap = CommitVtsToCacheEntryMap#{CommitVts => CacheEntry},
+            NewKeyCacheEntryMap = KeyCacheEntryMap#{KeyStruct => NewCommitVtsToCacheEntryMap},
+            State#state{key_cache_entry_map = NewKeyCacheEntryMap};
         false ->
-            logger:error("Unnecessary cache update!~nExisting Cache Entries:~n~p~nCache Entry Update:~n~p~n", [CacheEntryList, CacheEntry]),
-            State
+            State %%This should not really happen
+    end.
+
+-spec get_valid_journal_entries_safe(load_from_log | [journal_entry()], vectorclock(), state(), non_neg_integer()) -> {ok, [journal_entry()]} | {error, reason()}.
+get_valid_journal_entries_safe(_, _, _, 0) -> {error, dependency_vts_not_valid};
+get_valid_journal_entries_safe(ValidJournalEntryListOrLoadFromLog, DependencyVts, #state{partition = Partition}, Retries) ->
+    JournalEntryListResult =
+        case ValidJournalEntryListOrLoadFromLog of
+            load_from_log ->
+                gingko_dc_utils:call_gingko_sync(Partition, ?GINGKO_LOG, {get_valid_journal_entries, DependencyVts});
+            ValidJournalEntryList -> {ok, ValidJournalEntryList}
+        end,
+    case JournalEntryListResult of
+        {ok, _} -> JournalEntryListResult;
+        {error, dependency_vts_not_valid} ->
+            timer:sleep(1000),
+            get_valid_journal_entries_safe(ValidJournalEntryListOrLoadFromLog, DependencyVts, #state{partition = Partition}, Retries - 1)
     end.
 
 -spec start_eviction_process(state()) -> state().
-start_eviction_process(State) ->
-    MaxOccupancy = State#state.max_occupancy,
+start_eviction_process(State = #state{key_cache_entry_map = KeyCacheEntryMap}) ->
+    MaxOccupancy = gingko_env_utils:get_cache_max_occupancy(),
+    EvictionThresholdInPercent = gingko_env_utils:get_cache_target_threshold_in_percent(),
+    TargetThresholdInPercent = gingko_env_utils:get_cache_target_threshold_in_percent(),
+    EvictionStrategy = gingko_env_utils:get_cache_eviction_strategy(),
     CurrentOccupancy =
-        dict:fold(fun(_Key, CList, Number) -> Number + length(CList) end, 0, State#state.key_cache_entry_dict),
-    EvictionThreshold = State#state.eviction_threshold_in_percent * MaxOccupancy div 100,
-    TargetThreshold = State#state.target_threshold_in_percent * EvictionThreshold div 100,
+        maps:fold(fun(_Key, CommitVtsCacheEntryMap, Number) ->
+            Number + maps:size(CommitVtsCacheEntryMap) end, 0, KeyCacheEntryMap),
+    EvictionThreshold = EvictionThresholdInPercent * MaxOccupancy div 100,
+    TargetThreshold = TargetThresholdInPercent * EvictionThreshold div 100,
     EvictionNeeded = CurrentOccupancy > EvictionThreshold,
-    CacheDict = State#state.key_cache_entry_dict,
-    NewCacheDict =
-        case {EvictionNeeded, State#state.eviction_strategy} of
+    NewCacheMap =
+        case {EvictionNeeded, EvictionStrategy} of
             {true, interval} -> %No preference on cache entries
-                interval_evict(CacheDict, CurrentOccupancy, TargetThreshold);
+                interval_evict(KeyCacheEntryMap, CurrentOccupancy, TargetThreshold);
             {true, fifo} ->
-                fifo_evict(CacheDict, CurrentOccupancy, TargetThreshold);
+                fifo_evict(KeyCacheEntryMap, CurrentOccupancy, TargetThreshold);
             {true, lru} ->
-                lru_evict(CacheDict, CurrentOccupancy, TargetThreshold);
+                lru_evict(KeyCacheEntryMap, CurrentOccupancy, TargetThreshold);
             {true, lfu} ->
-                lfu_evict(CacheDict, CurrentOccupancy, TargetThreshold);
+                lfu_evict(KeyCacheEntryMap, CurrentOccupancy, TargetThreshold);
             {false, _} ->
-                CacheDict
+                KeyCacheEntryMap
         end,
-    State#state{key_cache_entry_dict = NewCacheDict}.
+    State#state{key_cache_entry_map = NewCacheMap}.
 
--spec interval_evict(cache_dict(), non_neg_integer(), non_neg_integer()) -> cache_dict().
-interval_evict(CacheDict, CurrentOccupancy, TargetThreshold) ->
-    {RemainingOccupancy, NewUsedCacheDict} =
-        dict:fold(
-            fun(Key, CList, {Occupancy, NewCacheDictAcc}) ->
-                {NewOccupancy, ListOfCacheEntries} =
-                    lists:foldl(
-                        fun(C, {InnOcc, CL}) ->
-                            case InnOcc =< TargetThreshold orelse C#cache_entry.usage#cache_usage.used of
-                                true -> {InnOcc, [C | CL]};
-                                false -> {InnOcc - 1, CL}
-                            end
-                        end, {Occupancy, []}, CList),
-                case ListOfCacheEntries of
-                    [] -> {NewOccupancy, NewCacheDictAcc};
-                    List -> {NewOccupancy, dict:store(Key, List, NewCacheDictAcc)}
-                end
-            end, {CurrentOccupancy, dict:new()}, CacheDict),
-    case RemainingOccupancy >= TargetThreshold of
-        true ->
-            lru_evict(reset_used(NewUsedCacheDict, 0), RemainingOccupancy, TargetThreshold); %TODO default lru
-        false -> NewUsedCacheDict
-    end.
+-spec interval_evict(cache_map(), non_neg_integer(), non_neg_integer()) -> cache_map().
+interval_evict(KeyCacheEntryMap, CurrentOccupancy, TargetThreshold) ->
+    CacheEntryList = get_cache_entry_list(KeyCacheEntryMap),
+    evict(CacheEntryList, CurrentOccupancy, TargetThreshold, fun interval_evict/3).
 
--spec fifo_evict(cache_dict(), non_neg_integer(), non_neg_integer()) -> cache_dict().
-fifo_evict(CacheDict, CurrentOccupancy, TargetThreshold) ->
-    ValueList = lists:flatten(lists:map(fun({_Key, Value}) -> Value end, dict:to_list(CacheDict))),
-    SortedByFirstUsage = lists:sort(fun(C1, C2) ->
-        C1#cache_entry.usage#cache_usage.first_used < C2#cache_entry.usage#cache_usage.first_used end, ValueList),
-    {RemainingOccupancy, NewUsedCacheDict} =
+-spec fifo_evict(cache_map(), non_neg_integer(), non_neg_integer()) -> cache_map().
+fifo_evict(KeyCacheEntryMap, CurrentOccupancy, TargetThreshold) ->
+    CacheEntryList = get_cache_entry_list(KeyCacheEntryMap),
+    SortedCacheEntryList = sort_by_first_used(CacheEntryList),
+    evict(SortedCacheEntryList, CurrentOccupancy, TargetThreshold, fun fifo_evict/3).
+
+-spec lru_evict(cache_map(), non_neg_integer(), non_neg_integer()) -> cache_map().
+lru_evict(KeyCacheEntryMap, CurrentOccupancy, TargetThreshold) ->
+    CacheEntryList = get_cache_entry_list(KeyCacheEntryMap),
+    SortedCacheEntryList = sort_by_last_used(CacheEntryList),
+    evict(SortedCacheEntryList, CurrentOccupancy, TargetThreshold, fun lru_evict/3).
+
+-spec lfu_evict(cache_map(), non_neg_integer(), non_neg_integer()) -> cache_map().
+lfu_evict(KeyCacheEntryMap, CurrentOccupancy, TargetThreshold) ->
+    CacheEntryList = get_cache_entry_list(KeyCacheEntryMap),
+    SortedCacheEntryList = sort_by_times_used(CacheEntryList),
+    evict(SortedCacheEntryList, CurrentOccupancy, TargetThreshold, fun lfu_evict/3).
+
+evict(SortedCacheEntryList, CurrentOccupancy, TargetThreshold, RecursionFun) ->
+    {RemainingOccupancy, NewUsedKeyCacheEntryMap} =
         lists:foldl(
-            fun(C, {OccIn, Dict}) ->
-                case OccIn =< TargetThreshold orelse C#cache_entry.usage#cache_usage.used of
+            fun(CacheEntry = #cache_entry{snapshot = #snapshot{key_struct = KeyStruct, commit_vts = CommitVts}, usage = #cache_usage{used = Used}}, {OccupancyAcc, CurrentKeyCacheEntryMap}) ->
+                case OccupancyAcc =< TargetThreshold orelse Used of
                     true ->
-                        {OccIn, general_utils:add_to_value_list_or_create_single_value_list(Dict, C#cache_entry.key_struct, C)};
-                    false -> {OccIn - 1, Dict}
+                        CurrentCommitVtsCacheEntryMap = maps:get(KeyStruct, CurrentKeyCacheEntryMap, #{}),
+                        {OccupancyAcc, CurrentKeyCacheEntryMap#{KeyStruct => CurrentCommitVtsCacheEntryMap#{CommitVts => CacheEntry}}};
+                    false -> {OccupancyAcc - 1, CurrentKeyCacheEntryMap}
                 end
-            end, {CurrentOccupancy, dict:new()}, SortedByFirstUsage),
+            end, {CurrentOccupancy, #{}}, SortedCacheEntryList),
     case RemainingOccupancy >= TargetThreshold of
         true ->
-            fifo_evict(reset_used(NewUsedCacheDict, 0), RemainingOccupancy, TargetThreshold);
-        false -> NewUsedCacheDict
+            RecursionFun(reset_used(NewUsedKeyCacheEntryMap, 0), RemainingOccupancy, TargetThreshold);
+        false -> NewUsedKeyCacheEntryMap
     end.
 
--spec lru_evict(cache_dict(), non_neg_integer(), non_neg_integer()) -> cache_dict().
-lru_evict(CacheDict, CurrentOccupancy, TargetThreshold) ->
-    ValueList = lists:flatten(lists:map(fun({_Key, Value}) -> Value end, dict:to_list(CacheDict))),
-    SortedByFirstUsage = lists:sort(fun(C1, C2) ->
-        C1#cache_entry.usage#cache_usage.last_used < C2#cache_entry.usage#cache_usage.last_used end, ValueList),
-    {RemainingOccupancy, NewUsedCacheDict} =
-        lists:foldl(
-            fun(C, {OccIn, Dict}) ->
-                case OccIn =< TargetThreshold orelse C#cache_entry.usage#cache_usage.used of
-                    true ->
-                        {OccIn, general_utils:add_to_value_list_or_create_single_value_list(Dict, C#cache_entry.key_struct, C)};
-                    false -> {OccIn - 1, Dict}
-                end
-            end, {CurrentOccupancy, dict:new()}, SortedByFirstUsage),
-    case RemainingOccupancy >= TargetThreshold of
-        true ->
-            lru_evict(reset_used(NewUsedCacheDict, 0), RemainingOccupancy, TargetThreshold);
-        false -> NewUsedCacheDict
-    end.
+get_cache_entry_list(KeyCacheEntryMap) ->
+    lists:append(lists:map(fun(CommitVtsCacheEntryMap) ->
+        maps:values(CommitVtsCacheEntryMap) end, maps:values(KeyCacheEntryMap))).
 
--spec lfu_evict(cache_dict(), non_neg_integer(), non_neg_integer()) -> cache_dict().
-lfu_evict(CacheDict, CurrentOccupancy, TargetThreshold) ->
-    ValueList = lists:flatten(lists:map(fun({_Key, Value}) -> Value end, dict:to_list(CacheDict))),
-    SortedByFirstUsage = lists:sort(fun(C1, C2) ->
-        C1#cache_entry.usage#cache_usage.times_used < C2#cache_entry.usage#cache_usage.times_used end, ValueList),
-    {RemainingOccupancy, NewUsedCacheDict} =
-        lists:foldl(
-            fun(C, {OccIn, Dict}) ->
-                case OccIn =< TargetThreshold orelse C#cache_entry.usage#cache_usage.used of
-                    true ->
-                        {OccIn, general_utils:add_to_value_list_or_create_single_value_list(Dict, C#cache_entry.key_struct, C)};
-                    false -> {OccIn - 1, Dict}
-                end
-            end, {CurrentOccupancy, dict:new()}, SortedByFirstUsage),
-    case RemainingOccupancy >= TargetThreshold of
-        true ->
-            lfu_evict(reset_used(NewUsedCacheDict, 0), RemainingOccupancy, TargetThreshold);
-        false -> NewUsedCacheDict
-    end.
+sort_by_first_used(CacheEntryList) ->
+    lists:sort(
+        fun(#cache_entry{usage = #cache_usage{first_used = FirstUsed1}}, #cache_entry{usage = #cache_usage{first_used = FirstUsed2}}) ->
+            FirstUsed1 < FirstUsed2
+        end, CacheEntryList).
+
+sort_by_last_used(CacheEntryList) ->
+    lists:sort(
+        fun(#cache_entry{usage = #cache_usage{last_used = LastUsed1}}, #cache_entry{usage = #cache_usage{last_used = LastUsed2}}) ->
+            LastUsed1 < LastUsed2
+        end, CacheEntryList).
+
+sort_by_times_used(CacheEntryList) ->
+    lists:sort(
+        fun(#cache_entry{usage = #cache_usage{times_used = TimesUsed1}}, #cache_entry{usage = #cache_usage{times_used = TimesUsed2}}) ->
+            TimesUsed1 < TimesUsed2
+        end, CacheEntryList).
 
 -spec reset_used(state()) -> state().
-reset_used(State) ->
-    ResetInterval = State#state.reset_used_interval_millis * 1000,
-    CacheDict = State#state.key_cache_entry_dict,
-    NewCacheDict = reset_used(CacheDict, ResetInterval),
-    State#state{key_cache_entry_dict = NewCacheDict}.
+reset_used(State = #state{key_cache_entry_map = KeyCacheEntryMap}) ->
+    ResetUsedIntervalMillis = gingko_env_utils:get_cache_reset_used_interval_millis(),
+    ResetInterval = ResetUsedIntervalMillis * 1000,
+    NewKeyCacheEntryMap = reset_used(KeyCacheEntryMap, ResetInterval),
+    State#state{key_cache_entry_map = NewKeyCacheEntryMap}.
 
--spec reset_used(cache_dict(), non_neg_integer()) -> cache_dict().
-reset_used(CacheDict, ResetInterval) ->
-    CurrentTime = gingko_utils:get_timestamp(),
+-spec reset_used(cache_map(), non_neg_integer()) -> cache_map().
+reset_used(KeyCacheEntryMap, ResetInterval) ->
+    CurrentTime = gingko_dc_utils:get_timestamp(),
     MatchTime = CurrentTime - ResetInterval,
-    dict:map(
-        fun(_Key, CList) ->
-            lists:map(
-                fun(C) ->
-                    case C#cache_entry.usage#cache_usage.last_used < MatchTime of
-                        true -> gingko_utils:update_cache_usage(C, false);
-                        false -> C
+    maps:map(
+        fun(_KeyStruct, CommitVtsCacheEntryMap) ->
+            maps:map(
+                fun(_, CacheEntry = #cache_entry{usage = #cache_usage{last_used = LastUsed}}) ->
+                    case LastUsed < MatchTime of
+                        true -> gingko_utils:update_cache_usage(CacheEntry, false);
+                        false -> CacheEntry
                     end
-                end, CList)
-        end, CacheDict).
+                end, CommitVtsCacheEntryMap)
+        end, KeyCacheEntryMap).
 
 -spec clean_up_cache_after_checkpoint(state(), vectorclock()) -> state().
-clean_up_cache_after_checkpoint(State, LastCheckpointVts) ->
-    CacheDict = State#state.key_cache_entry_dict,
-    NewCacheDict =
-        dict:fold(
-            fun(Key, CList, NewCacheDictAcc) ->
-                ListOfCacheEntries =
-                    lists:filter(
-                        fun(C) ->
-                            gingko_utils:is_in_vts_range(C#cache_entry.valid_vts, {LastCheckpointVts, none})
-                        end, CList),
-                case ListOfCacheEntries of
-                    [] -> NewCacheDictAcc;
-                    List -> dict:store(Key, List, NewCacheDictAcc)
+clean_up_cache_after_checkpoint(State = #state{key_cache_entry_map = KeyCacheEntryMap}, LastCheckpointVts) ->
+    NewKeyCacheEntryMap =
+        maps:fold(
+            fun(KeyStruct, CommitVtsCacheEntryMap, NewKeyCacheEntryMapAcc) ->
+                ValidCacheEntryMap =
+                    maps:filter(
+                        fun(_, #cache_entry{snapshot = #snapshot{snapshot_vts = SnapshotVts}}) ->
+                            vectorclock:ge(SnapshotVts, LastCheckpointVts)
+                        end, CommitVtsCacheEntryMap),
+                case maps:size(ValidCacheEntryMap) of
+                    0 -> NewKeyCacheEntryMapAcc;
+                    _ -> NewKeyCacheEntryMapAcc#{KeyStruct => ValidCacheEntryMap}
                 end
-            end, dict:new(), CacheDict),
-    State#state{key_cache_entry_dict = NewCacheDict}.
+            end, #{}, KeyCacheEntryMap),
+    State#state{key_cache_entry_map = NewKeyCacheEntryMap}.

@@ -5,10 +5,17 @@
         {applications,
             [kernel,
                 stdlib,
-                riak_core
+                riak_core,
+                runtime_tools,
+                tools
             ]},
-        {included_applications, [vectorclock,
+        {included_applications,
+            [vectorclock,
             antidote_crdt]},
         {licenses, ["Apache 2.0"]},
-        {mod, {gingko_app, []}}
+        {mod, {gingko_app, []}},
+        % Default values for sys.config options used for system tests which do not load config files
+        {env, [
+            {data_dir, "data_gingko"}
+        ]}
     ]}.

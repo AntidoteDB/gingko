@@ -16,55 +16,48 @@
 %% Description and complete License: see LICENSE file.
 %% -------------------------------------------------------------------
 
--module(gingko_server).
+-module(inter_dc_log_server).
 -author("Kevin Bartik <k_bartik12@cs.uni-kl.de>").
--include("gingko.hrl").
-
 -behaviour(gen_server).
 
--export([start_link/0]).
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
+-export([start_link/0,
+    init/1,
+    handle_call/3,
+    handle_cast/2,
+    handle_info/2,
+    terminate/2,
     code_change/3]).
 
--define(SERVER, ?MODULE).
-
--record(state, {
-    running_txid_to_partitions = dict:new() :: dict:dict(txid(), [partition_id()]),
-    running_txid_to_ops = dict:new() :: dict:dict(txid(), list())
-}).
--type state() :: #state{}.
+%%%===================================================================
+%%% Public API
+%%%===================================================================
 
 %%%===================================================================
 %%% Spawning and gen_server implementation
 %%%===================================================================
 
 start_link() ->
-    gen_server:start_link({global, ?SERVER}, ?MODULE, [], []).
+    gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 init([]) ->
-    {ok, #state{}}.
+    inter_dc_log_vnode:init([0]).
 
-handle_call({{Op, Args}, TxId} = Request, Sender, State) ->
-    logger:debug("handle_call(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
-    gingko_vnode:process_command(Request, Sender, State);
-
-handle_call(Request, Sender, State) ->
-    logger:debug("handle_call(~nRequest: ~p~nSender: ~p~nState: ~p~n)", [Request, Sender, State]),
-    {reply, error, State}.
+handle_call(Request, {Pid, _Tag}, State) ->
+    inter_dc_log_vnode:handle_command(Request, {raw, undefined, Pid}, State).
 
 handle_cast(Request, State) ->
-    logger:debug("handle_cast(~nRequest: ~p~nState: ~p~n)", [Request, State]),
-    {noreply, State}.
+    {reply, _Result, NewState} = inter_dc_log_vnode:handle_command(Request, {raw, undefined, self()}, State),
+    {noreply, NewState}.
 
-handle_info(Request, State) ->
-    logger:debug("handle_info(~nRequest: ~p~nState: ~p~n)", [Request, State]),
-    {noreply, State}.
+handle_info(Info, State) ->
+    {reply, _Result, NewState} = inter_dc_log_vnode:handle_command(Info, {raw, undefined, self()}, State),
+    {noreply, NewState}.
 
-terminate(_Reason, _State) ->
-    ok.
+terminate(Reason, State) ->
+    inter_dc_log_vnode:terminate(Reason, State).
 
-code_change(_OldVsn, State, _Extra) ->
-    {ok, State}.
+code_change(OldVsn, State, Extra) ->
+    default_gen_server_behaviour:code_change(?MODULE, OldVsn, State, Extra).
 
 %%%===================================================================
 %%% Internal functions
